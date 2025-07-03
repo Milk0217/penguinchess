@@ -25,16 +25,13 @@ function generateSequence(totalSum = 99) {
             sequence.push(nextNum);
             remainingSum -= nextNum;
             remainingLength--;
+        } else if (remainingSum - 2 >= 0 && remainingLength - 1 >= 0) {
+            sequence.push(2);
+            remainingSum -= 2;
+            remainingLength--;
         } else {
-            // 如果1放不下，尝试放2
-            if (remainingSum - 2 >= 0 && remainingLength - 1 >= 0) {
-                sequence.push(2);
-                remainingSum -= 2;
-                remainingLength--;
-            } else {
-                // 如果都放不下，说明前面分配有问题，重新开始
-                return generateSequence(totalSum);
-            }
+            // 如果都放不下，说明前面分配有问题，重新开始
+            return generateSequence(totalSum);
         }
     }
 
@@ -43,7 +40,7 @@ function generateSequence(totalSum = 99) {
         return generateSequence(totalSum);
     }
 
-    // 打乱数组顺序
+    // 打乱数组顺序（Fisher-Yates洗牌算法）
     for (let i = sequence.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [sequence[i], sequence[j]] = [sequence[j], sequence[i]];
@@ -59,43 +56,51 @@ function cubeToPixel(q, r, size = 30) {
     return { x, y };
 }
 
-// 创建偏矩形棋盘
+// 创建偏矩形棋盘（优化版）
 function createBoard(radius = 8) {
     const board = document.getElementById('board');
+    if (!board) return; // 增加错误处理
+    
     board.innerHTML = '';
 
-    let totalValue = 99; // 总分
-    let valueSequence = generateSequence(totalValue); // 生成值数组
+    const totalValue = 99; // 总分
+    const valueSequence = generateSequence(totalValue); // 生成值数组
     let valueIndex = 0; // 值数组的索引
+
+    // 预计算中心点坐标
+    const centerX = board.clientWidth / 2;
+    const centerY = board.clientHeight / 2;
+
+    // 预计算qAdjustments
+    const qAdjustments = {
+        "1": -1,
+        "2": -1,
+        "3": -2,
+        "-2": 1,
+        "-3": 1,
+        "-4": 2
+    };
+
+    // 预计算行范围
+    const rowRanges = {
+        even: { start: -4, end: 3 },
+        odd: { start: -3, end: 3 }
+    };
 
     for (let q = -radius; q <= radius; q++) {
         // 跳过 q < -4 或 q > 3 的格子
         if (q < -4 || q > 3) continue;
 
         // 根据行号(q)的奇偶性确定列数(r)的范围
-        let rStart, rEnd;
-        if (q % 2 === 0) { // 偶数行
-            rStart = -4;
-            rEnd = 3;
-        } else { // 奇数行
-            rStart = -3;
-            rEnd = 3;
-        }
-        for (let r = rStart; r <= rEnd; r++) {
+        const isEvenRow = q % 2 === 0;
+        const { start, end } = isEvenRow ? rowRanges.even : rowRanges.odd;
+
+        for (let r = start; r <= end; r++) {
             const s = -q - r;
 
             // 从生成的值数组中获取值
-            let value = valueSequence[valueIndex++];
-      
-            // 定义 q 与调整量的映射关系
-            const qAdjustments = {
-              "1": -1,
-              "2": -1,
-              "3": -2,
-              "-2": 1,
-              "-3": 1,
-              "-4": 2
-            };
+            const value = valueSequence[valueIndex++];
+            if (valueIndex >= valueSequence.length) valueIndex = 0; // 防止越界
 
             // 只创建满足x + y + z = 0的六边形
             if (Math.abs(s) <= radius) {
@@ -103,20 +108,18 @@ function createBoard(radius = 8) {
                 const adjustment = qAdjustments[q] || 0;
 
                 // 计算 adjustedR
-                let adjustedR = r + adjustment;
+                const adjustedR = r + adjustment;
                
-                // 计算在容器中的位置
-                const centerX = board.clientWidth / 2;
-                const centerY = board.clientHeight / 2;
-                
+                // 创建六边形元素
                 const hex = document.createElement('div');
                 hex.classList.add('hex');
-                // 存储立方体坐标
+                
+                // 存储立方体坐标和值
                 hex.dataset.q = q;
                 hex.dataset.r = r;
                 hex.dataset.s = s;
-                hex.dataset.value = value; // 存储初始值
-        
+                hex.dataset.value = value;
+                
                 // 调整后的像素坐标
                 const { x, y } = cubeToPixel(q, adjustedR);
                 hex.style.left = `${centerX + x - 25}px`;
@@ -129,8 +132,15 @@ function createBoard(radius = 8) {
                 
                 // 添加点击事件
                 hex.addEventListener('click', () => selectHex(hex));
-                
+      
                 board.appendChild(hex);
+
+                document.querySelectorAll('.hex').forEach(hex => {
+                    hex.textContent = showCoords 
+                        ? `${hex.dataset.q},${hex.dataset.r},${hex.dataset.s}`
+                        : `${hex.dataset.value}`;
+                });
+         
             }
         }
     }
@@ -146,13 +156,8 @@ function selectHex(hex) {
     // 选中当前六边形
     hex.classList.add('selected');
     
-    // 获取立方体坐标
-    const q = parseInt(hex.dataset.q);
-    const r = parseInt(hex.dataset.r);
-    const s = parseInt(hex.dataset.s);
-    
-    // 获取格子值
-    const value = hex.dataset.value;
+    // 获取立方体坐标和值
+    const { q, r, s, value } = hex.dataset;
     
     // 显示选中信息
     document.getElementById('selected-info').textContent = 
@@ -160,12 +165,12 @@ function selectHex(hex) {
     
     // 计算并高亮相邻的六个六边形
     const neighbors = [
-        {q: q+1, r: r-1, s: s}, // 右上
-        {q: q+1, r: r, s: s-1}, // 右下
-        {q: q, r: r+1, s: s-1}, // 左下
-        {q: q-1, r: r+1, s: s}, // 左上
-        {q: q-1, r: r, s: s+1}, // 左上
-        {q: q, r: r-1, s: s+1}  // 右上
+        {q: parseInt(q)+1, r: parseInt(r)-1, s: parseInt(s)}, // 右上
+        {q: parseInt(q)+1, r: parseInt(r), s: parseInt(s)-1}, // 右下
+        {q: parseInt(q), r: parseInt(r)+1, s: parseInt(s)-1}, // 左下
+        {q: parseInt(q)-1, r: parseInt(r)+1, s: parseInt(s)}, // 左上
+        {q: parseInt(q)-1, r: parseInt(r), s: parseInt(s)+1}, // 左上
+        {q: parseInt(q), r: parseInt(r)-1, s: parseInt(s)+1}  // 右上
     ];
     
     // 查找并高亮相邻六边形
@@ -191,11 +196,9 @@ let showCoords = false;
 document.getElementById('toggle-coords-btn').addEventListener('click', () => {
     showCoords = !showCoords;
     document.querySelectorAll('.hex').forEach(hex => {
-        if (showCoords) {
-            hex.textContent = `${hex.dataset.q},${hex.dataset.r},${hex.dataset.s}`;
-        } else {
-            hex.textContent = `${hex.dataset.value}`;
-        }
+        hex.textContent = showCoords 
+            ? `${hex.dataset.q},${hex.dataset.r},${hex.dataset.s}`
+            : `${hex.dataset.value}`;
     });
 });
 
