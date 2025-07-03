@@ -1,3 +1,57 @@
+// 随机生成数列
+function generateSequence(totalSum = 99) {
+    let sequence = [];
+    let count3 = 0;
+    let remainingSum = totalSum;
+    let remainingLength = 60;
+
+    // 先随机确定3的数量（8到10个）
+    count3 = Math.floor(Math.random() * 3) + 8;
+    
+    // 分配3的值
+    for (let i = 0; i < count3; i++) {
+        sequence.push(3);
+        remainingSum -= 3;
+        remainingLength--;
+    }
+
+    // 剩余的位置用1和2填充
+    while (remainingLength > 0) {
+        // 随机决定下一个是1还是2
+        let nextNum = Math.random() < 0.5 ? 1 : 2;
+        
+        // 检查是否还能放入这个数
+        if (remainingSum - nextNum >= 0 && remainingLength - 1 >= 0) {
+            sequence.push(nextNum);
+            remainingSum -= nextNum;
+            remainingLength--;
+        } else {
+            // 如果1放不下，尝试放2
+            if (remainingSum - 2 >= 0 && remainingLength - 1 >= 0) {
+                sequence.push(2);
+                remainingSum -= 2;
+                remainingLength--;
+            } else {
+                // 如果都放不下，说明前面分配有问题，重新开始
+                return generateSequence(totalSum);
+            }
+        }
+    }
+
+    // 检查总和是否正确
+    if (sequence.reduce((a, b) => a + b, 0) !== totalSum) {
+        return generateSequence(totalSum);
+    }
+
+    // 打乱数组顺序
+    for (let i = sequence.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [sequence[i], sequence[j]] = [sequence[j], sequence[i]];
+    }
+
+    return sequence;
+}
+
 // 立方体坐标到屏幕坐标的转换
 function cubeToPixel(q, r, size = 30) {
     const x = size * (3/2 * q);
@@ -9,6 +63,10 @@ function cubeToPixel(q, r, size = 30) {
 function createBoard(radius = 8) {
     const board = document.getElementById('board');
     board.innerHTML = '';
+
+    let totalValue = 99; // 总分
+    let valueSequence = generateSequence(totalValue); // 生成值数组
+    let valueIndex = 0; // 值数组的索引
 
     for (let q = -radius; q <= radius; q++) {
         // 跳过 q < -4 或 q > 3 的格子
@@ -25,6 +83,9 @@ function createBoard(radius = 8) {
         }
         for (let r = rStart; r <= rEnd; r++) {
             const s = -q - r;
+
+            // 从生成的值数组中获取值
+            let value = valueSequence[valueIndex++];
       
             // 定义 q 与调整量的映射关系
             const qAdjustments = {
@@ -48,19 +109,20 @@ function createBoard(radius = 8) {
                 const centerX = board.clientWidth / 2;
                 const centerY = board.clientHeight / 2;
                 
-                // 调整后的像素坐标
-                const { x, y } = cubeToPixel(q, adjustedR);
-                
                 const hex = document.createElement('div');
-                hex.className = 'hex';
-                hex.style.left = `${centerX + x - 25}px`;
-                hex.style.top = `${centerY + y - 25}px`;
-                
+                hex.classList.add('hex');
                 // 存储立方体坐标
                 hex.dataset.q = q;
                 hex.dataset.r = r;
                 hex.dataset.s = s;
+                hex.dataset.value = value; // 存储初始值
+        
+                // 调整后的像素坐标
+                const { x, y } = cubeToPixel(q, adjustedR);
+                hex.style.left = `${centerX + x - 25}px`;
+                hex.style.top = `${centerY + y - 25}px`;
                 
+
                 // 设置基于坐标的颜色
                 const hue = ((q + radius) / (2 * radius)) * 360;
                 hex.style.backgroundColor = `hsl(${hue}, 70%, 80%)`;
@@ -89,9 +151,12 @@ function selectHex(hex) {
     const r = parseInt(hex.dataset.r);
     const s = parseInt(hex.dataset.s);
     
+    // 获取格子值
+    const value = hex.dataset.value;
+    
     // 显示选中信息
     document.getElementById('selected-info').textContent = 
-        `选中六边形: (${q}, ${r}, ${s})`;
+        `选中六边形: (${q}, ${r}, ${s}), 值: ${value}`;
     
     // 计算并高亮相邻的六个六边形
     const neighbors = [
@@ -129,7 +194,7 @@ document.getElementById('toggle-coords-btn').addEventListener('click', () => {
         if (showCoords) {
             hex.textContent = `${hex.dataset.q},${hex.dataset.r},${hex.dataset.s}`;
         } else {
-            hex.textContent = '';
+            hex.textContent = `${hex.dataset.value}`;
         }
     });
 });
