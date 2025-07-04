@@ -1,78 +1,107 @@
 import { createBoard } from './board.js';
 import { createPiece } from './piece.js';
 
+// 全局变量
+let hexes = [];
+let pieces = [];
+
+const findHex = (hexes, q, r, s) => 
+  hexes.find(hex => hex.q === q && hex.r === r && hex.s === s)
+;
+
 // 放置棋子
-function placePieces() {
-    // 添加开始选点前的提示
-    updateGameStatus('玩家1请选择三个点放置棋子')
-    let selectedCount = 0; // 记录当前玩家已选择的点数
-    let currentPlayer = 1; // 当前玩家（1或2）
-    let piecesPlaced = 0; // 已放置的棋子总数
-    
-    // 监听六边形的点击事件
-    document.querySelectorAll('.hex').forEach(hex => {
-        hex.addEventListener('click', function() {
+async function placePieces() {
+    updateGameStatus('玩家1请选择三个点放置棋子');
+    let selectedCount = 0;
+    let currentPlayer = 1;
+    let selectedPiece = null;
+
+    // 返回一个Promise，等待用户完成放置棋子的操作
+    return new Promise((resolve) => {
+        const handleClick = (event) => {
+            const hex = event.currentTarget;
+
             // 如果已放置6个棋子，结束放置
-            if (piecesPlaced >= 6) {
+            if (pieces.length>= 6) {
+                resolve(); // 解除Promise阻塞
                 return;
             }
-            
-            // 如果六边形已有棋子，且是当前玩家的棋子，则选中该棋子
-            if (this.dataset.player && parseInt(this.dataset.player) === currentPlayer) {
-                selectedPiece = this.dataset.pieceValue;
-                this.classList.add('selected');
+
+            // 如果六边形已有棋子且是当前玩家的棋子，则选中该棋子
+            if (hex.dataset.player && parseInt(hex.dataset.player) === currentPlayer) {
+                selectedPiece = hex.dataset.pieceValue;
+                hex.classList.add('selected');
                 return;
             }
-            
+
             // 如果六边形已有棋子且不是当前玩家的，则忽略
-            if (this.dataset.player) {
+            if (hex.dataset.player) {
                 return;
             }
-            
+
             // 更新已选择的点数和已放置的棋子总数
             selectedCount++;
-            piecesPlaced++;
-             
+
             // 创建棋子并放置
             const pieceId = currentPlayer === 1 
-              ? 4 + (Math.floor((piecesPlaced - 1) / 2)) * 2  // 玩家1: 4,6,8
-              : 5 + (Math.floor((piecesPlaced - 1) / 2)) * 2; // 玩家2: 5,7,9
+                ? 4 + Math.floor(pieces.length / 2) * 2  // 玩家1: 4,6,8
+                : 5 + Math.floor(pieces.length / 2) * 2; // 玩家2: 5,7,9
             const piece = createPiece(pieceId);
-            piece.placeToHex(this);
-            
+
+            // 找到对应的hex对象
+            const targetHex = findHex(hexes, Number(hex.dataset.q), Number(hex.dataset.r), Number(hex.dataset.s));
+            piece.placeToHex(targetHex);
+
+            pieces.push(piece);
             // 添加选中样式
-            this.classList.add('selected');
-            
+            hex.classList.add('selected');
+
             // 标记该六边形属于当前玩家
-            this.dataset.player = currentPlayer;
-           
+            hex.dataset.player = currentPlayer;
+
             // 如果当前切换到对手
             if (selectedCount % 2 === 1) {
                 updateGameStatus('');
                 currentPlayer = currentPlayer === 1 ? 2 : 1;
-                selectedCount = 0
-                
+                selectedCount = 0;
+
                 // 如果所有棋子都已放置，结束
-                if (piecesPlaced >= 6) {
+                if (pieces.length>= 6) {
+                    updateGameStatus('放置棋子结束');
+                    resolve(); // 解除Promise阻塞
                     return;
                 }
-                
+
                 // 为下一个玩家添加提示
-                updateGameStatus(`玩家${currentPlayer}请选择三个点放置棋子`)
+                updateGameStatus(`玩家${currentPlayer}请选择三个点放置棋子`);
             }
+        };
+
+        // 监听六边形的点击事件
+        document.querySelectorAll('.hex').forEach(hex => {
+            hex.addEventListener('click', handleClick);
         });
     });
 }
 
-//移动棋子
-function turn(turnNumber) {
-    
+// 移动棋子
+async function turn(turnNumber) {
+    try {
+        // 输出当前回合信息
+        updateGameStatus("第" + turnNumber + "回合\n现在是玩家"+ (turnNumber % 2 + 1) +"操作");
+        
+        // 输出棋子信息
+        console.log(pieces);
+    } catch (error) {
+        // 捕获并处理可能的错误
+        console.error("An error occurred during the turn:", error);
+        throw error; // 重新抛出错误，以便外层可以处理
+    }
 }
 
 // 检查游戏是否结束
-function gameovercheck(){
-    
-    return true
+function gameovercheck(turnNumber){
+    return turnNumber === 10;
 }
 
 // 游戏结束结算
@@ -81,15 +110,17 @@ function aftergame(){
 }
 
 // 初始化棋盘和棋子
-function initializeGame() {
-    createBoard();
-    placePieces();
+async function initializeGame() {
+    hexes = createBoard();
     
+    // 等待棋子放置完成
+    await placePieces();
+
     let turnNumber = 1;
     while (true) {
         try {
-            turn(turnNumber);
-            if (gameovercheck()) {
+            await turn(turnNumber);
+            if (gameovercheck(turnNumber)) {
                 break;
             }
             turnNumber++;

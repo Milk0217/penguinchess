@@ -58,8 +58,11 @@ class Hex {
     this.showCoords = showCoords;
     this.centerX = centerX;
     this.centerY = centerY;
+    this.left = 0;
+    this.top = 0;
     this.radius = radius;
     this.element = this.createHexElement();
+    this.setupClickHandler(); // 初始化点击事件
   }
 
   createHexElement() {
@@ -77,32 +80,51 @@ class Hex {
     hex.style.left = `${this.centerX + x - 25}px`;
     hex.style.top = `${this.centerY + y - 25}px`;
 
+    this.left = `${this.centerX + x - 20}`;
+    this.top = `${this.centerY + y - 20}`;
+
     // 设置基于坐标的颜色
     const hue = ((this.q + this.radius) / (2 * this.radius)) * 360;
     hex.style.backgroundColor = `hsl(${hue}, 70%, 80%)`;
+    hex.style.zIndex = '5';
 
-    // 添加点击事件
-    hex.addEventListener('click', () => this.selectHex(hex));
+    return hex; // 不再直接绑定 click 事件，由 setupClickHandler 管理
+  }
 
-    return hex;
+  // 初始化点击事件
+  setupClickHandler() {
+    const clickHandler = () => this.selectHex(this.element);
+    this.element.addEventListener('click', clickHandler);
+    this.clickHandler = clickHandler; // 保存引用以便移除
+  }
+
+  // 移除点击事件
+  removeClickHandler() {
+    if (this.clickHandler) {
+      this.element.removeEventListener('click', this.clickHandler);
+      this.clickHandler = null;
+      console.log('Click handler removed');
+    } else {
+      console.log('No click handler to remove');
+    }
   }
 
   // 选中六边形
   selectHex(hex) {
-      // 清除所有选中状态
-      document.querySelectorAll('.hex').forEach(h => {
-          h.classList.remove('selected');
-      });
-      
-      // 选中当前六边形
-      hex.classList.add('selected');
-      
-      // 获取立方体坐标和值
-      const { q, r, s, value } = hex.dataset;
-      
-      // 显示选中信息
-      document.getElementById('selected-info').textContent = 
-          `选中六边形: (${q}, ${r}, ${s}), 值: ${value}`;
+    // 清除所有选中状态
+    document.querySelectorAll('.hex').forEach(h => {
+      h.classList.remove('selected');
+    });
+    
+    // 选中当前六边形
+    hex.classList.add('selected');
+    
+    // 获取立方体坐标和值
+    const { q, r, s, value } = hex.dataset;
+    
+    // 显示选中信息
+    document.getElementById('selected-info').textContent = 
+      `选中六边形: (${q}, ${r}, ${s}), 值: ${value}`;
   }
 
   // 立方体坐标到屏幕坐标的转换
@@ -155,6 +177,8 @@ export function createBoard(radius = 8) {
     odd: { start: -3, end: 3 }
   };
 
+  const hexes = []; // 存储所有生成的 Hex 实例
+
   for (let q = -radius; q <= radius; q++) {
     // 跳过 q < -4 或 q > 3 的格子
     if (q < -4 || q > 3) continue;
@@ -181,9 +205,11 @@ export function createBoard(radius = 8) {
         // 创建 Hex 实例并添加到棋盘
         const hex = new Hex(q, adjustedR, s, value, false, centerX, centerY, radius);
         hex.appendToBoard(board);
+        hexes.push(hex); // 将 Hex 实例存入数组
       }
     }
   }
+  return hexes; // 返回所有生成的 Hex 实例
 }
 
 // 切换坐标显示
