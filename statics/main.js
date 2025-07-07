@@ -68,6 +68,10 @@ async function placePieces() {
                 // 如果所有棋子都已放置，结束
                 if (pieces.length>= 6) {
                     updateGameStatus('放置棋子结束');
+                    document.getElementById('selected-info').textContent = "移动棋子阶段"
+                    // 删除所有hex的初始选中功能
+                    hex.classList.remove('selected');
+                    hexes.forEach(hex => hex.removeClickHandler());
                     resolve(); // 解除Promise阻塞
                     return;
                 }
@@ -89,9 +93,6 @@ async function turn(turnNumber) {
     try {
         // 输出当前回合信息
         updateGameStatus("第" + turnNumber + "回合\n现在是玩家"+ (turnNumber % 2 + 1) +"操作");
-        
-        // 输出棋子信息
-        console.log(pieces);
     } catch (error) {
         // 捕获并处理可能的错误
         console.error("An error occurred during the turn:", error);
@@ -106,7 +107,7 @@ function gameovercheck(turnNumber){
 
 // 游戏结束结算
 function aftergame(){
-
+    return true;
 }
 
 // 初始化棋盘和棋子

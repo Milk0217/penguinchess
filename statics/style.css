@@ -82,3 +82,7 @@ button:hover {
     width: 80%;
     max-width: 600px;
 }
+
+.hex.selected {
+    background-color: yellow; /* 选中时的背景颜色 */
+}
