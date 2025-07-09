@@ -63,14 +63,12 @@ button:hover {
     z-index: 10;
 }
 
-.hex.selected {
-    background-color: #90caf9;
+.hex.highlighted {
+    background-color: #ff5722; /* 橙红色，更加显眼 */
     transform: scale(1.1);
     z-index: 20;
-}
-
-.hex.neighbors {
-    background-color: #c5cae9;
+    box-shadow: 0 0 10px rgba(255, 87, 34, 0.7); /* 添加阴影效果 */
+    border: 2px solid #ff9800; /* 添加边框 */
 }
 
 .info-panel {
@@ -83,6 +81,16 @@ button:hover {
     max-width: 600px;
 }
 
-.hex.selected {
-    background-color: yellow; /* 选中时的背景颜色 */
+.piece.highlighted {
+    background-color: yellow; /* 高亮背景颜色 */
+    border: 2px solid red;    /* 高亮边框 */
+    box-shadow: 0 0 10px rgba(255, 0, 0, 0.5); /* 高亮阴影效果 */
+    transition: all 0.3s ease; /* 平滑过渡效果 */
+}
+
+.piece.selected {
+    background-color: yellow; /* 高亮背景颜色 */
+    border: 2px solid blue;    /* 高亮边框 */
+    box-shadow: 0 0 10px rgba(0, 0, 255, 0.5); /* 高亮阴影效果 */
+    transition: all 0.3s ease; /* 平滑过渡效果 */
 }

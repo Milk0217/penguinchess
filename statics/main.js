@@ -91,18 +91,65 @@ async function placePieces() {
 // 移动棋子
 async function turn(turnNumber) {
     try {
+        const currentPlayer = turnNumber % 2 + 1;
         // 输出当前回合信息
-        updateGameStatus("第" + turnNumber + "回合\n现在是玩家"+ (turnNumber % 2 + 1) +"操作");
+        updateGameStatus("第" + (turnNumber+1) + "回合\n现在是玩家"+ currentPlayer +"操作");
+        // 高亮当前用户的棋子
+        //添加一个等待框，等待用户操作
+        let chosenPiece = null;
+        let nextHex = null;
+        // 等待用户选择棋子
+        while (!chosenPiece) {
+            // 这里可以添加一些逻辑来等待用户操作，例如使用事件监听器或轮询
+            // 假设我们有一个事件监听器来设置 chosenPiece
+            highlightCurrentPlayerPieces(currentPlayer, (piece) => {
+                if(chosenPiece === null){
+                    chosenPiece = piece;
+                    chosenPiece.piece.classList.remove("highlighted");
+                    chosenPiece.piece.classList.add("selected");
+                } else if (chosenPiece !== piece) {
+                    chosenPiece.piece.classList.add("highlighted");
+                    chosenPiece.piece.classList.remove("selected");
+                    chosenPiece = piece;
+                    chosenPiece.piece.classList.remove("highlighted");
+                    chosenPiece.piece.classList.add("selected");
+                }
+            });
+            await new Promise(resolve => setTimeout(resolve, 100)); // 简单的延迟以避免阻塞
+        }
+
+
+        // 等待用户选择目标位置
+        while (!nextHex) {
+            // 这里可以添加一些逻辑来等待用户操作
+            // 高亮可移动的目标格子并等待选择
+            highlightPossibleMoves(chosenPiece, (hex) => {
+                nextHex = hex;
+            });
+            await new Promise(resolve => setTimeout(resolve, 100)); // 简单的延迟以避免阻塞
+        }
+        //移动棋子
+        console.log(chosenPiece)
+        console.log(nextHex)
+        chosenPiece.moveToHex(nextHex);
+        // 移除所有格子的高亮样式
+        hexes.forEach(hex => {
+            if (hex.element) {
+                hex.element.classList.remove('highlighted');
+                // 移除之前的点击事件监听器
+                hex.element.removeEventListener('click', hex.onClick);
+            }
+        });
     } catch (error) {
         // 捕获并处理可能的错误
-        console.error("An error occurred during the turn:", error);
+        console.error("An error occurred during the turn:",(turnNumber+1), error);
         throw error; // 重新抛出错误，以便外层可以处理
     }
 }
 
 // 检查游戏是否结束
 function gameovercheck(turnNumber){
-    return turnNumber === 10;
+    return turnNumber === 9;
 }
 
 // 游戏结束结算
@@ -117,7 +164,7 @@ async function initializeGame() {
     // 等待棋子放置完成
     await placePieces();
 
-    let turnNumber = 1;
+    let turnNumber = 0;
     while (true) {
         try {
             await turn(turnNumber);
@@ -156,4 +203,94 @@ function updateGameStatus(message) {
   } else {
     console.error('游戏状态元素未找到');
   }
+}
+/**
+ * 高亮当前玩家的棋子
+ * @param {number} currentPlayer - 当前玩家编号 (1 或 2)
+ * @param {function} setChosenPiece - 设置当前选中的棋子的函数
+ */
+function highlightCurrentPlayerPieces(currentPlayer, setChosenPiece) {
+    // 移除所有棋子的高亮样式
+    pieces.forEach(piece => {
+        if (piece.piece) {
+            piece.piece.classList.remove('highlighted');
+            // 移除之前的点击事件监听器
+            piece.piece.removeEventListener('click', piece.onClick);
+        }
+    });
+
+    // 高亮当前玩家的棋子
+    const playerPieces = pieces.filter(piece => {
+        // 棋子的ID可以区分玩家（奇数是玩家2，偶数是玩家1）
+        return currentPlayer === 1 ? piece.id % 2 === 0 : piece.id % 2 === 1;
+    });
+
+    playerPieces.forEach(piece => {
+        if (piece.piece) {
+            piece.piece.classList.add('highlighted');
+            // 为每个棋子添加点击事件监听器
+            piece.onClick = () => {
+                setChosenPiece(piece);
+            };
+            piece.piece.addEventListener('click', piece.onClick);
+        }
+    });
+}
+/**
+ * 高亮棋子可移动的目标格子
+ * @param {Object} chosenPiece - 当前选中的棋子对象
+ * @param {function} setNextHex - 设置目标格子的函数
+ */
+function highlightPossibleMoves(chosenPiece, setNextHex) {
+    // 移除所有格子的高亮样式
+    hexes.forEach(hex => {
+        if (hex.element) {
+            hex.element.classList.remove('highlighted');
+            // 移除之前的点击事件监听器
+            hex.element.removeEventListener('click', hex.onClick);
+        }
+    });
+
+    // 计算并高亮可移动的目标格子
+    const possibleMoves = calculatePossibleMoves(chosenPiece); // 假设此函数计算可移动的格子
+    console.log(possibleMoves)
+
+    possibleMoves.forEach(hex => {
+        if (hex.element) {
+            hex.element.classList.add('highlighted');
+            // 为每个格子添加点击事件监听器
+            hex.onClick = () => {
+                setNextHex(hex);
+            };
+            hex.element.addEventListener('click', hex.onClick);
+        }
+    });
+}
+/**
+ * 计算棋子可移动的目标格子
+ * @param {Object} chosenPiece - 当前选中的棋子对象
+ * @returns {Array} 可移动的格子数组
+ */
+function calculatePossibleMoves(chosenPiece) {
+  if (!chosenPiece || !chosenPiece.hex) {
+    console.error("Invalid chosenPiece or hex");
+    return [];
+  }
+
+  const currentHex = chosenPiece.hex;
+  const q = currentHex.q;
+  const r = currentHex.r;
+
+  // 筛选所有格子中 q 或 r 值与当前格子相同的格子
+  const possibleMoves = hexes.filter(hex => {
+    // 排除当前格子本身
+    if (hex === currentHex) {
+      return false;
+    }
+    
+    // 检查 q 或 r 是否相同
+    return hex.q === q || hex.r === r || (hex.q + hex.r) === (q + r);
+  });
+
+  return possibleMoves;
 }
