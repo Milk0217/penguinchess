@@ -139,6 +139,12 @@ class Hex {
     this.updateText();
   }
 
+  updateStatus(value){
+    this.value = value;
+    this.element.dataset.value = value;
+    this.element.textContent = value;
+  }
+
   updateText() {
     this.element.textContent = this.showCoords
       ? `${this.q},${this.r},${this.s}`

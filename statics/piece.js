@@ -65,15 +65,15 @@ class Piece {
         // 1. 清理当前 hex 的棋子信息
         if (this.hex) {
             console.log("ready to delete old hex", this.hex)
-            // 删除当前 hex 的 value 属性
-            delete this.hex.value;
+            // 设置当前 hex 的 value 为0
+            this.hex.updateStatus(0);
             // 清空当前 hex 的文本内容
-            this.hex.textContent = '';
+            this.hex.text= '';
             // 移除当前 hex 的 DOM 元素（如果需要）
             this.piece.style.display = 'none';
-            this.hex.element.style.display = 'none'; // 隐藏元素
+            // this.hex.element.style.display = 'none'; // 隐藏元素
         }
-
+        console.log("who get killed?", this.hex)
         // 2. 更新棋子的 hex 引用
         this.hex = newHex;
 

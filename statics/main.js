@@ -129,8 +129,6 @@ async function turn(turnNumber) {
             await new Promise(resolve => setTimeout(resolve, 100)); // 简单的延迟以避免阻塞
         }
         //移动棋子
-        console.log(chosenPiece)
-        console.log(nextHex)
         chosenPiece.moveToHex(nextHex);
         // 移除所有格子的高亮样式
         hexes.forEach(hex => {
@@ -149,7 +147,6 @@ async function turn(turnNumber) {
 
 // 检查游戏是否结束
 function gameovercheck(turnNumber){
-    return turnNumber === 9;
 }
 
 // 游戏结束结算
@@ -280,9 +277,10 @@ function calculatePossibleMoves(chosenPiece) {
   const currentHex = chosenPiece.hex;
   const q = currentHex.q;
   const r = currentHex.r;
+  const s = currentHex.s;
 
   // 筛选所有格子中 q 或 r 值与当前格子相同的格子
-  const possibleMoves = hexes.filter(hex => {
+  let possibleMoves = hexes.filter(hex => {
     // 排除当前格子本身
     if (hex === currentHex) {
       return false;
@@ -290,6 +288,52 @@ function calculatePossibleMoves(chosenPiece) {
     
     // 检查 q 或 r 是否相同
     return hex.q === q || hex.r === r || (hex.q + hex.r) === (q + r);
+  });
+
+  // 排除已经被其他棋子占据的格子
+  possibleMoves = possibleMoves.filter(hex => {
+    return !pieces.some(piece => piece.hex === hex);
+  });
+
+
+  // 排除所有 value = 0 的格子
+  possibleMoves = possibleMoves.filter(hex => {
+    return !hexes.some(h => h.q === hex.q && h.r === hex.r && h.value === 0);
+  });
+
+  // 排除被其他棋子挡住行进路线的格子
+  possibleMoves = possibleMoves.filter(targetHex => {
+      const dq = targetHex.q - q;
+      const dr = targetHex.r - r;
+
+      const steps = Math.max(Math.abs(dq), Math.abs(dr));
+
+      const signDq = Math.sign(dq);
+      const signDr = Math.sign(dr);
+
+      for (let i = 1; i < steps; i++) {
+          const intermediateHex = {
+              q: q + signDq * i,
+              r: r + signDr * i,
+          };
+      
+        // 检查中间格子是否被棋子或 value0 的格子占据
+        const isBlocked = pieces.some(piece => 
+            piece.hex.q === intermediateHex.q && 
+            piece.hex.r === intermediateHex.r
+        ) || hexes.some(hex => 
+            hex.q === intermediateHex.q && 
+            hex.r === intermediateHex.r && 
+            hex.value === 0
+        );
+
+        if (isBlocked) {
+            return false;
+        }
+
+      }
+
+      return true;
   });
 
   return possibleMoves;
