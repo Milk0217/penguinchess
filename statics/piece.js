@@ -2,7 +2,7 @@
 class Piece {
     constructor(id) {
         this.id = id;
-        this.piece = null; // 自身所指向的棋子div
+        this.element = null; // 自身所指向的棋子div
         this.hex = null; // 当前所在的六边形
     }
 
@@ -44,7 +44,7 @@ class Piece {
       piece.style.top = `${hex.top}px`; // 中心对齐（减去半径）
       piece.style.zIndex = '10'; // 确保棋子在六边形之上
 
-      this.piece = piece;
+      this.element = piece;
       // 5. 挂载到 board 容器
       const board = document.getElementById('board');
       board.appendChild(piece);
@@ -64,16 +64,11 @@ class Piece {
     moveToHex(newHex) {
         // 1. 清理当前 hex 的棋子信息
         if (this.hex) {
-            console.log("ready to delete old hex", this.hex)
             // 设置当前 hex 的 value 为0
             this.hex.updateStatus(0);
-            // 清空当前 hex 的文本内容
-            this.hex.text= '';
-            // 移除当前 hex 的 DOM 元素（如果需要）
-            this.piece.style.display = 'none';
-            // this.hex.element.style.display = 'none'; // 隐藏元素
+            // 移除当前 Piece 的 DOM 元素
+            this.element.style.display = 'none';
         }
-        console.log("who get killed?", this.hex)
         // 2. 更新棋子的 hex 引用
         this.hex = newHex;
 
@@ -91,6 +86,11 @@ class Piece {
 
         // 4. 调用 placeToHex 方法更新棋子的 DOM 位置
         this.placeToHex(newHex);
+    }
+
+    destroySelf(){
+        this.element.style.display = "none" ;
+        this.hex.updateStatus(0);
     }
 }
 

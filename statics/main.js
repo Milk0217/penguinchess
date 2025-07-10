@@ -91,6 +91,16 @@ async function placePieces() {
 // 移动棋子
 async function turn(turnNumber) {
     try {
+
+        // 检查棋子是否需要移除
+        pieces.forEach(piece => {
+            const moves = calculatePossibleMoves(piece);
+            if (moves.length === 0) {
+                piece.destroySelf();
+            }
+        });
+        console.log(pieces)
+
         const currentPlayer = turnNumber % 2 + 1;
         // 输出当前回合信息
         updateGameStatus("第" + (turnNumber+1) + "回合\n现在是玩家"+ currentPlayer +"操作");
@@ -105,14 +115,14 @@ async function turn(turnNumber) {
             highlightCurrentPlayerPieces(currentPlayer, (piece) => {
                 if(chosenPiece === null){
                     chosenPiece = piece;
-                    chosenPiece.piece.classList.remove("highlighted");
-                    chosenPiece.piece.classList.add("selected");
+                    chosenPiece.element.classList.remove("highlighted");
+                    chosenPiece.element.classList.add("selected");
                 } else if (chosenPiece !== piece) {
-                    chosenPiece.piece.classList.add("highlighted");
-                    chosenPiece.piece.classList.remove("selected");
+                    chosenPiece.element.classList.add("highlighted");
+                    chosenPiece.element.classList.remove("selected");
                     chosenPiece = piece;
-                    chosenPiece.piece.classList.remove("highlighted");
-                    chosenPiece.piece.classList.add("selected");
+                    chosenPiece.element.classList.remove("highlighted");
+                    chosenPiece.element.classList.add("selected");
                 }
             });
             await new Promise(resolve => setTimeout(resolve, 100)); // 简单的延迟以避免阻塞
@@ -130,6 +140,7 @@ async function turn(turnNumber) {
         }
         //移动棋子
         chosenPiece.moveToHex(nextHex);
+
         // 移除所有格子的高亮样式
         hexes.forEach(hex => {
             if (hex.element) {
@@ -209,10 +220,10 @@ function updateGameStatus(message) {
 function highlightCurrentPlayerPieces(currentPlayer, setChosenPiece) {
     // 移除所有棋子的高亮样式
     pieces.forEach(piece => {
-        if (piece.piece) {
-            piece.piece.classList.remove('highlighted');
+        if (piece.element) {
+            piece.element.classList.remove('highlighted');
             // 移除之前的点击事件监听器
-            piece.piece.removeEventListener('click', piece.onClick);
+            piece.element.removeEventListener('click', piece.onClick);
         }
     });
 
@@ -223,13 +234,13 @@ function highlightCurrentPlayerPieces(currentPlayer, setChosenPiece) {
     });
 
     playerPieces.forEach(piece => {
-        if (piece.piece) {
-            piece.piece.classList.add('highlighted');
+        if (piece.element) {
+            piece.element.classList.add('highlighted');
             // 为每个棋子添加点击事件监听器
             piece.onClick = () => {
                 setChosenPiece(piece);
             };
-            piece.piece.addEventListener('click', piece.onClick);
+            piece.element.addEventListener('click', piece.onClick);
         }
     });
 }

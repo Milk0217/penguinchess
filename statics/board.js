@@ -143,6 +143,9 @@ class Hex {
     this.value = value;
     this.element.dataset.value = value;
     this.element.textContent = value;
+    if(value === 0){
+      this.element.style.display = "none"
+    }
   }
 
   updateText() {
