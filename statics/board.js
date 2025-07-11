@@ -103,9 +103,6 @@ class Hex {
     if (this.clickHandler) {
       this.element.removeEventListener('click', this.clickHandler);
       this.clickHandler = null;
-      console.log('Click handler removed');
-    } else {
-      console.log('No click handler to remove');
     }
   }
 

@@ -1,9 +1,11 @@
 import { createBoard } from './board.js';
 import { createPiece } from './piece.js';
+import { Player } from './player.js';
 
 // 全局变量
 let hexes = [];
 let pieces = [];
+let players = [];
 
 const findHex = (hexes, q, r, s) => 
   hexes.find(hex => hex.q === q && hex.r === r && hex.s === s)
@@ -11,10 +13,12 @@ const findHex = (hexes, q, r, s) =>
 
 // 放置棋子
 async function placePieces() {
-    updateGameStatus('玩家1请选择三个点放置棋子');
     let selectedCount = 0;
     let currentPlayer = 1;
     let selectedPiece = null;
+
+    updateGameStatus(`请玩家${players[currentPlayer-1].name}选择三个点放置棋子`);
+    updateScore(players)
 
     // 返回一个Promise，等待用户完成放置棋子的操作
     return new Promise((resolve) => {
@@ -51,10 +55,10 @@ async function placePieces() {
             // 找到对应的hex对象
             const targetHex = findHex(hexes, Number(hex.dataset.q), Number(hex.dataset.r), Number(hex.dataset.s));
             piece.placeToHex(targetHex);
+            players[currentPlayer-1].addScore(targetHex.value)
+            updateScore(players)
 
             pieces.push(piece);
-            // 添加选中样式
-            hex.classList.add('selected');
 
             // 标记该六边形属于当前玩家
             hex.dataset.player = currentPlayer;
@@ -77,7 +81,7 @@ async function placePieces() {
                 }
 
                 // 为下一个玩家添加提示
-                updateGameStatus(`玩家${currentPlayer}请选择三个点放置棋子`);
+                updateGameStatus(`玩家${players[currentPlayer-1].name}请选择三个点放置棋子`);
             }
         };
 
@@ -99,11 +103,14 @@ async function turn(turnNumber) {
                 piece.destroySelf();
             }
         });
-        console.log(pieces)
+
+        if (gameovercheck(turnNumber)) {
+            return true;
+        }
 
         const currentPlayer = turnNumber % 2 + 1;
         // 输出当前回合信息
-        updateGameStatus("第" + (turnNumber+1) + "回合\n现在是玩家"+ currentPlayer +"操作");
+        updateGameStatus(`第${turnNumber+1}回合\n现在是玩家${players[currentPlayer-1].name}操作`);
         // 高亮当前用户的棋子
         //添加一个等待框，等待用户操作
         let chosenPiece = null;
@@ -128,7 +135,6 @@ async function turn(turnNumber) {
             await new Promise(resolve => setTimeout(resolve, 100)); // 简单的延迟以避免阻塞
         }
 
-
         // 等待用户选择目标位置
         while (!nextHex) {
             // 这里可以添加一些逻辑来等待用户操作
@@ -138,8 +144,11 @@ async function turn(turnNumber) {
             });
             await new Promise(resolve => setTimeout(resolve, 100)); // 简单的延迟以避免阻塞
         }
+
         //移动棋子
         chosenPiece.moveToHex(nextHex);
+        players[currentPlayer-1].addScore(nextHex.value)
+        updateScore(players)
 
         // 移除所有格子的高亮样式
         hexes.forEach(hex => {
@@ -149,43 +158,89 @@ async function turn(turnNumber) {
                 hex.element.removeEventListener('click', hex.onClick);
             }
         });
+        return false;
+
     } catch (error) {
         // 捕获并处理可能的错误
         console.error("An error occurred during the turn:",(turnNumber+1), error);
         throw error; // 重新抛出错误，以便外层可以处理
+        return true;
     }
 }
 
 // 检查游戏是否结束
 function gameovercheck(turnNumber){
+    // 检查pieces中所有的piece.element的style.display是否为none，如果为none则是出局
+    // 如果有一方的棋子全部出局，则游戏结束
+
+    // 统计各方的存活棋子数量
+    const aliveCounts = {0:0, 1:0};
+
+    // 遍历所有棋子，统计存活数量
+    pieces.forEach(piece => {
+        if (!piece.element || !piece.element.style) {
+            console.warn('棋子元素无效，跳过统计');
+            return;
+        }
+
+        // 如果棋子可见（display !== 'none'），则统计其所属方
+        if (piece.element.style.display !== 'none') {
+            const playerSymbol = piece.id % 2; // 假设棋子有 playerSymbol 属性标识所属玩家
+            if (!aliveCounts[playerSymbol]) {
+                aliveCounts[playerSymbol] = 0;
+            }
+            aliveCounts[playerSymbol]++;
+        }
+    });
+
+    // 检查是否有玩家的棋子全部出局（存活数量为0）
+    for (const playerSymbol in aliveCounts) {
+        if (aliveCounts[playerSymbol] === 0) {
+            document.getElementById('selected-info').textContent = `玩家 ${players[playerSymbol].name} 的棋子全部出局，游戏结束`
+            return true;
+        }
+    }
+
+    // 如果所有玩家都有存活棋子，游戏继续
+    return false;
 }
 
 // 游戏结束结算
 function aftergame(){
-    return true;
+    console.log("aftergame")
 }
 
 // 初始化棋盘和棋子
 async function initializeGame() {
     hexes = createBoard();
-    
+
+    const player1 = new Player(1, "Milky")
+    players.push(player1);
+    const player2 = new Player(2, "test")
+    players.push(player2);
+
     // 等待棋子放置完成
     await placePieces();
 
     let turnNumber = 0;
     while (true) {
         try {
-            await turn(turnNumber);
-            if (gameovercheck(turnNumber)) {
-                break;
+            const isGameOver = await turn(turnNumber);
+
+            // 如果 turn 返回 true，表示游戏结束，退出循环
+            if (isGameOver) {
+                console.log("游戏结束");
+                updateGameStatus("游戏结束");
+                aftergame();
+                break; // 退出 while 循环
             }
+            
             turnNumber++;
         } catch (error) {
             console.error("An error occurred during the game:", error);
             break;
         }
     }
-    aftergame();
 }
 
 // 初始化棋盘
@@ -208,6 +263,20 @@ function updateGameStatus(message) {
   const gameStatusElement = document.getElementById('game-status');
   if (gameStatusElement) {
     gameStatusElement.textContent = message;
+  } else {
+    console.error('游戏状态元素未找到');
+  }
+}
+/**
+ * 更新得分信息
+ * @param {Array} players - 玩家数组，包含所有玩家对象
+ */
+function updateScore(players) {
+  const scoreElement = document.getElementById('score-board');
+  if (scoreElement) {
+    // 使用数组的map方法生成每个玩家的得分字符串，并用vs连接
+    const scoreText = players.map(player => `${player.name}:${player.score}`).join(' vs ');
+    scoreElement.textContent = scoreText;
   } else {
     console.error('游戏状态元素未找到');
   }
@@ -261,7 +330,6 @@ function highlightPossibleMoves(chosenPiece, setNextHex) {
 
     // 计算并高亮可移动的目标格子
     const possibleMoves = calculatePossibleMoves(chosenPiece); // 假设此函数计算可移动的格子
-    console.log(possibleMoves)
 
     possibleMoves.forEach(hex => {
         if (hex.element) {
