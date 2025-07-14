@@ -103,6 +103,7 @@ async function turn(turnNumber) {
                 piece.destroySelf();
             }
         });
+        checkAndRemoveHexes()
 
         if (gameovercheck(turnNumber)) {
             return true;
@@ -374,10 +375,9 @@ function calculatePossibleMoves(chosenPiece) {
     return !pieces.some(piece => piece.hex === hex);
   });
 
-
-  // 排除所有 value = 0 的格子
+  // 排除所有 value <= 0 的格子
   possibleMoves = possibleMoves.filter(hex => {
-    return !hexes.some(h => h.q === hex.q && h.r === hex.r && h.value === 0);
+    return !hexes.some(h => h.q === hex.q && h.r === hex.r && h.value <= 0);
   });
 
   // 排除被其他棋子挡住行进路线的格子
@@ -396,14 +396,14 @@ function calculatePossibleMoves(chosenPiece) {
               r: r + signDr * i,
           };
       
-        // 检查中间格子是否被棋子或 value0 的格子占据
+        // 检查中间格子是否被棋子或空的格子占据
         const isBlocked = pieces.some(piece => 
             piece.hex.q === intermediateHex.q && 
             piece.hex.r === intermediateHex.r
         ) || hexes.some(hex => 
             hex.q === intermediateHex.q && 
             hex.r === intermediateHex.r && 
-            hex.value === 0
+            hex.value < 0
         );
 
         if (isBlocked) {
@@ -416,4 +416,43 @@ function calculatePossibleMoves(chosenPiece) {
   });
 
   return possibleMoves;
+}
+// 检查格子是否需要移除
+function checkAndRemoveHexes() {
+    // 遍历所有棋子，收集它们所在的格子、相邻格子以及相邻格子的相邻格子
+    const connectedHexes = new Set(); // 使用 Set 避免重复添加相同的格子
+
+    function addHexAndNeighbors(hex) {
+      if (!hex) return; // 如果 hex 为空，直接返回
+
+      // 添加当前格子
+      connectedHexes.add(hex);
+
+      // 获取相邻格子
+      const adjacentHexes = hex.getConnectedHexes(hexes);
+      
+      // 递归添加相邻格子及其邻居
+      adjacentHexes.forEach(neighborHex => {
+        if (!connectedHexes.has(neighborHex)) { // 如果邻居还没有被添加过
+          addHexAndNeighbors(neighborHex); // 递归添加
+        }
+      });
+    }
+
+    // 遍历所有棋子
+    pieces.forEach(piece => {
+      if (piece.hex) {
+        addHexAndNeighbors(piece.hex); // 调用函数，开始递归添加
+      }
+    });
+
+    // 遍历所有格子，移除不在 connectedHexes 中的格子
+    hexes.forEach(hex => {
+        if (!connectedHexes.has(hex)) {
+            // 移除 DOM 元素
+            if (hex.element) {
+                hex.updateStatus(-1)
+            }
+        }
+    });
 }

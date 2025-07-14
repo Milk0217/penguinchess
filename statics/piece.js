@@ -9,18 +9,16 @@ class Piece {
     // 放置棋子到指定的六边形
     placeToHex(hex) {
       // 定义所在hex
+ 
+      // 删除块的点击事件
+      hex.removeClickHandler();
+      hex.updateStatus(0)
       this.hex = hex
 
       // 清除之前的棋子（如果有）
       const existingPiece = document.querySelector(`.piece[data-hex-id="${hex.q},${hex.r},${hex.s}"]`);
       if (existingPiece) {
         existingPiece.remove();
-      }
-
-      const selector = `.hex[data-q="${hex.q}"][data-r="${hex.r}"][data-s="${hex.s}"]`;
-      const thishex = document.querySelector(selector);
-      if (thishex) {
-        // 对 hex 进行操作
       }
 
       //从 DOM 元素的 dataset 中获取中心位置
@@ -48,9 +46,6 @@ class Piece {
       // 5. 挂载到 board 容器
       const board = document.getElementById('board');
       board.appendChild(piece);
-
-      // 删除块的点击事件
-      hex.removeClickHandler();
     }
 
     // 立方体坐标到屏幕坐标的转换
@@ -64,8 +59,8 @@ class Piece {
     moveToHex(newHex) {
         // 1. 清理当前 hex 的棋子信息
         if (this.hex) {
-            // 设置当前 hex 的 value 为0
-            this.hex.updateStatus(0);
+            // 设置当前 hex 的 value 为 -1
+            this.hex.updateStatus(-1);
             // 移除当前 Piece 的 DOM 元素
             this.element.style.display = 'none';
         }
@@ -90,7 +85,7 @@ class Piece {
 
     destroySelf(){
         this.element.style.display = "none" ;
-        this.hex.updateStatus(0);
+        this.hex.updateStatus(-1);
     }
 }
 

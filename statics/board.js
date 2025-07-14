@@ -65,6 +65,43 @@ class Hex {
     this.setupClickHandler(); // 初始化点击事件
   }
 
+  // 获取相邻的六个六边形坐标
+  getAdjacentCoords() {
+    // 六边形的六个相邻方向（立方体坐标的偏移量）
+    const directions = [
+      { q: 1, r: -1, s: 0 },
+      { q: 1, r: 0, s: -1 },
+      { q: 0, r: 1, s: -1 },
+      { q: -1, r: 1, s: 0 },
+      { q: -1, r: 0, s: 1 },
+      { q: 0, r: -1, s: 1 }
+    ];
+
+    // 计算相邻坐标
+    return directions.map(dir => ({
+      q: this.q + dir.q,
+      r: this.r + dir.r,
+      s: this.s + dir.s
+    }));
+  }
+
+  // 获取相邻的六边形对象
+  getConnectedHexes(allHexes) {
+    if (!allHexes) return [];
+
+    // 获取相邻坐标
+    const adjacentCoords = this.getAdjacentCoords();
+
+    // 查找所有六边形中匹配相邻坐标的对象
+    return adjacentCoords
+      .map(coords => allHexes.find(hex => 
+        hex.q === coords.q && 
+        hex.r === coords.r && 
+        hex.s === coords.s &&
+        hex.value > 0
+      ))
+  }
+
   createHexElement() {
     const hex = document.createElement('div');
     hex.classList.add('hex');
@@ -140,7 +177,7 @@ class Hex {
     this.value = value;
     this.element.dataset.value = value;
     this.element.textContent = value;
-    if(value === 0){
+    if(value < 0){
       this.element.style.display = "none"
     }
   }
@@ -208,8 +245,11 @@ export function createBoard(radius = 8) {
         // 计算 adjustedR
         const adjustedR = r + adjustment;
 
+        // 根据 adjustedR 计算 adjustedS
+        const adjustedS = 0 - q - adjustedR
+
         // 创建 Hex 实例并添加到棋盘
-        const hex = new Hex(q, adjustedR, s, value, false, centerX, centerY, radius);
+        const hex = new Hex(q, adjustedR, adjustedS, value, false, centerX, centerY, radius);
         hex.appendToBoard(board);
         hexes.push(hex); // 将 Hex 实例存入数组
       }
