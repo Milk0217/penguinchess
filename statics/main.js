@@ -54,8 +54,8 @@ async function placePieces() {
 
             // 找到对应的hex对象
             const targetHex = findHex(hexes, Number(hex.dataset.q), Number(hex.dataset.r), Number(hex.dataset.s));
-            piece.placeToHex(targetHex);
             players[currentPlayer-1].addScore(targetHex.value)
+            piece.placeToHex(targetHex);
             updateScore(players)
 
             pieces.push(piece);
@@ -147,8 +147,8 @@ async function turn(turnNumber) {
         }
 
         //移动棋子
-        chosenPiece.moveToHex(nextHex);
         players[currentPlayer-1].addScore(nextHex.value)
+        chosenPiece.moveToHex(nextHex);
         updateScore(players)
 
         // 移除所有格子的高亮样式
@@ -349,24 +349,26 @@ function highlightPossibleMoves(chosenPiece, setNextHex) {
  * @returns {Array} 可移动的格子数组
  */
 function calculatePossibleMoves(chosenPiece) {
+  // 检查输入的棋子对象是否有效，以及是否包含 hex 属性
   if (!chosenPiece || !chosenPiece.hex) {
     console.error("Invalid chosenPiece or hex");
     return [];
   }
 
+  // 获取当前棋子所在格子的坐标
   const currentHex = chosenPiece.hex;
   const q = currentHex.q;
   const r = currentHex.r;
   const s = currentHex.s;
 
-  // 筛选所有格子中 q 或 r 值与当前格子相同的格子
+  // 筛选所有格子中 q 或 r 值与当前格子相同的格子，排除当前格子本身
   let possibleMoves = hexes.filter(hex => {
     // 排除当前格子本身
     if (hex === currentHex) {
       return false;
     }
     
-    // 检查 q 或 r 是否相同
+    // 检查 q 或 r 是否相同，或者 q + r 的和是否相同（用于六边形网格的移动规则）
     return hex.q === q || hex.r === r || (hex.q + hex.r) === (q + r);
   });
 
@@ -382,18 +384,19 @@ function calculatePossibleMoves(chosenPiece) {
 
   // 排除被其他棋子挡住行进路线的格子
   possibleMoves = possibleMoves.filter(targetHex => {
-      const dq = targetHex.q - q;
-      const dr = targetHex.r - r;
+      const dq = targetHex.q - q; // 目标格子 q 坐标与当前格子的差值
+      const dr = targetHex.r - r; // 目标格子 r 坐标与当前格子的差值
 
-      const steps = Math.max(Math.abs(dq), Math.abs(dr));
+      const steps = Math.max(Math.abs(dq), Math.abs(dr)); // 计算移动的步数
 
-      const signDq = Math.sign(dq);
-      const signDr = Math.sign(dr);
+      const signDq = Math.sign(dq); // q 方向的移动方向（1, 0, -1）
+      const signDr = Math.sign(dr); // r 方向的移动方向（1, 0, -1）
 
+      // 检查每一步的中间格子是否被阻挡
       for (let i = 1; i < steps; i++) {
           const intermediateHex = {
-              q: q + signDq * i,
-              r: r + signDr * i,
+              q: q + signDq * i, // 计算中间格子的 q 坐标
+              r: r + signDr * i, // 计算中间格子的 r 坐标
           };
       
         // 检查中间格子是否被棋子或空的格子占据
@@ -407,28 +410,35 @@ function calculatePossibleMoves(chosenPiece) {
         );
 
         if (isBlocked) {
-            return false;
+            return false; // 如果中间格子被阻挡，则排除该目标格子
         }
-
       }
 
-      return true;
+      return true; // 如果所有中间格子都未被阻挡，则保留该目标格子
   });
 
-  return possibleMoves;
+  return possibleMoves; // 返回所有可移动的格子
 }
-// 检查格子是否需要移除
+
+/**
+ * 检查并移除不需要的格子
+ * 遍历所有棋子，收集它们所在的格子、相邻格子以及相邻格子的相邻格子
+ * 移除不在这些集合中的格子
+ */
 function checkAndRemoveHexes() {
-    // 遍历所有棋子，收集它们所在的格子、相邻格子以及相邻格子的相邻格子
     const connectedHexes = new Set(); // 使用 Set 避免重复添加相同的格子
 
+    /**
+     * 递归添加当前格子及其所有相邻格子到 connectedHexes 集合
+     * @param {Object} hex - 当前要处理的格子
+     */
     function addHexAndNeighbors(hex) {
       if (!hex) return; // 如果 hex 为空，直接返回
 
-      // 添加当前格子
+      // 添加当前格子到集合
       connectedHexes.add(hex);
 
-      // 获取相邻格子
+      // 获取当前格子的所有相邻格子
       const adjacentHexes = hex.getConnectedHexes(hexes);
       
       // 递归添加相邻格子及其邻居
@@ -439,7 +449,7 @@ function checkAndRemoveHexes() {
       });
     }
 
-    // 遍历所有棋子
+    // 遍历所有棋子，调用 addHexAndNeighbors 函数，开始递归添加
     pieces.forEach(piece => {
       if (piece.hex) {
         addHexAndNeighbors(piece.hex); // 调用函数，开始递归添加
@@ -449,9 +459,9 @@ function checkAndRemoveHexes() {
     // 遍历所有格子，移除不在 connectedHexes 中的格子
     hexes.forEach(hex => {
         if (!connectedHexes.has(hex)) {
-            // 移除 DOM 元素
+            // 移除 DOM 元素并更新格子状态
             if (hex.element) {
-                hex.updateStatus(-1)
+                hex.updateStatus(-1); // 更新格子状态为不可用
             }
         }
     });
