@@ -195,11 +195,32 @@ function gameovercheck(turnNumber){
     });
 
     // 检查是否有玩家的棋子全部出局（存活数量为0）
+    let survivingPlayerSymbol = null;
     for (const playerSymbol in aliveCounts) {
-        if (aliveCounts[playerSymbol] === 0) {
-            document.getElementById('selected-info').textContent = `玩家 ${players[playerSymbol].name} 的棋子全部出局，游戏结束`
-            return true;
+        if (aliveCounts[playerSymbol] > 0) {
+            if (survivingPlayerSymbol === null) {
+                survivingPlayerSymbol = playerSymbol;
+            } else {
+                // 如果有多个玩家存活，则直接返回 false
+                return false;
+            }
         }
+    }
+
+    // 如果只有一个玩家存活，则处理得分和更新 hex 状态
+    if (survivingPlayerSymbol !== null) {
+        document.getElementById('selected-info').textContent = `玩家 ${players[survivingPlayerSymbol].name} 是唯一存活的玩家，游戏结束`;
+        
+        // 遍历所有 hex，更新得分和状态
+        for (const hex of hexes) {
+            if (hex.value > 0) {
+                players[survivingPlayerSymbol].addScore(hex.value);
+                updateScore(players);
+                hex.updateStatus(-1);
+            }
+        }
+        
+        return true;
     }
 
     // 如果所有玩家都有存活棋子，游戏继续
@@ -209,6 +230,7 @@ function gameovercheck(turnNumber){
 // 游戏结束结算
 function aftergame(){
     console.log("aftergame")
+    
 }
 
 // 初始化棋盘和棋子
