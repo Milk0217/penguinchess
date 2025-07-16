@@ -1,54 +1,3 @@
-// 随机生成数列
-function generateSequence(totalSum = 99) {
-    let sequence = [];
-    let count3 = 0;
-    let remainingSum = totalSum;
-    let remainingLength = 60;
-
-    // 先随机确定3的数量（8到10个）
-    count3 = Math.floor(Math.random() * 3) + 8;
-    
-    // 分配3的值
-    for (let i = 0; i < count3; i++) {
-        sequence.push(3);
-        remainingSum -= 3;
-        remainingLength--;
-    }
-
-    // 剩余的位置用1和2填充
-    while (remainingLength > 0) {
-        // 随机决定下一个是1还是2
-        let nextNum = Math.random() < 0.5 ? 1 : 2;
-        
-        // 检查是否还能放入这个数
-        if (remainingSum - nextNum >= 0 && remainingLength - 1 >= 0) {
-            sequence.push(nextNum);
-            remainingSum -= nextNum;
-            remainingLength--;
-        } else if (remainingSum - 2 >= 0 && remainingLength - 1 >= 0) {
-            sequence.push(2);
-            remainingSum -= 2;
-            remainingLength--;
-        } else {
-            // 如果都放不下，说明前面分配有问题，重新开始
-            return generateSequence(totalSum);
-        }
-    }
-
-    // 检查总和是否正确
-    if (sequence.reduce((a, b) => a + b, 0) !== totalSum) {
-        return generateSequence(totalSum);
-    }
-
-    // 打乱数组顺序（Fisher-Yates洗牌算法）
-    for (let i = sequence.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [sequence[i], sequence[j]] = [sequence[j], sequence[i]];
-    }
-
-    return sequence;
-}
-
 class Hex {
   constructor(q, r, s, value, showCoords, centerX, centerY, radius) {
     this.q = q;
@@ -190,14 +139,12 @@ class Hex {
 }
 
 // 创建偏矩形棋盘
-export function createBoard(radius = 8) {
+export function createBoard({ radius = 8, valueSequence = [] } = {}) {
   const board = document.getElementById('board');
   if (!board) return; // 增加错误处理
 
   board.innerHTML = '';
 
-  const totalValue = 99; // 总分
-  const valueSequence = generateSequence(totalValue); // 生成值数组
   let valueIndex = 0; // 值数组的索引
 
   // 预计算中心点坐标

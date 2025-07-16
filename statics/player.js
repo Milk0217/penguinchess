@@ -34,8 +34,5 @@ export class Player {
   // 重置玩家数据（可选）
   reset() {
     this.score = 0;
-    this.gamesWon = 0;
-    this.gamesLost = 0;
-    this.gamesDrawn = 0;
   }
 }

@@ -6,6 +6,15 @@ import { Player } from './player.js';
 let hexes = [];
 let pieces = [];
 let players = [];
+let history = [];
+const totalValue = 99; // 总分
+
+function newgame(history=[]){
+    hexes = [];
+    pieces = [];
+    players = [];
+    history = history;
+}
 
 const findHex = (hexes, q, r, s) => 
   hexes.find(hex => hex.q === q && hex.r === r && hex.s === s)
@@ -55,6 +64,15 @@ async function placePieces() {
             // 找到对应的hex对象
             const targetHex = findHex(hexes, Number(hex.dataset.q), Number(hex.dataset.r), Number(hex.dataset.s));
             players[currentPlayer-1].addScore(targetHex.value)
+
+            // 记录放置棋子的操作
+            history.push({
+                type: 'place',
+                pieceId: pieceId,
+                hex: { q: targetHex.q, r: targetHex.r, s: targetHex.s },
+                player: players[currentPlayer - 1]
+            });
+
             piece.placeToHex(targetHex);
             updateScore(players)
 
@@ -146,6 +164,15 @@ async function turn(turnNumber) {
             await new Promise(resolve => setTimeout(resolve, 100)); // 简单的延迟以避免阻塞
         }
 
+        // 记录移动棋子的操作
+        history.push({
+            type: 'move',
+            pieceId: chosenPiece.id,
+            fromHex: { q: chosenPiece.hex.q, r: chosenPiece.hex.r, s: chosenPiece.hex.s },
+            toHex: { q: nextHex.q, r: nextHex.r, s: nextHex.s },
+            player: players[currentPlayer - 1]
+        });
+
         //移动棋子
         players[currentPlayer-1].addScore(nextHex.value)
         chosenPiece.moveToHex(nextHex);
@@ -234,13 +261,21 @@ function aftergame(){
 }
 
 // 初始化棋盘和棋子
-async function initializeGame() {
-    hexes = createBoard();
+async function initializeGame(type = 0){
+    let valueSequence = []
+    if (type === 0) {
+        valueSequence = generateSequence(totalValue); // 生成值数组
+        hexes = createBoard({valueSequence: valueSequence})
+        const player1 = new Player(1, "Milky");
+        const player2 = new Player(2, "test");
+        players = [player1, player2];
 
-    const player1 = new Player(1, "Milky")
-    players.push(player1);
-    const player2 = new Player(2, "test")
-    players.push(player2);
+        history.push({
+            type: "initialize",
+            valueSequence: valueSequence,
+            players: players,
+        });
+    }
 
     // 等待棋子放置完成
     await placePieces();
@@ -487,4 +522,115 @@ function checkAndRemoveHexes() {
             }
         }
     });
+}
+
+function replayHistory(history = history) {
+    let index = 0;
+
+    console.log(history)
+    // 初始化棋盘
+    initializeGame(1, history);
+    let hexes = createBoard({valueSequence: history[0]?.valueSequence})
+    let players = history[0]?.players;
+    players.forEach(player => { player.reset(); })
+    let pieces = [];
+
+    replayNext();
+
+    // 开始回放
+    function replayNext(){
+    if (index < history.length) {
+        const action = history[index];
+        index++;
+
+        if (action.type === 'place') {
+            // 模拟放置棋子的操作
+            const piece = createPiece(action.pieceId);
+            const targetHex = findHex(hexes, action.hex.q, action.hex.r, action.hex.s);
+            players[action.player.id - 1].addScore(targetHex.value)
+            piece.placeToHex(targetHex);
+            pieces.push(piece)
+            updateScore(players);
+        } else if (action.type === 'move') {
+            // 模拟移动棋子的操作
+            const piece = pieces.find(p => p.id === action.pieceId);
+            const fromHex = findHex(hexes, action.fromHex.q, action.fromHex.r, action.fromHex.s);
+            const toHex = findHex(hexes, action.toHex.q, action.toHex.r, action.toHex.s);
+            players[action.player.id - 1].addScore(toHex.value)
+            piece.moveToHex(toHex);
+            updateScore(players);
+        }
+
+        // 移除所有格子的高亮样式
+        hexes.forEach(hex => {
+            if (hex.element) {
+                hex.element.classList.remove('highlighted');
+                // 移除之前的点击事件监听器
+                hex.element.removeEventListener('click', hex.onClick);
+            }
+        });
+
+        // 延迟一段时间后继续回放下一个操作
+        setTimeout(replayNext, 1000);
+    } else {
+        console.log("回放结束");
+    }
+  }
+}
+
+// 添加回放按钮的事件监听器
+document.getElementById('replay-btn').addEventListener('click', function(){
+    replayHistory(history);
+});
+
+
+// 随机生成数列
+function generateSequence(totalSum = 99) {
+    let sequence = [];
+    let count3 = 0;
+    let remainingSum = totalSum;
+    let remainingLength = 60;
+
+    // 先随机确定3的数量（8到10个）
+    count3 = Math.floor(Math.random() * 3) + 8;
+    
+    // 分配3的值
+    for (let i = 0; i < count3; i++) {
+        sequence.push(3);
+        remainingSum -= 3;
+        remainingLength--;
+    }
+
+    // 剩余的位置用1和2填充
+    while (remainingLength > 0) {
+        // 随机决定下一个是1还是2
+        let nextNum = Math.random() < 0.5 ? 1 : 2;
+        
+        // 检查是否还能放入这个数
+        if (remainingSum - nextNum >= 0 && remainingLength - 1 >= 0) {
+            sequence.push(nextNum);
+            remainingSum -= nextNum;
+            remainingLength--;
+        } else if (remainingSum - 2 >= 0 && remainingLength - 1 >= 0) {
+            sequence.push(2);
+            remainingSum -= 2;
+            remainingLength--;
+        } else {
+            // 如果都放不下，说明前面分配有问题，重新开始
+            return generateSequence(totalSum);
+        }
+    }
+
+    // 检查总和是否正确
+    if (sequence.reduce((a, b) => a + b, 0) !== totalSum) {
+        return generateSequence(totalSum);
+    }
+
+    // 打乱数组顺序（Fisher-Yates洗牌算法）
+    for (let i = sequence.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [sequence[i], sequence[j]] = [sequence[j], sequence[i]];
+    }
+
+    return sequence;
 }
