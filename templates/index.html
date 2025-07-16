@@ -12,6 +12,13 @@
     <div class="controls">
         <button id="reset-btn">重置棋盘</button>
         <button id="toggle-coords-btn">显示/隐藏坐标</button>
+        <button id="replay-btn">回放历史记录</button>
+        <button id="exportBtn">导出本局</button>
+        <div class="file-input">
+            <input type="file" id="importFile" accept=".json">
+        </div>
+        <button id="importBtn">查看回放</button>
+        <div id="importMessage" class="message"></div>
     </div>
     
     <div class="board-container" id="board"></div>

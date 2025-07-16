@@ -526,12 +526,15 @@ function checkAndRemoveHexes() {
 
 function replayHistory(history = history) {
     let index = 0;
+    document.getElementById('selected-info').textContent = "回放模式"
 
-    console.log(history)
     // 初始化棋盘
     initializeGame(1, history);
     let hexes = createBoard({valueSequence: history[0]?.valueSequence})
     let players = history[0]?.players;
+    const player1 = new Player(players[0]?.id, players[0]?.name);
+    const player2 = new Player(players[1]?.id, players[1]?.name);
+    players = [player1, player2]
     players.forEach(player => { player.reset(); })
     let pieces = [];
 
@@ -540,6 +543,7 @@ function replayHistory(history = history) {
     // 开始回放
     function replayNext(){
     if (index < history.length) {
+        updateGameStatus(`第${index}回合`)
         const action = history[index];
         index++;
 
@@ -573,7 +577,7 @@ function replayHistory(history = history) {
         // 延迟一段时间后继续回放下一个操作
         setTimeout(replayNext, 1000);
     } else {
-        console.log("回放结束");
+        document.getElementById('selected-info').textContent = "回放结束"
     }
   }
 }
@@ -633,4 +637,61 @@ function generateSequence(totalSum = 99) {
     }
 
     return sequence;
+}
+// 导出历史记录
+document.getElementById('exportBtn').addEventListener('click', function() {
+    try {
+        const historyJson = JSON.stringify(history, null, 2);
+        const blob = new Blob([historyJson], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'game-history.json';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        
+        showMessage('exportMessage', 'History exported successfully!', 'success');
+    } catch (error) {
+        showMessage('exportMessage', 'Error exporting history: ' + error.message, 'error');
+    }
+});
+// 导入历史记录
+document.getElementById('importBtn').addEventListener('click', function() {
+    const fileInput = document.getElementById('importFile');
+    const file = fileInput.files[0];
+    
+    if (!file) {
+        showMessage('importMessage', 'Please select a file to import', 'error');
+        return;
+    }
+    
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        try {
+            const importedHistory = JSON.parse(e.target.result);
+            history = importedHistory;
+            console.log(history)
+            replayHistory(history)
+            showMessage('importMessage', 'History imported successfully!', 'success');
+            // 这里可以添加其他处理逻辑，比如更新UI等
+        } catch (error) {
+            showMessage('importMessage', 'Error importing history: ' + error.message, 'error');
+        }
+    };
+    reader.readAsText(file);
+});
+// 显示消息
+function showMessage(elementId, message, type) {
+    const messageElement = document.getElementById(elementId);
+    messageElement.textContent = message;
+    messageElement.className = 'message ' + type;
+    messageElement.style.display = 'block';
+    
+    // 3秒后自动隐藏消息
+    setTimeout(() => {
+        messageElement.style.display = 'none';
+    }, 3000);
 }
