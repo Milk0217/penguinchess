@@ -8,33 +8,25 @@ let pieces = [];
 let players = [];
 let history = [];
 const totalValue = 99; // 总分
-
-function newgame(history=[]){
-    hexes = [];
-    pieces = [];
-    players = [];
-    history = history;
-}
-
-const findHex = (hexes, q, r, s) => 
-  hexes.find(hex => hex.q === q && hex.r === r && hex.s === s)
-;
-
-// 放置棋子
+/**
+ * 放置棋子阶段，等待玩家轮流选择三个点放置棋子。
+ * @returns {Promise<void>} 返回一个Promise，等待用户完成放置棋子的操作。
+ */
 async function placePieces() {
-    let selectedCount = 0;
-    let currentPlayer = 1;
-    let selectedPiece = null;
+    let selectedCount = 0; // 记录当前玩家已选择的点数
+    let currentPlayer = 1; // 当前玩家编号（1或2）
+    let selectedPiece = null; // 当前选中的棋子（如果有）
 
+    // 更新游戏状态提示当前玩家选择三个点放置棋子
     updateGameStatus(`请玩家${players[currentPlayer-1].name}选择三个点放置棋子`);
-    updateScore(players)
+    updateScore(players); // 更新分数显示
 
     // 返回一个Promise，等待用户完成放置棋子的操作
     return new Promise((resolve) => {
         const handleClick = (event) => {
             const hex = event.currentTarget;
 
-            // 如果已放置6个棋子，结束放置
+            // 如果已放置6个棋子（每个玩家3个），结束放置阶段
             if (pieces.length>= 6) {
                 resolve(); // 解除Promise阻塞
                 return;
@@ -63,7 +55,9 @@ async function placePieces() {
 
             // 找到对应的hex对象
             const targetHex = findHex(hexes, Number(hex.dataset.q), Number(hex.dataset.r), Number(hex.dataset.s));
+            // 给对应玩家计分,并更新
             players[currentPlayer-1].addScore(targetHex.value)
+            updateScore(players)
 
             // 记录放置棋子的操作
             history.push({
@@ -73,9 +67,8 @@ async function placePieces() {
                 player: players[currentPlayer - 1]
             });
 
+            //放置棋子
             piece.placeToHex(targetHex);
-            updateScore(players)
-
             pieces.push(piece);
 
             // 标记该六边形属于当前玩家
@@ -109,35 +102,34 @@ async function placePieces() {
         });
     });
 }
-
-// 移动棋子
+/**
+ * 执行游戏回合，处理棋子移动和回合逻辑。
+ * @param {number} turnNumber - 当前回合编号。
+ * @returns {Promise<boolean>} - 返回一个Promise，解析为游戏是否结束（true为结束，false为继续）。
+ */
 async function turn(turnNumber) {
     try {
-
         // 检查棋子是否需要移除
         pieces.forEach(piece => {
-            const moves = calculatePossibleMoves(piece);
+            const moves = calculatePossibleMoves(piece); // 计算棋子可能的移动位置
             if (moves.length === 0) {
-                piece.destroySelf();
+                piece.destroySelf(); // 如果没有可移动位置，移除棋子
             }
         });
-        checkAndRemoveHexes()
+        checkAndRemoveHexes(); // 检查并移除无效的格子
 
+        // 检查游戏是否结束
         if (gameovercheck(turnNumber)) {
-            return true;
+            return true; // 游戏结束，返回true
         }
 
-        const currentPlayer = turnNumber % 2 + 1;
-        // 输出当前回合信息
+        const currentPlayer = turnNumber % 2 + 1; // 计算当前玩家编号（1或2）
+        // 更新游戏状态显示
         updateGameStatus(`第${turnNumber+1}回合\n现在是玩家${players[currentPlayer-1].name}操作`);
-        // 高亮当前用户的棋子
-        //添加一个等待框，等待用户操作
         let chosenPiece = null;
         let nextHex = null;
-        // 等待用户选择棋子
         while (!chosenPiece) {
-            // 这里可以添加一些逻辑来等待用户操作，例如使用事件监听器或轮询
-            // 假设我们有一个事件监听器来设置 chosenPiece
+            // 高亮并等待当前用户选择棋子
             highlightCurrentPlayerPieces(currentPlayer, (piece) => {
                 if(chosenPiece === null){
                     chosenPiece = piece;
@@ -156,8 +148,7 @@ async function turn(turnNumber) {
 
         // 等待用户选择目标位置
         while (!nextHex) {
-            // 这里可以添加一些逻辑来等待用户操作
-            // 高亮可移动的目标格子并等待选择
+            // 高亮可移动的目标格子并等待用户选择
             highlightPossibleMoves(chosenPiece, (hex) => {
                 nextHex = hex;
             });
@@ -173,29 +164,28 @@ async function turn(turnNumber) {
             player: players[currentPlayer - 1]
         });
 
-        //移动棋子
-        players[currentPlayer-1].addScore(nextHex.value)
-        chosenPiece.moveToHex(nextHex);
-        updateScore(players)
+        // 执行棋子移动逻辑
+        players[currentPlayer-1].addScore(nextHex.value); // 玩家得分
+        chosenPiece.moveToHex(nextHex); // 移动棋子到目标格子
+        updateScore(players); // 更新并显示玩家得分
 
-        // 移除所有格子的高亮样式
+        // 清理高亮和事件监听器
         hexes.forEach(hex => {
             if (hex.element) {
                 hex.element.classList.remove('highlighted');
                 // 移除之前的点击事件监听器
-                hex.element.removeEventListener('click', hex.onClick);
+                hex.element.removeEventListener('click', hex.onClick); // 移除点击事件监听器
             }
         });
-        return false;
+        return false; // 回合结束，游戏继续
 
     } catch (error) {
         // 捕获并处理可能的错误
         console.error("An error occurred during the turn:",(turnNumber+1), error);
         throw error; // 重新抛出错误，以便外层可以处理
-        return true;
+        return true; // 游戏结束（如果错误导致游戏无法继续）
     }
 }
-
 // 检查游戏是否结束
 function gameovercheck(turnNumber){
     // 检查pieces中所有的piece.element的style.display是否为none，如果为none则是出局
@@ -253,13 +243,10 @@ function gameovercheck(turnNumber){
     // 如果所有玩家都有存活棋子，游戏继续
     return false;
 }
-
 // 游戏结束结算
 function aftergame(){
     console.log("aftergame")
-    
 }
-
 // 初始化棋盘和棋子
 async function initializeGame(type = 0){
     let valueSequence = []
@@ -300,19 +287,15 @@ async function initializeGame(type = 0){
         }
     }
 }
-
 // 初始化棋盘
 window.addEventListener('DOMContentLoaded', () => {
     initializeGame();
 });
-
 // 重置棋盘
 document.getElementById('reset-btn').addEventListener('click', () => {
     initializeGame();
     document.getElementById('selected-info').textContent = '当前未选中任何六边形。';
 });
-
-
 /**
  * 更新游戏状态显示
  * @param {string} message - 要显示的游戏状态消息
@@ -476,7 +459,6 @@ function calculatePossibleMoves(chosenPiece) {
 
   return possibleMoves; // 返回所有可移动的格子
 }
-
 /**
  * 检查并移除不需要的格子
  * 遍历所有棋子，收集它们所在的格子、相邻格子以及相邻格子的相邻格子
@@ -523,121 +505,128 @@ function checkAndRemoveHexes() {
         }
     });
 }
+/**
+ * 回放游戏历史记录，逐步重现棋盘状态和玩家操作。
+ * @param {Array<Object>} history - 游戏历史记录数组，每个元素代表一个回合的操作。
+ * @returns {void}
+ */
+function replayHistory(history) {
+  let index = 0; // 当前回放操作的索引
+  document.getElementById('selected-info').textContent = "回放模式"; // 更新UI显示回放状态
 
-function replayHistory(history = history) {
-    let index = 0;
-    document.getElementById('selected-info').textContent = "回放模式"
+  // 初始化棋盘和游戏状态
+  initializeGame(1, history); // 调用初始化函数，传入游戏模式和初始历史记录
+  let hexes = createBoard({ valueSequence: history[0]?.valueSequence }); // 创建棋盘，使用历史记录中的初始值序列
+  let players = history[0]?.players; // 获取初始玩家信息
+  const player1 = new Player(players[0]?.id, players[0]?.name); // 创建玩家1对象
+  const player2 = new Player(players[1]?.id, players[1]?.name); // 创建玩家2对象
+  players = [player1, player2]; // 将玩家对象存入数组
+  players.forEach(player => player.reset()); // 重置所有玩家的状态
+  let pieces = []; // 初始化棋盘上的棋子列表
 
-    // 初始化棋盘
-    initializeGame(1, history);
-    let hexes = createBoard({valueSequence: history[0]?.valueSequence})
-    let players = history[0]?.players;
-    const player1 = new Player(players[0]?.id, players[0]?.name);
-    const player2 = new Player(players[1]?.id, players[1]?.name);
-    players = [player1, player2]
-    players.forEach(player => { player.reset(); })
-    let pieces = [];
+  replayNext(); // 开始执行回放
 
-    replayNext();
+  // 执行下一个回放操作
+  function replayNext() {
+    if (index < history.length) { // 如果还有未回放的操作
+      updateGameStatus(`第${index + 1}回合`); // 更新游戏状态显示当前回合（注意索引从0开始，显示时+1）
+      const action = history[index]; // 获取当前要回放的操作
+      index++; // 移动到下一个操作
 
-    // 开始回放
-    function replayNext(){
-    if (index < history.length) {
-        updateGameStatus(`第${index}回合`)
-        const action = history[index];
-        index++;
+      if (action.type === 'place') {
+        // 处理放置棋子的操作
+        const piece = createPiece(action.pieceId); // 创建棋子对象
+        const targetHex = findHex(hexes, action.hex.q, action.hex.r, action.hex.s); // 找到目标格子
+        players[action.player.id - 1].addScore(targetHex.value); // 玩家得分（假设玩家ID从1开始）
+        piece.placeToHex(targetHex); // 将棋子放置到目标格子
+        pieces.push(piece); // 将棋子添加到棋盘上的棋子列表
+      } else if (action.type === 'move') {
+        // 处理移动棋子的操作
+        const piece = pieces.find(p => p.id === action.pieceId); // 找到要移动的棋子
+        const fromHex = findHex(hexes, action.fromHex.q, action.fromHex.r, action.fromHex.s); // 找到起始格子
+        const toHex = findHex(hexes, action.toHex.q, action.toHex.r, action.toHex.s); // 找到目标格子
+        players[action.player.id - 1].addScore(toHex.value); // 玩家得分（移动到新格子可能得分）
+        piece.moveToHex(toHex); // 将棋子移动到目标格子
+        updateScore(players); // 更新并显示玩家得分
+      }
 
-        if (action.type === 'place') {
-            // 模拟放置棋子的操作
-            const piece = createPiece(action.pieceId);
-            const targetHex = findHex(hexes, action.hex.q, action.hex.r, action.hex.s);
-            players[action.player.id - 1].addScore(targetHex.value)
-            piece.placeToHex(targetHex);
-            pieces.push(piece)
-            updateScore(players);
-        } else if (action.type === 'move') {
-            // 模拟移动棋子的操作
-            const piece = pieces.find(p => p.id === action.pieceId);
-            const fromHex = findHex(hexes, action.fromHex.q, action.fromHex.r, action.fromHex.s);
-            const toHex = findHex(hexes, action.toHex.q, action.toHex.r, action.toHex.s);
-            players[action.player.id - 1].addScore(toHex.value)
-            piece.moveToHex(toHex);
-            updateScore(players);
+      // 移除所有格子的高亮样式
+      hexes.forEach(hex => {
+        if (hex.element) {
+          hex.element.classList.remove('highlighted');
+          // 移除之前的点击事件监听器
+          hex.element.removeEventListener('click', hex.onClick);
         }
+      });
 
-        // 移除所有格子的高亮样式
-        hexes.forEach(hex => {
-            if (hex.element) {
-                hex.element.classList.remove('highlighted');
-                // 移除之前的点击事件监听器
-                hex.element.removeEventListener('click', hex.onClick);
-            }
-        });
-
-        // 延迟一段时间后继续回放下一个操作
-        setTimeout(replayNext, 1000);
+      // 延迟一段时间后继续回放下一个操作
+      setTimeout(replayNext, 1000);
     } else {
-        document.getElementById('selected-info').textContent = "回放结束"
+      // 所有操作回放完毕
+      document.getElementById('selected-info').textContent = "回放结束"; // 更新UI显示回放结束
     }
   }
 }
-
-// 添加回放按钮的事件监听器
-document.getElementById('replay-btn').addEventListener('click', function(){
-    replayHistory(history);
-});
-
-
-// 随机生成数列
+/**
+ * 随机生成一个数列，该数列的总和为指定值，并包含特定数量的3。
+ * @param {number} totalSum - 目标数列的总和，默认为99。
+ * @returns {Array<number>} 生成的随机数列。
+ */
 function generateSequence(totalSum = 99) {
-    let sequence = [];
-    let count3 = 0;
-    let remainingSum = totalSum;
-    let remainingLength = 60;
+    let sequence = []; // 存储最终生成的数列
+    let count3 = 0; // 记录数字3在数列中的数量
+    let remainingSum = totalSum; // 剩余需要分配的总和
+    let remainingLength = 60; // 剩余需要填充的数组位置数量
 
-    // 先随机确定3的数量（8到10个）
+    // 先随机确定3的数量（范围在8到10个之间）
     count3 = Math.floor(Math.random() * 3) + 8;
     
-    // 分配3的值
+    // 分配确定的3的值到数列中
     for (let i = 0; i < count3; i++) {
-        sequence.push(3);
-        remainingSum -= 3;
-        remainingLength--;
+        sequence.push(3); // 将数字3添加到数列末尾
+        remainingSum -= 3; // 从剩余总和中减去3
+        remainingLength--; // 减少剩余需要填充的位置计数
     }
 
-    // 剩余的位置用1和2填充
+    // 用1和2填充剩余的位置，直到数组长度达到60
     while (remainingLength > 0) {
-        // 随机决定下一个是1还是2
+        // 随机决定下一个要添加的数字是1还是2
         let nextNum = Math.random() < 0.5 ? 1 : 2;
         
-        // 检查是否还能放入这个数
+        // 检查当前剩余总和和剩余长度是否允许放入这个随机数字
         if (remainingSum - nextNum >= 0 && remainingLength - 1 >= 0) {
-            sequence.push(nextNum);
-            remainingSum -= nextNum;
-            remainingLength--;
+            sequence.push(nextNum); // 将数字添加到数列
+            remainingSum -= nextNum; // 更新剩余总和
+            remainingLength--; // 更新剩余长度
         } else if (remainingSum - 2 >= 0 && remainingLength - 1 >= 0) {
+            // 如果1放不下，尝试放入2
             sequence.push(2);
             remainingSum -= 2;
             remainingLength--;
         } else {
-            // 如果都放不下，说明前面分配有问题，重新开始
+            // 如果1和2都放不下，说明之前的分配导致无法完成，需要重新生成
             return generateSequence(totalSum);
         }
     }
 
-    // 检查总和是否正确
+    // 验证生成的数列总和是否与目标总和一致
     if (sequence.reduce((a, b) => a + b, 0) !== totalSum) {
+        // 如果不一致，递归调用自身重新生成
         return generateSequence(totalSum);
     }
 
-    // 打乱数组顺序（Fisher-Yates洗牌算法）
+    // 使用Fisher-Yates洗牌算法打乱数列的顺序，增加随机性
     for (let i = sequence.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [sequence[i], sequence[j]] = [sequence[j], sequence[i]];
+        const j = Math.floor(Math.random() * (i + 1)); // 随机选择一个索引
+        [sequence[i], sequence[j]] = [sequence[j], sequence[i]]; // 交换当前元素与随机选择元素的位置
     }
 
-    return sequence;
+    return sequence; // 返回最终生成的随机数列
 }
+// 添加回放按钮的事件
+document.getElementById('replay-btn').addEventListener('click', function(){
+    replayHistory(history);
+});
 // 导出历史记录
 document.getElementById('exportBtn').addEventListener('click', function() {
     try {
@@ -695,3 +684,7 @@ function showMessage(elementId, message, type) {
         messageElement.style.display = 'none';
     }, 3000);
 }
+// 用于在hexes中根据(q,r,s)坐标查找指定的hex
+const findHex = (hexes, q, r, s) => 
+  hexes.find(hex => hex.q === q && hex.r === r && hex.s === s)
+;
