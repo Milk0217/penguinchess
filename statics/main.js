@@ -186,13 +186,19 @@ async function turn(turnNumber) {
         return true; // 游戏结束（如果错误导致游戏无法继续）
     }
 }
-// 检查游戏是否结束
-function gameovercheck(turnNumber){
-    // 检查pieces中所有的piece.element的style.display是否为none，如果为none则是出局
+/**
+ * 检查游戏是否结束。
+ * 通过统计双方存活棋子的数量来判断游戏是否结束。
+ * 如果一方所有棋子出局（display='none'），则游戏结束，并处理得分和更新hex状态。
+ * @param {number} turnNumber - 当前回合数，用于调试或日志记录。
+ * @returns {boolean} - 返回true表示游戏结束，false表示游戏继续。
+ */
+function gameovercheck(turnNumber) {
+    // 检查pieces中所有的piece.element的style.display是否为'none'，如果为'none'则是出局
     // 如果有一方的棋子全部出局，则游戏结束
 
     // 统计各方的存活棋子数量
-    const aliveCounts = {0:0, 1:0};
+    const aliveCounts = { 0: 0, 1: 0 };
 
     // 遍历所有棋子，统计存活数量
     pieces.forEach(piece => {
@@ -236,7 +242,6 @@ function gameovercheck(turnNumber){
                 hex.updateStatus(-1);
             }
         }
-        
         return true;
     }
 
@@ -247,53 +252,76 @@ function gameovercheck(turnNumber){
 function aftergame(){
     console.log("aftergame")
 }
-// 初始化棋盘和棋子
-async function initializeGame(type = 0){
-    let valueSequence = []
-    if (type === 0) {
-        valueSequence = generateSequence(totalValue); // 生成值数组
-        hexes = createBoard({valueSequence: valueSequence})
-        const player1 = new Player(1, "Milky");
-        const player2 = new Player(2, "test");
-        players = [player1, player2];
+/**
+ * 初始化游戏棋盘和棋子。
+ * 根据指定的类型初始化游戏状态，包括棋盘布局、玩家信息和游戏历史记录。
+ * 如果类型为0，则生成值数组并创建棋盘，初始化玩家，并记录游戏历史。
+ * 然后等待棋子放置完成，并开始游戏回合循环。
+ * @param {number} [type=0] - 游戏初始化类型，默认为0。
+ * @returns {Promise<void>} - 返回一个Promise，表示初始化过程完成。
+ */
+async function initializeGame(type = 0) {
+  let valueSequence = [];
+  if (type === 0) {
+    // 生成值数组
+    valueSequence = generateSequence(totalValue);
+    
+    // 创建棋盘布局
+    hexes = createBoard({ valueSequence: valueSequence });
+    
+    // 初始化玩家
+    const player1 = new Player(1, "Milky");
+    const player2 = new Player(2, "test");
+    players = [player1, player2];
 
-        history.push({
-            type: "initialize",
-            valueSequence: valueSequence,
-            players: players,
-        });
+    // 记录游戏历史
+    history.push({
+      type: "initialize",
+      valueSequence: valueSequence,
+      players: players,
+    });
+  }
+
+  // 等待棋子放置完成
+  await placePieces();
+
+  let turnNumber = 0;
+  while (true) {
+    try {
+      // 执行游戏回合
+      const isGameOver = await turn(turnNumber);
+
+      // 如果 turn 返回 true，表示游戏结束，退出循环
+      if (isGameOver) {
+        console.log("游戏结束");
+        updateGameStatus("游戏结束");
+        aftergame();
+        break; // 退出 while 循环
+      }
+
+      turnNumber++;
+    } catch (error) {
+      console.error("An error occurred during the game:", error);
+      break;
     }
-
-    // 等待棋子放置完成
-    await placePieces();
-
-    let turnNumber = 0;
-    while (true) {
-        try {
-            const isGameOver = await turn(turnNumber);
-
-            // 如果 turn 返回 true，表示游戏结束，退出循环
-            if (isGameOver) {
-                console.log("游戏结束");
-                updateGameStatus("游戏结束");
-                aftergame();
-                break; // 退出 while 循环
-            }
-            
-            turnNumber++;
-        } catch (error) {
-            console.error("An error occurred during the game:", error);
-            break;
-        }
-    }
+  }
 }
-// 初始化棋盘
+/**
+ * 在页面加载完成后初始化游戏棋盘。
+ * 当DOM内容完全加载后，调用initializeGame函数来设置游戏状态和棋盘布局。
+ */
 window.addEventListener('DOMContentLoaded', () => {
     initializeGame();
 });
-// 重置棋盘
+/**
+ * 处理重置按钮的点击事件。
+ * 重置游戏状态，初始化棋盘，并更新选中信息显示。
+ */
 document.getElementById('reset-btn').addEventListener('click', () => {
+    // 调用初始化函数重置游戏状态和棋盘
     initializeGame();
+    
+    // 重置选中信息显示
     document.getElementById('selected-info').textContent = '当前未选中任何六边形。';
 });
 /**
@@ -627,52 +655,96 @@ function generateSequence(totalSum = 99) {
 document.getElementById('replay-btn').addEventListener('click', function(){
     replayHistory(history);
 });
-// 导出历史记录
+/**
+ * 处理导出历史记录的点击事件。
+ * 将当前游戏历史记录转换为JSON格式并创建可下载的文件。
+ * 成功导出后显示成功消息，失败则显示错误信息。
+ */
 document.getElementById('exportBtn').addEventListener('click', function() {
     try {
+        // 将历史记录对象转换为格式化的JSON字符串
         const historyJson = JSON.stringify(history, null, 2);
+        
+        // 创建包含JSON数据的Blob对象
         const blob = new Blob([historyJson], { type: 'application/json' });
+        
+        // 为Blob创建一个临时URL
         const url = URL.createObjectURL(blob);
         
+        // 创建一个临时的<a>元素用于触发下载
         const a = document.createElement('a');
         a.href = url;
-        a.download = 'game-history.json';
+        a.download = 'game-history.json'; // 设置下载文件名
+        
+        // 将<a>元素添加到文档中并触发点击事件
         document.body.appendChild(a);
         a.click();
+        
+        // 清理临时元素和URL
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
         
+        // 显示成功消息
         showMessage('exportMessage', 'History exported successfully!', 'success');
     } catch (error) {
+        // 捕获并处理可能的错误，显示错误消息
         showMessage('exportMessage', 'Error exporting history: ' + error.message, 'error');
     }
 });
-// 导入历史记录
+/**
+ * 处理导入历史记录的点击事件。
+ * 当用户点击导入按钮时，读取选择的文件并解析其中的历史记录数据。
+ * 成功导入后更新全局历史记录并重放历史，失败则显示错误信息。
+ */
 document.getElementById('importBtn').addEventListener('click', function() {
+    // 获取文件输入元素和选中的文件
     const fileInput = document.getElementById('importFile');
     const file = fileInput.files[0];
     
+    // 如果没有选择文件，显示错误消息并返回
     if (!file) {
         showMessage('importMessage', 'Please select a file to import', 'error');
         return;
     }
     
+    // 创建FileReader对象用于读取文件内容
     const reader = new FileReader();
+    
+    // 设置文件读取完成后的回调函数
     reader.onload = function(e) {
         try {
+            // 尝试解析JSON格式的文件内容
             const importedHistory = JSON.parse(e.target.result);
+            
+            // 更新全局历史记录
             history = importedHistory;
-            console.log(history)
-            replayHistory(history)
+            
+            // 在控制台输出导入的历史记录（用于调试）
+            console.log(history);
+            
+            // 重放导入的历史记录
+            replayHistory(history);
+            
+            // 显示成功消息
             showMessage('importMessage', 'History imported successfully!', 'success');
+            
             // 这里可以添加其他处理逻辑，比如更新UI等
         } catch (error) {
+            // 如果解析失败，显示错误消息
             showMessage('importMessage', 'Error importing history: ' + error.message, 'error');
         }
     };
+    
+    // 开始读取文件内容
     reader.readAsText(file);
 });
-// 显示消息
+/**
+ * 在指定元素中显示消息，并设置消息类型和自动隐藏功能。
+ * @param {string} elementId - 要显示消息的DOM元素ID。
+ * @param {string} message - 要显示的消息内容。
+ * @param {string} type - 消息类型，用于设置CSS类名。
+ * @returns {void} 该函数不返回任何值。
+ */
 function showMessage(elementId, message, type) {
     const messageElement = document.getElementById(elementId);
     messageElement.textContent = message;
@@ -684,7 +756,14 @@ function showMessage(elementId, message, type) {
         messageElement.style.display = 'none';
     }, 3000);
 }
-// 用于在hexes中根据(q,r,s)坐标查找指定的hex
+/**
+ * 在hexes数组中查找指定坐标的六边形
+ * @param {Array} hexes - 六边形数组，每个元素应包含q, r, s属性
+ * @param {number} q - 六边形的q坐标
+ * @param {number} r - 六边形的r坐标
+ * @param {number} s - 六边形的s坐标
+ * @returns {Object|null} 返回找到的六边形对象，未找到时返回undefined
+ */
 const findHex = (hexes, q, r, s) => 
   hexes.find(hex => hex.q === q && hex.r === r && hex.s === s)
 ;
