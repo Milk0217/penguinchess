@@ -1,0 +1,38 @@
+   penguinChess
+ ├╴  penguinChess
+ ├╴  statics
+ │ ├╴  board.js
+ │ ├╴  main.js
+ │ ├╴  piece.js
+ │ └╴  style.css
+ ├╴  templates
+ │ └╴  index.html
+ ├╴  README.md
+ ├╴  main.py
+ ├╴  pyproject.toml
+ └╴  uv.lock
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
