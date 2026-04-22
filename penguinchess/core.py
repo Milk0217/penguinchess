@@ -217,7 +217,8 @@ class PenguinChessCore:
         self._terminated: bool = False
 
         # 内部状态
-        self._hex_map: dict = {}  # (q,r,s) → Hex，快速查找
+        self._hex_map: dict = {}      # (q,r,s) → Hex，快速查找
+        self._occupied_set: set = set()  # 已占据格子的 Hex 对象集合，O(1) 查询
 
     # -------------------------------------------------------------------------
     # 公共 API（与 Gymnasium 接口对齐）
@@ -246,6 +247,7 @@ class PenguinChessCore:
         self._placement_count = 0
         self._episode_steps = 0
         self._terminated = False
+        self._rebuild_occupied()
 
     def get_legal_actions(self) -> List[int]:
         """
@@ -425,6 +427,7 @@ class PenguinChessCore:
         self.players_scores[self.current_player] += score
         hex_obj.value = 0  # 被占据
 
+        self._rebuild_occupied()  # 更新占据集合缓存
         self._placement_count += 1
 
         # 6 个棋子放完，进入移动阶段
@@ -447,8 +450,9 @@ class PenguinChessCore:
         """
         info = {}
 
-        # 找到己方能移动到 target_hex 的棋子
+        # 找到己方能移动到 target_hex 的棋子，同时获取其合法移动集合
         piece = None
+        piece_moves = None
         for p in self.pieces:
             if not p.alive or p.hex is None:
                 continue
@@ -458,14 +462,14 @@ class PenguinChessCore:
             moves = self._get_piece_moves(p)
             if target_hex in moves:
                 piece = p
+                piece_moves = moves
                 break
 
         if piece is None:
             # 无合法移动
             return -0.5, info
 
-        moves = self._get_piece_moves(piece)
-        if not moves:
+        if not piece_moves:
             if not dry_run:
                 self._destroy_piece(piece)
             return -1.0, info
@@ -482,6 +486,8 @@ class PenguinChessCore:
             target_hex.value = 0
             piece.hex_value = old_hex_value
             piece.hex = None
+
+            self._rebuild_occupied()  # 更新占据集合缓存
 
         reward = float(score_gain) / TOTAL_VALUE
         return reward, info
@@ -633,8 +639,12 @@ class PenguinChessCore:
         return hex_obj.value >= 0  # value > 0（活跃）或 == 0（被占据但可作为选择）
 
     def _hex_occupied(self, hex_obj: Hex) -> bool:
-        """格子上是否有棋子。"""
-        return any(p.alive and p.hex is hex_obj for p in self.pieces)
+        """格子上是否有棋子。O(1) 查询。"""
+        return hex_obj in self._occupied_set
+
+    def _rebuild_occupied(self) -> None:
+        """重建占据格子集合。从棋子状态重建，O(pieces)。"""
+        self._occupied_set = {p.hex for p in self.pieces if p.alive and p.hex is not None}
 
     def _hex_has_player_piece(self, hex_obj: Hex, player_idx: int) -> bool:
         """格子上是否有指定玩家的棋子。"""
