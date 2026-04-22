@@ -184,68 +184,65 @@ async function turn(turnNumber) {
     }
 }
 /**
- * 检查游戏是否结束。
- * 通过统计双方存活棋子的数量来判断游戏是否结束。
- * 如果一方所有棋子出局（display='none'），则游戏结束，并处理得分和更新hex状态。
- * @returns {boolean} - 返回true表示游戏结束，false表示游戏继续。
+ * 游戏结束检查。
+ * 触发条件：所有格子都被消除（平局）或某方棋子全部被移除。
+ * 幸存玩家获得所有剩余格子分值后，胜负由分数决定。
+ * @returns {boolean} 游戏结束返回 true，否则返回 false。
  */
 function gameovercheck() {
-    // 检查pieces中所有的piece.element的style.display是否为'none'，如果为'none'则是出局
-    // 如果有一方的棋子全部出局，则游戏结束
-
-    // 统计各方的存活棋子数量
+    // 统计各方存活棋子数量
     const aliveCounts = { 0: 0, 1: 0 };
 
-    // 遍历所有棋子，统计存活数量
     pieces.forEach(piece => {
         if (!piece.element || !piece.element.style) {
             console.warn('棋子元素无效，跳过统计');
             return;
         }
-
-        // 如果棋子可见（display !== 'none'），则统计其所属方
-        // 玩家1: id=4,6,8  → Math.floor(id/2)%2 = 0
-        // 玩家2: id=5,7,9  → Math.floor(id/2)%2 = 1
         if (piece.element.style.display !== 'none') {
+            // 玩家归属: id=4,6,8 → playerIndex=0, id=5,7,9 → playerIndex=1
             const playerIndex = Math.floor(piece.id / 2) % 2;
-            aliveCounts[playerIndex] = (aliveCounts[playerIndex] || 0) + 1;
+            aliveCounts[playerIndex]++;
         }
     });
 
-    // 检查是否有玩家的棋子全部出局（存活数量为0）
-    let survivingPlayerIndex = null;
-    for (const idx in aliveCounts) {
-        if (aliveCounts[idx] > 0) {
-            if (survivingPlayerIndex === null) {
-                survivingPlayerIndex = idx;
-            } else {
-                // 如果有多个玩家存活，则直接返回 false
-                return false;
-            }
-        }
+    const p1Alive = aliveCounts[0] > 0;
+    const p2Alive = aliveCounts[1] > 0;
+
+    // 双方都无棋子 → 平局，游戏结束
+    if (!p1Alive && !p2Alive) {
+        return true;
     }
 
-    // 如果只有一个玩家存活，则处理得分和更新 hex 状态
-    if (survivingPlayerIndex !== null) {
-        document.getElementById('selected-info').textContent = `玩家 ${players[survivingPlayerIndex].name} 是唯一存活的玩家，游戏结束`;
-        
-        // 遍历所有 hex，更新得分和状态
-        for (const hex of hexes) {
+    // 一方棋子全部被移除 → 游戏结束，幸存者获得所有剩余格子
+    if (!p1Alive || !p2Alive) {
+        const survivorIndex = !p1Alive ? 1 : 0;
+        let totalRemaining = 0;
+
+        hexes.forEach(hex => {
             if (hex.value > 0) {
-                players[survivingPlayerIndex].addScore(hex.value);
-                updateScore(players);
+                totalRemaining += hex.value;
                 hex.updateStatus(-1);
             }
+        });
+
+        if (totalRemaining > 0) {
+            players[survivorIndex].addScore(totalRemaining);
         }
         return true;
     }
 
-    // 如果所有玩家都有存活棋子，游戏继续
+    // 检查是否所有活跃格子都已被消除（双方都有棋子但无路可走 → 平局）
+    const hasActiveHex = hexes.some(hex => hex.value > 0);
+    if (!hasActiveHex) {
+        return true;
+    }
+
     return false;
 }
+
 /**
  * 游戏结束结算。
- * 显示最终得分、胜者公告，并提供重开选项。
+ * 胜负规则：比较双方最终得分，分数高者获胜，分数相同则为平局。
  */
 function aftergame() {
     const p1 = players[0];
@@ -253,9 +250,9 @@ function aftergame() {
 
     let resultText;
     if (p1.score > p2.score) {
-        resultText = `🏆 玩家 ${p1.name} 获胜！`;
+        resultText = `🏆 ${p1.name} 获胜！`;
     } else if (p2.score > p1.score) {
-        resultText = `🏆 玩家 ${p2.name} 获胜！`;
+        resultText = `🏆 ${p2.name} 获胜！`;
     } else {
         resultText = `⚖️ 平局！`;
     }
