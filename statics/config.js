@@ -30,6 +30,15 @@ export const CONFIG = {
   REPLAY_DELAY_MS: 1000,   // 回放每步延迟(ms)
   POLL_INTERVAL_MS: 100,    // 轮询间隔(ms)
 
+  // ============== 游戏阶段 ==============
+  PHASE_PLACEMENT: 'placement',
+  PHASE_MOVEMENT: 'movement',
+
+  // ============== 动作编码 ==============
+  // 动作空间大小 = 60 个格子（Discrete 空间）
+  // 动作 ID 映射: actionId 0-59 → hexes[actionId]
+  ACTION_SPACE_SIZE: 60,
+
   // ============== 服务器 ==============
   SERVER_PORT: 8080,
 };

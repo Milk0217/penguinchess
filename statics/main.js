@@ -15,7 +15,6 @@ let history = [];
 async function placePieces() {
     let selectedCount = 0; // 记录当前玩家已选择的点数
     let currentPlayer = 1; // 当前玩家编号（1或2）
-    let selectedPiece = null; // 当前选中的棋子（如果有）
 
     // 更新游戏状态提示当前玩家选择三个点放置棋子
     updateGameStatus(`请玩家${players[currentPlayer-1].name}选择三个点放置棋子`);
@@ -34,7 +33,6 @@ async function placePieces() {
 
             // 如果六边形已有棋子且是当前玩家的棋子，则选中该棋子
             if (hex.dataset.player && parseInt(hex.dataset.player) === currentPlayer) {
-                selectedPiece = hex.dataset.pieceValue;
                 hex.classList.add('selected');
                 return;
             }
@@ -380,9 +378,11 @@ function highlightCurrentPlayerPieces(currentPlayer, setChosenPiece) {
     });
 
     // 高亮当前玩家的棋子
+    // 玩家归属: id=4,6,8 → playerIndex=0 (Player1), id=5,7,9 → playerIndex=1 (Player2)
+    // 与 gameovercheck() 保持一致，使用 Math.floor(id/2)%2
+    const playerIndex = currentPlayer - 1;
     const playerPieces = pieces.filter(piece => {
-        // 棋子的ID可以区分玩家（奇数是玩家2，偶数是玩家1）
-        return currentPlayer === 1 ? piece.id % 2 === 0 : piece.id % 2 === 1;
+        return Math.floor(piece.id / 2) % 2 === playerIndex;
     });
 
     playerPieces.forEach(piece => {
@@ -468,26 +468,33 @@ function calculatePossibleMoves(chosenPiece) {
   possibleMoves = possibleMoves.filter(targetHex => {
       const dq = targetHex.q - q; // 目标格子 q 坐标与当前格子的差值
       const dr = targetHex.r - r; // 目标格子 r 坐标与当前格子的差值
+      const ds = targetHex.s - s; // 目标格子 s 坐标与当前格子的差值（用于s轴移动）
 
-      const steps = Math.max(Math.abs(dq), Math.abs(dr)); // 计算移动的步数
+      const steps = Math.max(Math.abs(dq), Math.abs(dr), Math.abs(ds)); // 计算移动的步数
 
       const signDq = Math.sign(dq); // q 方向的移动方向（1, 0, -1）
       const signDr = Math.sign(dr); // r 方向的移动方向（1, 0, -1）
+      const signDs = Math.sign(ds); // s 方向的移动方向（1, 0, -1）
 
       // 检查每一步的中间格子是否被阻挡
       for (let i = 1; i < steps; i++) {
+          // 立方体坐标约束 q + r + s = 0，移动时只沿一个轴变化
+          // q轴移动: dr=0, ds=0; r轴移动: dq=0, ds=0; s轴移动: dq=0, dr=0
           const intermediateHex = {
-              q: q + signDq * i, // 计算中间格子的 q 坐标
-              r: r + signDr * i, // 计算中间格子的 r 坐标
+              q: q + signDq * i,
+              r: r + signDr * i,
+              s: s + signDs * i,
           };
-      
+
         // 检查中间格子是否被棋子或空的格子占据
-        const isBlocked = pieces.some(piece => 
-            piece.hex.q === intermediateHex.q && 
-            piece.hex.r === intermediateHex.r
-        ) || hexes.some(hex => 
-            hex.q === intermediateHex.q && 
-            hex.r === intermediateHex.r && 
+        const isBlocked = pieces.some(piece =>
+            piece.hex.q === intermediateHex.q &&
+            piece.hex.r === intermediateHex.r &&
+            piece.hex.s === intermediateHex.s
+        ) || hexes.some(hex =>
+            hex.q === intermediateHex.q &&
+            hex.r === intermediateHex.r &&
+            hex.s === intermediateHex.s &&
             hex.value < 0
         );
 
@@ -780,13 +787,47 @@ function showMessage(elementId, message, type) {
     }, 3000);
 }
 /**
- * 在hexes数组中查找指定坐标的六边形
+ * 将格子对象转换为动作 ID（格子在 hexes 数组中的索引）
+ * @param {Object} hex - 六边形格子对象
+ * @returns {number|null} 动作 ID，未找到返回 null
+ */
+function hexToActionId(hex) {
+    const idx = hexes.indexOf(hex);
+    return idx >= 0 ? idx : null;
+}
+
+/**
+ * 将动作 ID 转换为格子对象
+ * @param {number} actionId - 动作 ID（hexes 数组索引）
+ * @returns {Object|null} 六边形格子对象，越界返回 null
+ */
+function actionIdToHex(actionId) {
+    return actionId >= 0 && actionId < hexes.length ? hexes[actionId] : null;
+}
+
+/**
+ * 获取当前所有合法动作的 ID 列表
+ * 用于 RL 智能体过滤无效动作
+ * @returns {Array<number>} 合法的动作 ID 数组
+ */
+function getLegalActionIds() {
+    const ids = [];
+    for (let i = 0; i < hexes.length; i++) {
+        if (hexes[i].value > 0 && !pieces.some(p => p.hex === hexes[i])) {
+            ids.push(i);
+        }
+    }
+    return ids;
+}
+
+/**
+ * 在 hexes 数组中查找指定坐标的六边形
  * @param {Array} hexes - 六边形数组，每个元素应包含q, r, s属性
  * @param {number} q - 六边形的q坐标
  * @param {number} r - 六边形的r坐标
  * @param {number} s - 六边形的s坐标
  * @returns {Object|null} 返回找到的六边形对象，未找到时返回undefined
  */
-const findHex = (hexes, q, r, s) => 
+const findHex = (hexes, q, r, s) =>
   hexes.find(hex => hex.q === q && hex.r === r && hex.s === s)
 ;
