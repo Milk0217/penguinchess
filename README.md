@@ -4,39 +4,39 @@
 
 ## 项目目标
 
-本项目有两个核心方向：
+### 目标 1：高性能游戏引擎（Rust）
 
-### 目标 1：Gymnasium 标准强化学习环境
+用 Rust 实现游戏核心逻辑，提供极低延迟（<1ms）的游戏推理性能，支持高并发（>10000 连接）。
 
-构建严格遵循 [Gymnasium](https://gymnasium.farama.org/)（强化学习标准接口）规范的企鹅棋环境，使 AI 智能体可以通过标准 RL 接口与游戏交互：
+详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+
+### 目标 2：强化学习研究与训练（Python）
+
+构建基于 [Gymnasium](https://gymnasium.farama.org/) 标准的企鹅棋环境，训练能在游戏中达到高胜率的 RL 智能体。
 
 ```python
 import gymnasium as gym
 from penguinchess.env import PenguinChessEnv
 
 env = gym.make("PenguinChess-v0")
-observation, info = env.reset()
+obs, info = env.reset()
 
 while not terminated and not truncated:
-    action = your_agent.select_action(observation)   # 智能体决策
-    observation, reward, terminated, truncated, info = env.step(action)
+    action = your_agent.select_action(obs)
+    obs, reward, terminated, truncated, info = env.step(action)
 
 env.close()
 ```
 
-### 目标 2：企鹅棋强 AI 训练
+### 目标 3：人机对战 Web 界面（React + Flask）
 
-基于目标 1 构建的 Gymnasium 环境，训练能在企鹅棋中达到高胜率的强化学习智能体：
-
-- 使用 PPO、SAC、AlphaZero 等算法训练
-- 支持 self-play 自对弈训练
-- 提供训练可视化与胜率评估工具
+提供直观的浏览器对战界面，人类玩家对抗 AI 智能体。
 
 ---
 
 ## 游戏规则
 
-详细规则请参阅 [docs/RULES.md](docs/RULES.md)（权威规则文档）。
+详细规则请参阅 [docs/RULES.md](docs/RULES.md)。
 
 ### 快速概览
 
@@ -50,19 +50,30 @@ env.close()
 
 ## 快速开始
 
-### Web 对战（人类对战）
+### 启动 Web 对战（当前 Python 后端）
 
 ```bash
 cd /mnt/e/programming/penguinchess
-uv run main.py
+source .venv/bin/activate
+python server/app.py
 # 访问 http://localhost:8080
 ```
 
-### Gymnasium 环境（AI 对战）
+### 启动开发前端（Vite 热重载）
+
+```bash
+cd frontend
+npm install
+npm run dev
+# 访问 http://localhost:5173
+```
+
+### Gymnasium 环境（AI 训练）
 
 ```bash
 cd /mnt/e/programming/penguinchess
-uv run python -c "
+source .venv/bin/activate
+python -c "
 import gymnasium as gym
 from penguinchess.env import PenguinChessEnv
 
@@ -74,11 +85,12 @@ env.close()
 "
 ```
 
-### 训练示例
+### 运行测试
 
 ```bash
 cd /mnt/e/programming/penguinchess
-uv run python examples/train_ppo.py
+source .venv/bin/activate
+pytest tests/ -q
 ```
 
 ---
@@ -87,48 +99,42 @@ uv run python examples/train_ppo.py
 
 ```
 penguinchess/
-├── main.py                     # Flask 入口（Web 界面）
-├── pyproject.toml              # Python 项目配置 + 依赖
-├── templates/
-│   └── index.html              # Web 对战前端 HTML
-├── statics/                     # Web 前端静态资源
-│   ├── main.js                 # 游戏主逻辑（Web 版）
-│   ├── board.js                # 棋盘类（Hex）
-│   ├── piece.js                # 棋子类
-│   ├── player.js               # 玩家类
-│   ├── config.js               # 全局配置常量
-│   └── style.css               # 样式
-└── penguinchess/               # RL 环境模块（待实现）
-    ├── __init__.py
-    ├── env.py                  # Gymnasium 环境（待实现）
-    ├── wrapped.py              # 包装器（待实现）
-    └── models/                 # 训练模型（待实现）
-        └── ppo.py
+├── server/                     # Flask HTTP 服务层（当前）
+│   ├── app.py                 # 路由、会话管理、静态托管
+│   └── game.py                # Game 会话封装
+│
+├── penguinchess/               # Python 游戏核心
+│   ├── core.py               # PenguinChessCore（棋盘/棋子/规则）
+│   ├── env.py                # Gymnasium 环境（AI 训练接口）
+│   ├── reward.py             # 奖励函数
+│   ├── spaces.py             # Action / Observation Space
+│   └── random_ai.py          # 随机 AI 基准
+│
+├── statics/                    # 原始前端（Vanilla JS）
+│
+├── frontend/                   # React 前端（开发中）
+│   └── src/
+│       ├── App.tsx           # 主应用状态机
+│       ├── Board.tsx         # 六边形棋盘渲染
+│       └── api.ts            # 后端 API 客户端
+│
+└── docs/
+    ├── RULES.md              # 游戏规则（权威文档）
+    └── ARCHITECTURE.md       # 架构设计与演进路线
 ```
 
----
-
-## 开发路线
-
-| 阶段 | 内容 | 状态 |
-|------|------|------|
-| **Phase 0** | Web 对战基础游戏（当前） | 进行中 |
-| **Phase 1** | Gymnasium 环境核心（`env.py`） | 待开始 |
-| **Phase 2** | Gymnasium 包装器（reward shaping 等） | 待开始 |
-| **Phase 3** | 基础 RL 训练 pipeline | 待开始 |
-| **Phase 4** | Self-play 训练框架 | 待开始 |
-| **Phase 5** | 评估与可视化工具 | 待开始 |
-
-详细说明见 [AGENTS.md](./AGENTS.md)。
+详细架构说明见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
 ---
 
 ## 技术栈
 
-- **Web 前端**: Vanilla JavaScript / CSS（无框架）
-- **Web 后端**: Python 3.11+ / Flask / uv
-- **RL 环境**: Python / Gymnasium
-- **RL 训练**: PyTorch / Stable-Baselines3 / tianshou
+| 层级 | 当前 | 未来 |
+|------|------|------|
+| 游戏核心 | Python | Rust |
+| HTTP 框架 | Flask | Axum / Actix-web |
+| 前端 | React + TypeScript | React + TypeScript |
+| AI 训练 | Python Gymnasium + PyTorch | Python Gymnasium + PyTorch |
 
 ---
 
