@@ -315,11 +315,38 @@ class PenguinChessCore:
 
         self._check_game_over()
 
-        # 玩家切换：任一玩家放满 3 个时跳过切换 → 放满者先进入移动阶段
+        # 玩家切换：放置阶段严格交替，双方都放满后才进入移动阶段
         if not self._terminated:
-            P0_placed = sum(1 for p in self.pieces if self._piece_owner(p) == 0 and p.hex)
-            P1_placed = sum(1 for p in self.pieces if self._piece_owner(p) == 1 and p.hex)
-            if not (P0_placed >= PIECES_PER_PLAYER and P1_placed >= PIECES_PER_PLAYER):
+            if self.phase == self.PHASE_PLACEMENT:
+                # 放置阶段：严格交替，直到双方都放满 3 个
+                P0_placed = sum(
+                    1 for p in self.pieces
+                    if self._piece_owner(p) == 0 and p.hex
+                )
+                P1_placed = sum(
+                    1 for p in self.pieces
+                    if self._piece_owner(p) == 1 and p.hex
+                )
+
+                if self.current_player == 0 and P0_placed >= PIECES_PER_PLAYER:
+                    # P1 放满，检查是否双方都放满
+                    if P1_placed >= PIECES_PER_PLAYER:
+                        self.phase = self.PHASE_MOVEMENT
+                        self.current_player = 0
+                    else:
+                        self._switch_player()  # P2 继续
+                elif self.current_player == 1 and P1_placed >= PIECES_PER_PLAYER:
+                    # P2 放满，检查是否双方都放满
+                    if P0_placed >= PIECES_PER_PLAYER:
+                        self.phase = self.PHASE_MOVEMENT
+                        self.current_player = 0
+                    else:
+                        self._switch_player()  # P1 继续
+                else:
+                    # 当前玩家未放满，正常交替到对方
+                    self._switch_player()
+            else:
+                # 移动阶段：正常切换
                 self._switch_player()
 
         obs = self.get_observation()
