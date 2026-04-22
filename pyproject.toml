@@ -5,23 +5,27 @@ description = "企鹅棋 PenguinChess — Gymnasium RL environment + Web game"
 readme = "README.md"
 requires-python = ">=3.11"
 
-# Web 依赖
 dependencies = [
     "flask>=3.0.0",
-]
-
-# RL 环境与训练依赖
-rl-dependencies = [
     "gymnasium>=0.29.0",
-    "stable-baselines3>=2.0.0",
-    "tianshou>=0.5.0",
     "numpy>=1.24.0",
-    "torch>=2.0.0",
 ]
 
-# 开发 / 测试依赖
-dev-dependencies = [
+[project.optional-dependencies]
+rl = [
+    "stable-baselines3>=2.0.0",
+    "torch>=2.0.0",
+    "tianshou>=0.5.0",
+]
+dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "playwright>=1.40.0",
 ]
+
+[project.scripts]
+penguinchess = "penguinchess.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
