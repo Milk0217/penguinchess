@@ -1,181 +1,191 @@
 # 企鹅棋 — 改进建议文档
 
-## 一、问题修复（Bug Fix）
+## 优先级总览
 
-### ✅ 1. gameovercheck() 棋子归属判断错误 — 已修复
-
-- **修复**: `piece.id % 2` → `Math.floor(piece.id / 2) % 2`
-- **文件**: `statics/main.js`
-
-### ✅ 2. gameovercheck() 死代码 — 已修复
-
-- **修复**: 移除 `throw error` 后的 `return true`
-- **文件**: `statics/main.js`
-
-### ✅ 3. replayHistory() 全局状态未同步 — 已修复
-
-- **修复**: 参数重命名 `history` → `historyRecord`，避免遮蔽全局变量
-- **文件**: `statics/main.js`
-
-### ✅ 4. aftergame() 空函数 — 已修复
-
-- **修复**: 实现完整结算逻辑，显示胜者公告和得分差异
-- **文件**: `statics/main.js`
+| 优先级 | 方向 | 核心改进项 |
+|--------|------|-----------|
+| **P0** | Gymnasium 环境 | Phase 1 全部内容 |
+| **P1** | RL 训练基础 | Phase 3 全部内容 |
+| **P2** | Web + RL 整合 | 共享核心规则、RL vs 人类对战 |
+| **P3** | Self-play | Phase 4 全部内容 |
+| **P4** | 评估工具 | Phase 5 全部内容 |
 
 ---
 
-## 二、代码质量改进
+## P0: Gymnasium 环境核心（必须先行）
 
-### 1. 未使用的 dead code
+### P0.1 Python 游戏核心模块
 
-- `board.js` 第 69-70 行 `this.left` 和 `this.top` 在赋值后从未被读取
-- `piece.js` 第 52-56 行 `cubeToPixel()` 方法未被调用
+将游戏规则逻辑统一在 Python 端实现，避免 Web JS 和 RL 环境各写一套。
 
-### 2. 魔法数字分散
+**文件**: `penguinchess/core.py`（新建）
 
-多个关键数值散落在代码各处，难以调整：
+实现内容：
+- `PenguinChessCore` 类，包含所有游戏规则（放置、移动、消除、胜负判定）
+- `get_legal_actions()` — 返回当前所有合法动作
+- `step(action)` — 执行动作，返回 (next_state, reward, done, info)
+- `get_observation()` — 返回当前观测
+- `reset(seed=None)` — 初始化棋盘
 
-| 数值 | 位置 | 含义 |
-|------|------|------|
-| `99` | main.js:10 | 总分 |
-| `60` | main.js:607 | 棋盘格子数 |
-| `4,6,8` | main.js:51-53 | 玩家1棋子ID |
-| `5,7,9` | main.js:51-53 | 玩家2棋子ID |
-| `8, 10` | main.js:610 | 3的个数范围 |
-| `3` | main.js:613-615 | 数字3的分数 |
-| `1000` | main.js:591 | 回放延迟(ms) |
-| `40px` | piece.js:32-33 | 棋子直径 |
-| `25px` | board.js:66-67 | hex偏移 |
-| `-4, 3` | board.js:174 | q轴范围 |
+### P0.2 观测空间与动作空间
 
-**建议**: 集中到一个 `config.js` 或文件顶部的常量对象中：
-```javascript
-const CONFIG = {
-  BOARD_RADIUS: 8,
-  TOTAL_VALUE: 99,
-  HEX_COUNT: 60,
-  REPLAY_DELAY_MS: 1000,
-  PIECE_DIAMETER: 40,
-  PLAYER_1_PIECES: [4, 6, 8],
-  PLAYER_2_PIECES: [5, 7, 9],
-  COUNT_OF_THREE_MIN: 8,
-  COUNT_OF_THREE_MAX: 10,
-  THREE_VALUE: 3,
-};
+**文件**: `penguinchess/spaces.py`（新建）
+
+- `ObservationSpace` — 棋盘状态编码（60 格子 × 3 特征 = 180维 Box）
+- `ActionSpace` — Discrete(60)，60 个格子 ID
+
+初期方案：简单扁平表示，稳定后升级为 Dict 结构。
+
+### P0.3 Gymnasium 环境注册
+
+**文件**: `penguinchess/env.py`（新建）
+
+实现 `gymnasium.Env` 接口：
+- `reset(seed=None)` → `obs, info`
+- `step(action)` → `obs, reward, terminated, truncated, info`
+- `close()`
+- `seed(seed)`
+
+注册到 Gymnasium：`gymnasium.register(id="PenguinChess-v0", entry_point=...)`
+
+### P0.4 Reward Shaping
+
+**文件**: `penguinchess/reward.py`（新建）
+
+- 稀疏 reward（胜负 ±1）
+- 密集 reward（分值变化、棋子消除、连通性奖励）
+
+### P0.5 环境验证测试
+
+**文件**: `tests/test_env.py`（新建）
+
+- 随机种子一致性
+- 动作空间合法性
+- step/reset 循环稳定性
+- 棋盘值总和 = 99
+
+---
+
+## P1: 基础 RL 训练
+
+### P1.1 PPO 训练脚本
+
+**文件**: `examples/train_ppo.py`（新建）
+
+- 使用 Stable-Baselines3 PPO
+- 100k 步训练 + 评估
+- 保存 model checkpoint 到 `models/`
+
+验收：对随机策略胜率 > 80%（100k 步）/ > 95%（500k 步）
+
+### P1.2 依赖项配置
+
+**文件**: `pyproject.toml`（更新）
+
+添加依赖：
+```
+gymnasium>=0.29.0
+stable-baselines3>=2.0.0
+torch>=2.0.0
+numpy>=1.24.0
 ```
 
-### 3. 错误处理缺失
+---
 
-- `createBoard()` 在 `board` 元素不存在时仅 `return;` 无提示
-- 回放导入的 JSON 无 Schema 验证，格式错误会导致静默失败
-- `generateSequence()` 递归深度无保护，极小概率可能爆栈
+## P2: Web 与 RL 环境整合
 
-### 4. 命名不一致
+### P2.1 Flask API 暴露游戏核心
 
-| 当前名称 | 问题 |
-|----------|------|
-| `playerSymbol` | 实际是 player index（0 或 1），不是 symbol |
-| `showCoords` | 局部变量在 board.js，toggle coords 功能分散在两个文件 |
-| `hexes` / `pieces` / `players` | 全局变量无统一前缀，容易与局部变量混淆 |
+**文件**: `main.py`（改造）
 
-### 5. JSDoc 不完整
+将 `PenguinChessCore` 暴露为 REST API，使 Web 前端通过 HTTP 调用 Python 核心，不再需要 JS 重写游戏逻辑。
 
-仅 `placePieces` 和 `turn` 有 JSDoc，其余函数均缺失，不利于维护。
+路由：
+```
+POST /api/reset          → 重置游戏
+POST /api/step           → 执行动作
+GET  /api/observation    → 获取当前观测
+GET  /api/legal_actions  → 获取合法动作列表
+POST /api/agent/act      → RL 智能体决策（可选，让人类 vs AI）
+```
+
+### P2.2 Web 前端改造
+
+**文件**: `statics/main.js`（改造）
+
+- 保留 UI 渲染和用户交互逻辑
+- 游戏规则调用全部改为 `/api/` 请求
+- 支持选择对手类型：人类 / RL 智能体
+
+### P2.3 人类 vs AI 对战
+
+在 Web 界面添加"vs AI"模式，用户可以选择与训练好的 RL 智能体对战。
 
 ---
 
-## 三、功能增强
+## P3: Self-Play 训练框架
 
-### 1. AI 对战（高优先级）
+### P3.1 Self-Play 主循环
 
-`player.js` 已预留 `isComputer` 属性但从未使用。可实现：
+**文件**: `examples/selfplay.py`（新建）
 
-- 简单 AI：随机选择合法移动
-- 策略 AI：优先选择高价值格、阻断对手连接
+- 维护策略种群（population）
+- 每轮：当前策略 self-play → 数据收集 → 策略更新 → 评估
+- ELO 评分跟踪
 
-### 2. 局域网对战（中优先级）
+### P3.2 AlphaZero 风格训练
 
-当前仅支持本地双人。可以：
+**文件**: `examples/train_alphazero.py`（新建）
 
-- 用 Flask-SocketIO 添加 WebSocket 支持
-- 其中一方作为 host，另一方通过 IP:Port 连接
-- 实现实时同步
-
-### 3. 历史记录改进
-
-- 存储每步操作的分数变化
-- 支持评论/标注特定回合
-- 导出格式改为包含 meta 信息（时长、玩家、日期）的结构
-
-### 4. 响应式布局（高优先级）
-
-当前棋盘固定 600x600，完全不支持移动端：
-
-- 使用 CSS Grid 或 flexbox 替代绝对定位
-- 根据视口缩放 hex 尺寸
-- 控制面板改为垂直堆叠
-
-### 5. 音效与动画
-
-- 放置/移动棋子时的音效
-- 棋子移动的平滑过渡动画（CSS transition）
-- hex 消除时的淡出效果
-
-### 6. 统计面板
-
-- 本局步数历史
-- 双方得分曲线图
-- 高价值格子的占领统计
-
-### 7. 多人扩展
-
-支持 3-4 人对战（每人 2-3 个棋子），需要重新设计胜利条件和回合顺序。
+- MCTS 树搜索
+- 神经网络策略/价值评估
+- 自对弈数据收集
 
 ---
 
-## 四、工程化改进
+## P4: 评估与可视化
 
-### 1. 添加 ESLint / Prettier
+### P4.1 训练可视化
 
-前端无任何 linting/formatting，JS 代码风格不统一。
+集成 Weights & Biases 或 TensorBoard：
+- 胜率曲线（vs 随机 / vs 贪心 / Self-play ELO）
+- Loss 曲线（policy loss / value loss）
+- 棋盘价值热力图
 
-### 2. 添加 Playwright / Cypress E2E 测试
+### P4.2 对局回放工具
 
-当前零测试覆盖。项目虽小但逻辑复杂（放置、移动、消除、回放），手动测试成本高。
-
-### 3. 分离 HTML 模板
-
-`index.html` 中手写大量按钮结构，可改为从 JS 动态生成，便于扩展控制按钮。
-
-### 4. 构建工具
-
-当前纯 ES module 无构建，但未来如需引入 npm 包（图标库、动画库）会需要打包。建议评估后引入 Vite 或 esbuild。
-
-### 5. GitHub Actions CI
-
-添加自动化：lint → test → 构建检查。
+复用现有 Web 回放系统，添加：
+- RL 决策标注（显示智能体的 Q 值估计）
+- 多局统计（平均步数、各方胜率）
 
 ---
 
-## 五、安全改进
+## 已完成项
 
-### 1. 导入文件无验证
+以下为 Web 版阶段已完成的改进项（保留参考）：
 
-`importFile` 直接 `JSON.parse()`，恶意 JSON 可导致应用崩溃或无限循环（特别是 `replayHistory` 中的递归）。
+### ✅ P0 Web Bug 修复
+- `gameovercheck()` 棋子归属判断修复
+- `replayHistory()` 全局变量遮蔽修复
+- `aftergame()` 空函数实现
 
-**修复**: 添加 JSON Schema 验证或递归深度限制。
+### ✅ P1 Web 代码质量
+- 魔法数字集中到 `config.js`
+- ESLint / Prettier 配置
+- Playwright E2E 测试
 
-### 2. CORS 配置
-
-Flask 无任何 CORS 配置，如开启局域网对战会有跨域问题。
+### ✅ P1 Web 响应式
+- 棋盘 `min(600px, 90vw)` 自适应
 
 ---
 
-## 六、优先级排序建议
+## 旧版优先级（Web 对战为主）
 
-| 优先级 | 改进项 |
-|--------|--------|
-| **P0（必做）** | Bug 修复（gameovercheck, aftergame） |
-| **P1（高价值）** | 响应式布局、Config 集中化、ESLint |
-| **P2（中价值）** | AI 对战、回放功能增强、统计面板 |
-| **P3（长期）** | 局域网对战、多人扩展、构建工具化 |
+以下为早期以 Web 为主时的优先级，现在已降级为辅助目标：
+
+| 原优先级 | 内容 | 当前状态 |
+|----------|------|----------|
+| ~~AI 对战~~ | Web JS 简单 AI | 降级：优先做 RL 环境 |
+| ~~局域网对战~~ | Flask-SocketIO | 降级：Phase 2 API 完成后用 REST 替代 |
+| ~~多人扩展~~ | 3-4 人支持 | 搁置 |
+| ~~构建工具化~~ | Vite / esbuild | 搁置：当前 ES module 够用 |
