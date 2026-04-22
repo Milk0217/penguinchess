@@ -1,0 +1,176 @@
+@import "tailwindcss";
+
+:root {
+  --p1-color: #3b82f6;
+  --p2-color: #ef4444;
+  --hex-size: 44px;
+  --hex-gap: 2px;
+  --board-center-x: 300px;
+  --board-center-y: 300px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  background: #f8fafc;
+  margin: 0;
+  padding: 0;
+}
+
+/* 六边形格子 */
+.hex {
+  position: absolute;
+  width: var(--hex-size);
+  height: var(--hex-size);
+  clip-path: polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+  font-size: 13px;
+  font-weight: 700;
+  color: #1e293b;
+  user-select: none;
+  border: none;
+}
+
+.hex.legal:hover {
+  transform: scale(1.08);
+  z-index: 20;
+}
+
+.hex.eliminated {
+  background: #cbd5e1 !important;
+  color: #94a3b8;
+  pointer-events: none;
+}
+
+.hex.occupied {
+  cursor: default;
+}
+
+/* 棋子 */
+.piece {
+  position: absolute;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 800;
+  color: white;
+  z-index: 30;
+  pointer-events: none;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+  transition: transform 0.15s ease;
+  transform: translate(-50%, -50%);
+}
+
+.piece.p1 { background: var(--p1-color); }
+.piece.p2 { background: var(--p2-color); }
+
+/* 当前玩家棋子高亮 */
+.piece.p1.current { box-shadow: 0 0 0 3px #93c5fd, 0 2px 8px rgba(59,130,246,0.5); }
+.piece.p2.current { box-shadow: 0 0 0 3px #fca5a5, 0 2px 8px rgba(239,68,68,0.5); }
+
+/* 选中目标格子高亮 */
+.hex.target-highlight {
+  background: #fb923c !important;
+  box-shadow: 0 0 0 3px #fdba74;
+  transform: scale(1.1);
+  z-index: 15;
+}
+
+/* 棋盘容器 */
+.board-container {
+  position: relative;
+  width: min(620px, 92vw);
+  height: min(620px, 92vw);
+  margin: 0 auto;
+}
+
+/* 分数板 */
+.scoreboard {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 2rem;
+  margin: 1.5rem 0;
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
+.scoreboard .p1 { color: var(--p1-color); }
+.scoreboard .p2 { color: var(--p2-color); }
+
+.scoreboard .vs { color: #94a3b8; }
+
+/* 状态提示 */
+.status-bar {
+  text-align: center;
+  padding: 0.6rem 1rem;
+  background: white;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  font-weight: 600;
+  color: #334155;
+  min-height: 2.8rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0.75rem auto;
+  max-width: 420px;
+}
+
+.status-bar.game-over {
+  background: #fef3c7;
+  border-color: #fcd34d;
+  color: #92400e;
+}
+
+/* 阶段指示 */
+.phase-badge {
+  display: inline-block;
+  padding: 0.2rem 0.6rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.4rem;
+}
+
+.phase-badge.placement { background: #dbeafe; color: #1e40af; }
+.phase-badge.movement { background: #fce7f3; color: #9d174d; }
+
+/* 按钮 */
+.btn {
+  padding: 0.5rem 1.2rem;
+  border-radius: 6px;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  transition: opacity 0.15s;
+}
+
+.btn:hover { opacity: 0.85; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn-primary { background: #3b82f6; color: white; }
+.btn-secondary { background: #e2e8f0; color: #334155; }
+
+/* 加载状态 */
+.loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 300px;
+  color: #64748b;
+  font-size: 1rem;
+}
