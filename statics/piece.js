@@ -1,3 +1,5 @@
+import { CONFIG } from './config.js';
+
 // 棋子类
 class Piece {
     constructor(id) {
@@ -9,7 +11,7 @@ class Piece {
     // 放置棋子到指定的六边形
     placeToHex(hex) {
       // 定义所在hex
- 
+
       // 删除块的点击事件
       hex.removeClickHandler();
       hex.updateStatus(0)
@@ -21,16 +23,12 @@ class Piece {
         existingPiece.remove();
       }
 
-      //从 DOM 元素的 dataset 中获取中心位置
-      const centerX = parseFloat(hex.centerX);
-      const centerY = parseFloat(hex.centerY);
-
       // 4. 创建棋子元素
       const piece = document.createElement('div');
       piece.className = 'piece';
       piece.textContent = this.id;
-      piece.style.width = '40px'; // 棋子直径
-      piece.style.height = '40px';
+      piece.style.width = `${CONFIG.PIECE_DIAMETER}px`; // 棋子直径
+      piece.style.height = `${CONFIG.PIECE_DIAMETER}px`;
       piece.style.borderRadius = '50%'; // 圆形
       piece.style.backgroundColor = 'black'; // 棋子颜色
       piece.style.color = 'white'; // 文字颜色
@@ -38,21 +36,14 @@ class Piece {
       piece.style.justifyContent = 'center';
       piece.style.alignItems = 'center';
       piece.style.position = 'absolute';
-      piece.style.left = `${hex.left}px`; // 中心对齐（减去半径）
-      piece.style.top = `${hex.top}px`; // 中心对齐（减去半径）
+      piece.style.left = hex.style.left; // 使用hex的像素位置
+      piece.style.top = hex.style.top; // 使用hex的像素位置
       piece.style.zIndex = '10'; // 确保棋子在六边形之上
 
       this.element = piece;
       // 5. 挂载到 board 容器
       const board = document.getElementById('board');
       board.appendChild(piece);
-    }
-
-    // 立方体坐标到屏幕坐标的转换
-    cubeToPixel(q, r, size = 30) {
-      const x = size * (3/2 * q);
-      const y = size * (Math.sqrt(3)/2 * q + Math.sqrt(3) * r);
-      return { x, y };
     }
 
     // 移动棋子到相邻的六边形

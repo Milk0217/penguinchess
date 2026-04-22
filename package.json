@@ -1,0 +1,16 @@
+{
+  "name": "penguinchess",
+  "version": "1.0.0",
+  "description": "Hexagonal board game",
+  "scripts": {
+    "lint": "eslint statics/",
+    "format": "prettier --write statics/",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.40.0",
+    "eslint": "^8.57.0",
+    "prettier": "^3.2.0"
+  }
+}

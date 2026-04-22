@@ -1,13 +1,13 @@
 import { createBoard } from './board.js';
 import { createPiece } from './piece.js';
 import { Player } from './player.js';
+import { CONFIG } from './config.js';
 
 // 全局变量
 let hexes = [];
 let pieces = [];
 let players = [];
 let history = [];
-const totalValue = 99; // 总分
 /**
  * 放置棋子阶段，等待玩家轮流选择三个点放置棋子。
  * @returns {Promise<void>} 返回一个Promise，等待用户完成放置棋子的操作。
@@ -26,8 +26,8 @@ async function placePieces() {
         const handleClick = (event) => {
             const hex = event.currentTarget;
 
-            // 如果已放置6个棋子（每个玩家3个），结束放置阶段
-            if (pieces.length>= 6) {
+            // 如果已放置所有棋子，结束放置阶段
+            if (pieces.length >= CONFIG.PLAYER_1_PIECES.length + CONFIG.PLAYER_2_PIECES.length) {
                 resolve(); // 解除Promise阻塞
                 return;
             }
@@ -48,9 +48,9 @@ async function placePieces() {
             selectedCount++;
 
             // 创建棋子并放置
-            const pieceId = currentPlayer === 1 
-                ? 4 + Math.floor(pieces.length / 2) * 2  // 玩家1: 4,6,8
-                : 5 + Math.floor(pieces.length / 2) * 2; // 玩家2: 5,7,9
+            const pieceId = currentPlayer === 1
+                ? CONFIG.PLAYER_1_PIECES[Math.floor(pieces.length / 2)]
+                : CONFIG.PLAYER_2_PIECES[Math.floor(pieces.length / 2)];
             const piece = createPiece(pieceId);
 
             // 找到对应的hex对象
@@ -81,7 +81,7 @@ async function placePieces() {
                 selectedCount = 0;
 
                 // 如果所有棋子都已放置，结束
-                if (pieces.length>= 6) {
+                if (pieces.length >= CONFIG.PLAYER_1_PIECES.length + CONFIG.PLAYER_2_PIECES.length) {
                     updateGameStatus('放置棋子结束');
                     document.getElementById('selected-info').textContent = "移动棋子阶段"
                     // 删除所有hex的初始选中功能
@@ -119,7 +119,7 @@ async function turn(turnNumber) {
         checkAndRemoveHexes(); // 检查并移除无效的格子
 
         // 检查游戏是否结束
-        if (gameovercheck(turnNumber)) {
+        if (gameovercheck()) {
             return true; // 游戏结束，返回true
         }
 
@@ -143,7 +143,7 @@ async function turn(turnNumber) {
                     chosenPiece.element.classList.add("selected");
                 }
             });
-            await new Promise(resolve => setTimeout(resolve, 100)); // 简单的延迟以避免阻塞
+            await new Promise(resolve => setTimeout(resolve, CONFIG.POLL_INTERVAL_MS)); // 简单的延迟以避免阻塞
         }
 
         // 等待用户选择目标位置
@@ -152,7 +152,7 @@ async function turn(turnNumber) {
             highlightPossibleMoves(chosenPiece, (hex) => {
                 nextHex = hex;
             });
-            await new Promise(resolve => setTimeout(resolve, 100)); // 简单的延迟以避免阻塞
+            await new Promise(resolve => setTimeout(resolve, CONFIG.POLL_INTERVAL_MS)); // 简单的延迟以避免阻塞
         }
 
         // 记录移动棋子的操作
@@ -183,17 +183,15 @@ async function turn(turnNumber) {
         // 捕获并处理可能的错误
         console.error("An error occurred during the turn:",(turnNumber+1), error);
         throw error; // 重新抛出错误，以便外层可以处理
-        return true; // 游戏结束（如果错误导致游戏无法继续）
     }
 }
 /**
  * 检查游戏是否结束。
  * 通过统计双方存活棋子的数量来判断游戏是否结束。
  * 如果一方所有棋子出局（display='none'），则游戏结束，并处理得分和更新hex状态。
- * @param {number} turnNumber - 当前回合数，用于调试或日志记录。
  * @returns {boolean} - 返回true表示游戏结束，false表示游戏继续。
  */
-function gameovercheck(turnNumber) {
+function gameovercheck() {
     // 检查pieces中所有的piece.element的style.display是否为'none'，如果为'none'则是出局
     // 如果有一方的棋子全部出局，则游戏结束
 
@@ -208,21 +206,20 @@ function gameovercheck(turnNumber) {
         }
 
         // 如果棋子可见（display !== 'none'），则统计其所属方
+        // 玩家1: id=4,6,8  → Math.floor(id/2)%2 = 0
+        // 玩家2: id=5,7,9  → Math.floor(id/2)%2 = 1
         if (piece.element.style.display !== 'none') {
-            const playerSymbol = piece.id % 2; // 假设棋子有 playerSymbol 属性标识所属玩家
-            if (!aliveCounts[playerSymbol]) {
-                aliveCounts[playerSymbol] = 0;
-            }
-            aliveCounts[playerSymbol]++;
+            const playerIndex = Math.floor(piece.id / 2) % 2;
+            aliveCounts[playerIndex] = (aliveCounts[playerIndex] || 0) + 1;
         }
     });
 
     // 检查是否有玩家的棋子全部出局（存活数量为0）
-    let survivingPlayerSymbol = null;
-    for (const playerSymbol in aliveCounts) {
-        if (aliveCounts[playerSymbol] > 0) {
-            if (survivingPlayerSymbol === null) {
-                survivingPlayerSymbol = playerSymbol;
+    let survivingPlayerIndex = null;
+    for (const idx in aliveCounts) {
+        if (aliveCounts[idx] > 0) {
+            if (survivingPlayerIndex === null) {
+                survivingPlayerIndex = idx;
             } else {
                 // 如果有多个玩家存活，则直接返回 false
                 return false;
@@ -231,13 +228,13 @@ function gameovercheck(turnNumber) {
     }
 
     // 如果只有一个玩家存活，则处理得分和更新 hex 状态
-    if (survivingPlayerSymbol !== null) {
-        document.getElementById('selected-info').textContent = `玩家 ${players[survivingPlayerSymbol].name} 是唯一存活的玩家，游戏结束`;
+    if (survivingPlayerIndex !== null) {
+        document.getElementById('selected-info').textContent = `玩家 ${players[survivingPlayerIndex].name} 是唯一存活的玩家，游戏结束`;
         
         // 遍历所有 hex，更新得分和状态
         for (const hex of hexes) {
             if (hex.value > 0) {
-                players[survivingPlayerSymbol].addScore(hex.value);
+                players[survivingPlayerIndex].addScore(hex.value);
                 updateScore(players);
                 hex.updateStatus(-1);
             }
@@ -248,9 +245,26 @@ function gameovercheck(turnNumber) {
     // 如果所有玩家都有存活棋子，游戏继续
     return false;
 }
-// 游戏结束结算
-function aftergame(){
-    console.log("aftergame")
+/**
+ * 游戏结束结算。
+ * 显示最终得分、胜者公告，并提供重开选项。
+ */
+function aftergame() {
+    const p1 = players[0];
+    const p2 = players[1];
+
+    let resultText;
+    if (p1.score > p2.score) {
+        resultText = `🏆 玩家 ${p1.name} 获胜！`;
+    } else if (p2.score > p1.score) {
+        resultText = `🏆 玩家 ${p2.name} 获胜！`;
+    } else {
+        resultText = `⚖️ 平局！`;
+    }
+
+    const finalScoreText = `最终得分：${p1.name}: ${p1.score} vs ${p2.name}: ${p2.score}`;
+    updateGameStatus(`游戏结束\n${resultText}\n${finalScoreText}`);
+    document.getElementById('selected-info').textContent = `${resultText}\n${finalScoreText}`;
 }
 /**
  * 初始化游戏棋盘和棋子。
@@ -264,7 +278,7 @@ async function initializeGame(type = 0) {
   let valueSequence = [];
   if (type === 0) {
     // 生成值数组
-    valueSequence = generateSequence(totalValue);
+    valueSequence = generateSequence(CONFIG.TOTAL_VALUE);
     
     // 创建棋盘布局
     hexes = createBoard({ valueSequence: valueSequence });
@@ -535,51 +549,54 @@ function checkAndRemoveHexes() {
 }
 /**
  * 回放游戏历史记录，逐步重现棋盘状态和玩家操作。
- * @param {Array<Object>} history - 游戏历史记录数组，每个元素代表一个回合的操作。
+ * @param {Array<Object>} historyRecord - 游戏历史记录数组，每个元素代表一个回合的操作。
  * @returns {void}
  */
-function replayHistory(history) {
+function replayHistory(historyRecord) {
   let index = 0; // 当前回放操作的索引
   document.getElementById('selected-info').textContent = "回放模式"; // 更新UI显示回放状态
 
-  // 初始化棋盘和游戏状态
-  initializeGame(1, history); // 调用初始化函数，传入游戏模式和初始历史记录
-  let hexes = createBoard({ valueSequence: history[0]?.valueSequence }); // 创建棋盘，使用历史记录中的初始值序列
-  let players = history[0]?.players; // 获取初始玩家信息
-  const player1 = new Player(players[0]?.id, players[0]?.name); // 创建玩家1对象
-  const player2 = new Player(players[1]?.id, players[1]?.name); // 创建玩家2对象
-  players = [player1, player2]; // 将玩家对象存入数组
-  players.forEach(player => player.reset()); // 重置所有玩家的状态
-  let pieces = []; // 初始化棋盘上的棋子列表
+  // 创建回放专用的棋盘和状态（不影响全局变量）
+  const replayHexes = createBoard({ valueSequence: historyRecord[0]?.valueSequence }); // 创建棋盘，使用历史记录中的初始值序列
+  const replayPlayers = historyRecord[0]?.players; // 获取初始玩家信息
+  const player1 = new Player(replayPlayers[0]?.id, replayPlayers[0]?.name); // 创建玩家1对象
+  const player2 = new Player(replayPlayers[1]?.id, replayPlayers[1]?.name); // 创建玩家2对象
+  const activePlayers = [player1, player2]; // 将玩家对象存入数组
+  activePlayers.forEach(player => player.reset()); // 重置所有玩家的状态
+  let replayPieces = []; // 初始化棋盘上的棋子列表
+
+  // 同步到全局变量，供回放结束后使用
+  hexes = replayHexes;
+  players = activePlayers;
 
   replayNext(); // 开始执行回放
 
   // 执行下一个回放操作
   function replayNext() {
-    if (index < history.length) { // 如果还有未回放的操作
+    if (index < historyRecord.length) { // 如果还有未回放的操作
       updateGameStatus(`第${index + 1}回合`); // 更新游戏状态显示当前回合（注意索引从0开始，显示时+1）
-      const action = history[index]; // 获取当前要回放的操作
+      const action = historyRecord[index]; // 获取当前要回放的操作
       index++; // 移动到下一个操作
 
       if (action.type === 'place') {
         // 处理放置棋子的操作
         const piece = createPiece(action.pieceId); // 创建棋子对象
-        const targetHex = findHex(hexes, action.hex.q, action.hex.r, action.hex.s); // 找到目标格子
-        players[action.player.id - 1].addScore(targetHex.value); // 玩家得分（假设玩家ID从1开始）
+        const targetHex = findHex(replayHexes, action.hex.q, action.hex.r, action.hex.s); // 找到目标格子
+        activePlayers[action.player.id - 1].addScore(targetHex.value); // 玩家得分（假设玩家ID从1开始）
         piece.placeToHex(targetHex); // 将棋子放置到目标格子
-        pieces.push(piece); // 将棋子添加到棋盘上的棋子列表
+        replayPieces.push(piece); // 将棋子添加到棋盘上的棋子列表
       } else if (action.type === 'move') {
         // 处理移动棋子的操作
-        const piece = pieces.find(p => p.id === action.pieceId); // 找到要移动的棋子
-        const fromHex = findHex(hexes, action.fromHex.q, action.fromHex.r, action.fromHex.s); // 找到起始格子
-        const toHex = findHex(hexes, action.toHex.q, action.toHex.r, action.toHex.s); // 找到目标格子
-        players[action.player.id - 1].addScore(toHex.value); // 玩家得分（移动到新格子可能得分）
+        const piece = replayPieces.find(p => p.id === action.pieceId); // 找到要移动的棋子
+        const fromHex = findHex(replayHexes, action.fromHex.q, action.fromHex.r, action.fromHex.s); // 找到起始格子
+        const toHex = findHex(replayHexes, action.toHex.q, action.toHex.r, action.toHex.s); // 找到目标格子
+        activePlayers[action.player.id - 1].addScore(toHex.value); // 玩家得分（移动到新格子可能得分）
         piece.moveToHex(toHex); // 将棋子移动到目标格子
-        updateScore(players); // 更新并显示玩家得分
+        updateScore(activePlayers); // 更新并显示玩家得分
       }
 
       // 移除所有格子的高亮样式
-      hexes.forEach(hex => {
+      replayHexes.forEach(hex => {
         if (hex.element) {
           hex.element.classList.remove('highlighted');
           // 移除之前的点击事件监听器
@@ -588,9 +605,10 @@ function replayHistory(history) {
       });
 
       // 延迟一段时间后继续回放下一个操作
-      setTimeout(replayNext, 1000);
+      setTimeout(replayNext, CONFIG.REPLAY_DELAY_MS);
     } else {
       // 所有操作回放完毕
+      updateScore(activePlayers); // 显示最终得分
       document.getElementById('selected-info').textContent = "回放结束"; // 更新UI显示回放结束
     }
   }
@@ -600,19 +618,19 @@ function replayHistory(history) {
  * @param {number} totalSum - 目标数列的总和，默认为99。
  * @returns {Array<number>} 生成的随机数列。
  */
-function generateSequence(totalSum = 99) {
+function generateSequence(totalSum = CONFIG.TOTAL_VALUE) {
     let sequence = []; // 存储最终生成的数列
     let count3 = 0; // 记录数字3在数列中的数量
     let remainingSum = totalSum; // 剩余需要分配的总和
-    let remainingLength = 60; // 剩余需要填充的数组位置数量
+    let remainingLength = CONFIG.HEX_COUNT; // 剩余需要填充的数组位置数量
 
     // 先随机确定3的数量（范围在8到10个之间）
-    count3 = Math.floor(Math.random() * 3) + 8;
-    
+    count3 = Math.floor(Math.random() * (CONFIG.COUNT_OF_THREE_MAX - CONFIG.COUNT_OF_THREE_MIN + 1)) + CONFIG.COUNT_OF_THREE_MIN;
+
     // 分配确定的3的值到数列中
     for (let i = 0; i < count3; i++) {
-        sequence.push(3); // 将数字3添加到数列末尾
-        remainingSum -= 3; // 从剩余总和中减去3
+        sequence.push(CONFIG.THREE_VALUE); // 将数字3添加到数列末尾
+        remainingSum -= CONFIG.THREE_VALUE; // 从剩余总和中减去3
         remainingLength--; // 减少剩余需要填充的位置计数
     }
 
@@ -700,41 +718,46 @@ document.getElementById('importBtn').addEventListener('click', function() {
     // 获取文件输入元素和选中的文件
     const fileInput = document.getElementById('importFile');
     const file = fileInput.files[0];
-    
+
     // 如果没有选择文件，显示错误消息并返回
     if (!file) {
         showMessage('importMessage', 'Please select a file to import', 'error');
         return;
     }
-    
+
     // 创建FileReader对象用于读取文件内容
     const reader = new FileReader();
-    
+
     // 设置文件读取完成后的回调函数
     reader.onload = function(e) {
         try {
             // 尝试解析JSON格式的文件内容
-            const importedHistory = JSON.parse(e.target.result);
-            
+            const importedRecord = JSON.parse(e.target.result);
+
+            // 基本验证：确保是数组且包含初始化操作
+            if (!Array.isArray(importedRecord)) {
+                throw new Error('Invalid format: expected an array');
+            }
+
             // 更新全局历史记录
-            history = importedHistory;
-            
+            history = importedRecord;
+
             // 在控制台输出导入的历史记录（用于调试）
             console.log(history);
-            
+
             // 重放导入的历史记录
             replayHistory(history);
-            
+
             // 显示成功消息
             showMessage('importMessage', 'History imported successfully!', 'success');
-            
+
             // 这里可以添加其他处理逻辑，比如更新UI等
         } catch (error) {
             // 如果解析失败，显示错误消息
             showMessage('importMessage', 'Error importing history: ' + error.message, 'error');
         }
     };
-    
+
     // 开始读取文件内容
     reader.readAsText(file);
 });

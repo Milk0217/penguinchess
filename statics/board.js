@@ -1,3 +1,5 @@
+import { CONFIG } from './config.js';
+
 class Hex {
   constructor(q, r, s, value, showCoords, centerX, centerY, radius) {
     this.q = q;
@@ -63,11 +65,8 @@ class Hex {
 
     // 调整后的像素坐标
     const { x, y } = this.cubeToPixel(this.q, this.r);
-    hex.style.left = `${this.centerX + x - 25}px`;
-    hex.style.top = `${this.centerY + y - 25}px`;
-
-    this.left = `${this.centerX + x - 20}`;
-    this.top = `${this.centerY + y - 20}`;
+    hex.style.left = `${this.centerX + x - CONFIG.HEX_OFFSET}px`;
+    hex.style.top = `${this.centerY + y - CONFIG.HEX_OFFSET}px`;
 
     // 设置基于坐标的颜色
     const hue = ((this.q + this.radius) / (2 * this.radius)) * 360;
@@ -111,9 +110,9 @@ class Hex {
   }
 
   // 立方体坐标到屏幕坐标的转换
-  cubeToPixel(q, r, size = 30) {
-    const x = size * (3/2 * q);
-    const y = size * (Math.sqrt(3)/2 * q + Math.sqrt(3) * r);
+  cubeToPixel(q, r) {
+    const x = CONFIG.HEX_SIZE * (3/2 * q);
+    const y = CONFIG.HEX_SIZE * (Math.sqrt(3)/2 * q + Math.sqrt(3) * r);
     return { x, y };
   }
 
