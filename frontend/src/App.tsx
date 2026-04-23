@@ -510,9 +510,9 @@ export default function App() {
                   <td style={{
                     padding: "2px 6px",
                     textAlign: "center",
-                    color: piece.alive ? "#16a34a" : "#dc2626",
+                    color: piece.q === null ? "#94a3b8" : piece.alive ? "#16a34a" : "#dc2626",
                   }}>
-                    {piece.alive ? "存活" : "已消除"}
+                    {piece.q === null ? "未放置" : piece.alive ? "存活" : "已消除"}
                   </td>
                   <td style={{ padding: "2px 6px", textAlign: "center" }}>
                     {piece.q !== null ? `(${piece.q},${piece.r},${piece.s})` : "—"}
