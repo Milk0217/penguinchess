@@ -91,10 +91,11 @@ class GameSession:
         self._last_action = None
         return self.state()
 
-    def step(self, action: int) -> dict:
+    def step(self, action: int, piece_id: Optional[int] = None) -> dict:
         """
         执行一个动作（放置或移动）。
         action: hexes 数组索引（0~59）
+        piece_id: 可选参数，指定要移动的棋子 ID（仅移动阶段有效）
 
         Returns: {
             "state": <current state dict>,
@@ -114,13 +115,14 @@ class GameSession:
         prev_player = self._core.current_player
 
         # 执行动作
-        obs, reward, terminated, info = self._core.step(action)
+        obs, reward, terminated, info = self._core.step(action, piece_id=piece_id)
 
         # 构建动作历史
         hex_obj = self._core._action_id_to_hex(action)
         self._last_action = {
             "player": prev_player,
             "action": action,
+            "piece_id": piece_id,
             "hex": {
                 "q": hex_obj.q,
                 "r": hex_obj.r,
@@ -174,7 +176,7 @@ class GameSession:
                 "q": p.hex.q if p.hex else None,
                 "r": p.hex.r if p.hex else None,
                 "s": p.hex.s if p.hex else None,
-                "index": self._core._hex_map.get((p.hex.q, p.hex.r, p.hex.s)) if p.hex else None,
+                "index": self._core._hex_to_index(p.hex) if p.hex else None,
                 "alive": p.alive,
             })
 

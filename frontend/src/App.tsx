@@ -256,16 +256,17 @@ export default function App() {
   // -------------------------------------------------------------------------
   // 提交动作到后端
   // -------------------------------------------------------------------------
-  const submitAction = async (hexIndex: number) => {
+  const submitAction = async (hexIndex: number, pieceId?: number) => {
     if (!sessionId || !state || state.game_over) return;
     setLoading(true);
     try {
-      const res = await api.action(sessionId, hexIndex);
+      const res = await api.action(sessionId, hexIndex, pieceId);
       setState(res.state);
       setSelectedPieceId(null);
       setTargetIndices(new Set());
     } catch (e: any) {
       setError(e.message || "动作执行失败");
+    } finally {
       setLoading(false);
     }
   };
@@ -299,7 +300,7 @@ export default function App() {
       } else if (selectedPieceId !== null) {
         // 有选中棋子 → 检查是否点的是合法目标
         if (targetIndicesFromSelected.has(hex.index)) {
-          submitAction(hex.index);
+          submitAction(hex.index, selectedPieceId);
         } else {
           // 点在非法格子 → 取消选择
           setSelectedPieceId(null);
@@ -387,16 +388,146 @@ export default function App() {
         </div>
       </div>
 
-      {/* 阶段标签 */}
-      <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", margin: "0 0 0.25rem", flexWrap: "wrap", justifyContent: "center" }}>
-        <span className={`phase-badge ${state.phase}`}>
-          {state.phase === "placement" ? "放置阶段" : "移动阶段"}
-        </span>
-        {!isGameOver && (
-          <span style={{ color: "#94a3b8", fontSize: "0.75rem" }}>
-            合法动作: {state.legal_actions.length}
+      {/* 调试信息面板 */}
+      <div style={{
+        width: "100%",
+        maxWidth: "560px",
+        marginBottom: "0.5rem",
+        padding: "0.5rem 0.75rem",
+        background: "#f8fafc",
+        border: "1px solid #e2e8f0",
+        borderRadius: "8px",
+        fontFamily: "monospace",
+        fontSize: "0.68rem",
+        color: "#475569",
+      }}>
+        {/* 第一行：阶段 + 总合法动作数 */}
+        <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap", marginBottom: "0.25rem" }}>
+          <span style={{ fontWeight: 700, color: state.phase === "placement" ? "#1e40af" : "#9d174d" }}>
+            [{state.phase === "placement" ? "放置" : "移动"}]
           </span>
+          <span>总合法动作: <strong style={{ color: "#0f172a" }}>{state.legal_actions.length}</strong></span>
+          <span>回合: <strong style={{ color: "#0f172a" }}>{state.episode_steps + 1}</strong></span>
+          <span>活跃格子: <strong style={{ color: "#0f172a" }}>{state.hexes.filter(h => h.value > 0).length}</strong></span>
+        </div>
+
+        {/* 第二行：棋子存活情况 */}
+        <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap", marginBottom: "0.25rem" }}>
+          <span style={{ color: "#3b82f6" }}>P1 棋子: {state.pieces.filter(p => p.owner === 0 && p.alive).length}/3</span>
+          <span style={{ color: "#ef4444" }}>P2 棋子: {state.pieces.filter(p => p.owner === 1 && p.alive).length}/3</span>
+        </div>
+
+        {/* 第三行：当前玩家 + 分数 */}
+        <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap", marginBottom: state.phase === "movement" || selectedPieceId !== null ? "0.25rem" : "0" }}>
+          <span>当前: <strong style={{ color: state.current_player === 0 ? "#3b82f6" : "#ef4444" }}>
+            {state.current_player === 0 ? "P1" : "P2"}
+          </strong></span>
+          <span>P1 分数: <strong style={{ color: "#1e40af" }}>{state.scores[0]}</strong></span>
+          <span>P2 分数: <strong style={{ color: "#b91c1c" }}>{state.scores[1]}</strong></span>
+        </div>
+
+        {/* 移动阶段额外信息 */}
+        {state.phase === "movement" && (
+          <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
+            <span>
+              可移动棋子: {(() => {
+                const ownPieces = state.pieces.filter(p => p.owner === state.current_player && p.alive && p.q !== null && p.r !== null && p.s !== null) as Array<HexData & { owner: number; alive: boolean; id: number }>;
+                const mobile = ownPieces.filter(p => {
+                  const pieceHex = state.hexes.find(h => h.q === p.q && h.r === p.r && h.s === p.s);
+                  if (!pieceHex) return false;
+                  const targets = computeTargets(
+                    { ...p, index: pieceHex.index, value: 0 },
+                    state.hexes,
+                    buildHexIndexMap(state.hexes),
+                    state.pieces,
+                  );
+                  return targets.size > 0;
+                });
+                return `${mobile.length}/${ownPieces.length}`;
+              })()}
+            </span>
+            {selectedPieceId !== null && (() => {
+              const piece = state.pieces.find(p => p.id === selectedPieceId);
+              return (
+                <>
+                  <span style={{ color: "#7c3aed" }}>
+                    选中: ID={selectedPieceId}{piece && piece.q !== null ? ` @ (${piece.q},${piece.r},${piece.s})` : ""}
+                  </span>
+                  <span style={{ color: "#7c3aed" }}>
+                    目标: {effectiveTargets.size}
+                  </span>
+                </>
+              );
+            })()}
+          </div>
         )}
+      </div>
+
+      {/* ===== 棋子状态面板 ===== */}
+      <div style={{
+        width: "100%",
+        maxWidth: "560px",
+        marginBottom: "0.5rem",
+        padding: "0.4rem 0.6rem",
+        background: "#f1f5f9",
+        border: "1px solid #cbd5e1",
+        borderRadius: "8px",
+        fontFamily: "monospace",
+        fontSize: "0.65rem",
+        color: "#334155",
+      }}>
+        <div style={{ fontWeight: 700, marginBottom: "0.3rem", color: "#0f172a" }}>棋子状态</div>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#e2e8f0" }}>
+              <th style={{ padding: "2px 6px", textAlign: "center" }}>ID</th>
+              <th style={{ padding: "2px 6px", textAlign: "center" }}>归属</th>
+              <th style={{ padding: "2px 6px", textAlign: "center" }}>状态</th>
+              <th style={{ padding: "2px 6px", textAlign: "center" }}>坐标 (q,r,s)</th>
+              <th style={{ padding: "2px 6px", textAlign: "center" }}>hex index</th>
+              <th style={{ padding: "2px 6px", textAlign: "center" }}>格子值</th>
+            </tr>
+          </thead>
+          <tbody>
+            {state.pieces.map(piece => {
+              const pieceHex = piece.q !== null ? state.hexes.find(h => h.q === piece.q && h.r === piece.r && h.s === piece.s) : null;
+              const hexValue = pieceHex ? pieceHex.value : null;
+              const isSelected = piece.id === selectedPieceId;
+              return (
+                <tr
+                  key={piece.id}
+                  style={{
+                    background: isSelected
+                      ? piece.owner === 0 ? "#dbeafe" : "#fee2e2"
+                      : piece.owner === 0 ? "#f8fafc" : "#fff5f5",
+                    fontWeight: isSelected ? 700 : 400,
+                  }}
+                >
+                  <td style={{ padding: "2px 6px", textAlign: "center" }}>{piece.id}</td>
+                  <td style={{ padding: "2px 6px", textAlign: "center", color: piece.owner === 0 ? "#3b82f6" : "#ef4444" }}>
+                    {piece.owner === 0 ? "P1" : "P2"}
+                  </td>
+                  <td style={{
+                    padding: "2px 6px",
+                    textAlign: "center",
+                    color: piece.alive ? "#16a34a" : "#dc2626",
+                  }}>
+                    {piece.alive ? "存活" : "已消除"}
+                  </td>
+                  <td style={{ padding: "2px 6px", textAlign: "center" }}>
+                    {piece.q !== null ? `(${piece.q},${piece.r},${piece.s})` : "—"}
+                  </td>
+                  <td style={{ padding: "2px 6px", textAlign: "center" }}>
+                    {piece.index !== undefined && piece.index !== null ? piece.index : "—"}
+                  </td>
+                  <td style={{ padding: "2px 6px", textAlign: "center" }}>
+                    {hexValue !== null ? hexValue : "—"}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
 
       {/* 状态提示 */}

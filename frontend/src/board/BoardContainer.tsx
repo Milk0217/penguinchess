@@ -52,9 +52,6 @@ const BoardContainer: React.FC<BoardContainerProps> = ({
   const offsetY = -bounds.minY + sizes.padding + sizes.hexSize;
 
   const padding = sizes.padding;
-  // 容器尺寸 = bounds（含完整六边形尺寸）+ padding*2 + hexSize（补偿 translate(-50%,-50%)）
-  // bounds 已包含六边形宽度 (maxX-minX + 2*hexSize)，translate(-50%,-50%) 将内容向左上偏移 hexSize
-  // 容器需要额外加 hexSize 才能完整容纳最右侧和最下方的六边形
   const containerWidth = Math.ceil(bounds.width + padding * 2 + sizes.hexSize);
   const containerHeight = Math.ceil(bounds.height + padding * 2 + sizes.hexSize);
 
@@ -71,18 +68,8 @@ const BoardContainer: React.FC<BoardContainerProps> = ({
     return map;
   }, [state.hexes, layout, sizes, offsetX, offsetY]);
 
-  // Board container dimensions (use actual size needed)
   const boardWidth = containerWidth;
   const boardHeight = containerHeight;
-
-  // Filter alive pieces for rendering
-  const alivePieces = useMemo(
-    () =>
-      state.pieces.filter(
-        (p) => p.alive && p.q !== null && p.r !== null,
-      ),
-    [state.pieces],
-  );
 
   return (
     <div
@@ -126,8 +113,9 @@ const BoardContainer: React.FC<BoardContainerProps> = ({
         })}
 
         {/* Pieces layer */}
-        {alivePieces.map((piece) => {
-          const pixel = layout.cubeToPixel(piece.q!, piece.r!, sizes);
+        {state.pieces.map((piece) => {
+          if (piece.q === null || piece.r === null || piece.s === null) return null;
+          const pixel = layout.cubeToPixel(piece.q, piece.r, sizes);
           const px = pixel.x + offsetX;
           const py = pixel.y + offsetY;
           return (

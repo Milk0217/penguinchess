@@ -63,8 +63,8 @@ const Piece: React.FC<PieceProps> = ({
         fontSize: 12,
         fontWeight: 800,
         color: "white",
-        pointerEvents: "none",
         userSelect: "none",
+        pointerEvents: "none",
       }}
     >
       {piece.id}

@@ -14,7 +14,7 @@ from typing import List, Optional, Tuple
 # 常量（与 statics/config.js 对齐）
 # =============================================================================
 
-TOTAL_VALUE = 99
+TOTAL_VALUE = 100  # 10×3 + 20×2 + 30×1 = 100
 HEX_COUNT = 60  # 与 JS CONFIG.HEX_COUNT 一致
 COUNT_OF_THREE_MIN = 8
 COUNT_OF_THREE_MAX = 10
@@ -50,11 +50,16 @@ class Hex:
 
     q/r/s 存储的是经过 row_range 调整后的值（与 JS createBoard 一致），
     额外记录 _q_raw = 原始 q 值（用于邻居查找中对齐 q 轴）。
+
+    value 语义：
+      > 0 : 活跃格子，分值为该数字（1/2/3）
+      = 0 : 被棋子占据
+      = -1: 已消除（或已被棋子占据过）
     """
     q: int       # adjusted_r: r + qAdjustments[q_raw]
     r: int       # adjusted_s: -q_raw - adjusted_r
     s: int       # s_raw: q_raw + r_raw（原始 q + 原始 r，用于合法性检查）
-    value: int   # 格子分值: 1, 2, 3（活跃）或 0（被占据）或 -1（已消除）
+    value: int   # 格子状态，见上文
     _q_raw: int = field(default=0)  # 原始 q 值，用于邻居 q 轴偏移
 
     def __hash__(self):
@@ -65,14 +70,74 @@ class Hex:
             return False
         return self.q == other.q and self.r == other.r and self.s == other.s
 
+    def is_active(self) -> bool:
+        """是否活跃（可放置/可移动）。"""
+        return self.value > 0
+
+    def is_occupied(self) -> bool:
+        """是否被棋子占据。"""
+        return self.value == 0
+
+    def is_eliminated(self) -> bool:
+        """是否已消除（或已被使用过）。"""
+        return self.value == -1
+
+    def occupy(self) -> None:
+        """占据此格子（value → 0）。"""
+        self.value = 0
+
+    def eliminate(self) -> None:
+        """消除此格子（value → -1）。"""
+        self.value = -1
+
+    def activate(self, new_value: int) -> None:
+        """激活格子并设置分值。"""
+        self.value = new_value
+
 
 @dataclass
 class Piece:
-    """棋子。ID 决定归属: 偶数→Player1, 奇数→Player2。"""
+    """
+    棋子。ID 决定归属: 偶数→Player1, 奇数→Player2。
+
+    移动后，旧格子被标记为已使用（-1），新格子被占据（0）。
+    如果棋子被销毁（从未移动），则恢复原格子的分值。
+    """
     id: int
     hex: Optional[Hex] = None
-    hex_value: int = 0  # 棋子占据格子前的原始分值（用于还原）
+    hex_value: int = 0  # 棋子当前占据格子的原始分值
     alive: bool = True
+    _moved: bool = field(default=False)  # 是否已移动过（用于销毁时判断）
+
+    def owner(self) -> int:
+        """返回棋子归属: 0=Player1, 1=Player2。"""
+        return self.id % 2
+
+    def is_at_hex(self, hex_obj: Hex) -> bool:
+        """是否在指定格子上。"""
+        return self.alive and self.hex is hex_obj
+
+    def is_mobile(self, valid_moves: list) -> bool:
+        """是否有合法移动。"""
+        return self.alive and self.hex is not None and len(valid_moves) > 0
+
+    def move_to(self, target_hex: Hex) -> int:
+        """
+        将棋子移动到目标格子。返回目标格子的分值（用于计分）。
+
+        注意：此方法不检查移动合法性，调用者需确保 move 合法。
+        旧格子会被标记为已使用（-1），新格子被占据（0）。
+        """
+        # 旧格子标记为已使用
+        if self.hex is not None:
+            self.hex.value = -1
+        # 记录新格子原始分值
+        self.hex_value = target_hex.value
+        # 占据新格子
+        target_hex.value = 0
+        # 移动棋子
+        self.hex = target_hex
+        self._moved = True
 
 
 # =============================================================================
@@ -188,8 +253,10 @@ def create_board_from_coords(coords: List[dict], value_sequence: List[int]) -> L
     根据自定义坐标列表和值序列创建棋盘。
 
     Args:
-        coords: 格子坐标列表 [{"q": int, "r": int, "s": int}, ...]
-        value_sequence: 对应的值序列，总和必须为 TOTAL_VALUE (99)
+        coords: 格子坐标列表，每个元素可以是 {"q": int, "r": int, "s": int}（无 value）
+                或 {"q": int, "r": int, "s": int, "value": int}（带固定 value）
+        value_sequence: 对应的值序列，总和必须为 TOTAL_VALUE (99)。
+                       如果 coords 中每个元素已包含 value，则此参数被忽略。
 
     Returns:
         Hex 对象列表
@@ -199,7 +266,11 @@ def create_board_from_coords(coords: List[dict], value_sequence: List[int]) -> L
         q = coord["q"]
         r = coord["r"]
         s = coord["s"]
-        value = value_sequence[i]
+        # 优先使用 coord 内嵌的固定 value（用于自定义固定分数棋盘）
+        if "value" in coord:
+            value = coord["value"]
+        else:
+            value = value_sequence[i]
         hex_obj = Hex(q=q, r=r, s=s, value=value, _q_raw=q)
         hexes.append(hex_obj)
     return hexes
@@ -261,9 +332,15 @@ class PenguinChessCore:
 
         # 使用自定义坐标或默认坐标
         if self._custom_coords is not None:
-            # 自定义棋盘：使用提供的坐标，生成随机值
+            # 自定义棋盘：使用提供的坐标
             hex_count = len(self._custom_coords)
-            seq = generate_sequence(rng=self._rng, hex_count=hex_count)
+            # coords 中每个 hex 带 "value" 字段时直接用它（固定分数棋盘），
+            # 否则随机生成值序列
+            has_fixed_values = any("value" in c for c in self._custom_coords)
+            if has_fixed_values:
+                seq = [1] * hex_count  # placeholder，create_board_from_coords 会忽略
+            else:
+                seq = generate_sequence(rng=self._rng, hex_count=hex_count)
             self.hexes = create_board_from_coords(self._custom_coords, seq)
         else:
             # 默认棋盘：平行四边形
@@ -314,11 +391,15 @@ class PenguinChessCore:
                     ids.add(self.hexes.index(target))
         return sorted(ids)
 
-    def step(self, action: int) -> Tuple[List, float, bool, dict]:
+    def step(self, action: int, piece_id: Optional[int] = None) -> Tuple[List, float, bool, dict]:
         """
         执行动作。
         返回 (observation, reward, terminated, info)。
         注意: Python Gymnasium 环境由 env.py 调用，此处返回原生格式。
+
+        piece_id: 可选参数，指定要移动的棋子 ID（移动阶段）。
+                 如果提供，后端会验证该棋子是否真的能移动到目标 hex。
+                 如果不提供或验证失败，回退到原有逻辑（取第一个能移动到的棋子）。
         """
         if self._terminated:
             return self.get_observation(), 0.0, True, {}
@@ -329,6 +410,8 @@ class PenguinChessCore:
 
         reward = 0.0
         info = {}
+        # 保存验证结果：piece_id 是否通过验证
+        info["piece_id_valid"] = True
 
         # 保存当前玩家（在动作执行前）
         acting_player = self.current_player
@@ -336,7 +419,7 @@ class PenguinChessCore:
         if self.phase == self.PHASE_MOVEMENT:
             # 移动阶段开始前，销毁无合法移动的棋子
             self._destroy_immobile_pieces()
-            reward, info = self._do_movement(hex_obj)
+            reward, info = self._do_movement(hex_obj, piece_id=piece_id)
         else:
             # 放置阶段守卫：当 6 个棋子全部放完后，切换到移动阶段并执行移动
             # 对应 JS: pieces.length >= 6 时 resolve() 跳过 handleClick → 进入移动阶段
@@ -345,13 +428,17 @@ class PenguinChessCore:
                 reward = self._do_placement(hex_obj)
             else:
                 self.phase = self.PHASE_MOVEMENT
-                reward, info = self._do_movement(hex_obj)
+                reward, info = self._do_movement(hex_obj, piece_id=piece_id)
 
         self._episode_steps += 1
 
-        # 移动阶段每回合后执行连通性消除，再检查游戏是否结束
+        # 移动阶段每回合后：
+        # 1. 消除断连格子（不能通过非-1路径连接到任何存活棋子的格子）
+        # 2. 棋子离场检查（消除后可能产生新的无路棋子）
         if self.phase == self.PHASE_MOVEMENT and not self._terminated:
             self._eliminate_disconnected_hexes()
+            # 消除格子后，可能有棋子因断连而失去所有合法移动，再次销毁
+            self._destroy_immobile_pieces()
 
         self._check_game_over()
 
@@ -478,30 +565,56 @@ class PenguinChessCore:
     # 内部方法：移动阶段
     # -------------------------------------------------------------------------
 
-    def _do_movement(self, target_hex: Hex, dry_run: bool = False) -> Tuple[float, dict]:
+    def _do_movement(self, target_hex: Hex, dry_run: bool = False,
+                      piece_id: Optional[int] = None) -> Tuple[float, dict]:
         """
         执行移动动作。
         target_hex: 目标格子（用户选择的动作 ID 对应的 Hex）。
-        找到己方棋子能移动到该格子的，验证并执行移动。
+        piece_id: 可选参数，指定要移动的棋子 ID。如果提供，优先使用该棋子；
+                  如果该棋子无法移动到目标 hex，返回失败。
+        dry_run: True 时只检查不执行。
 
         Returns: (reward, info)
         """
         info = {}
 
-        # 找到己方能移动到 target_hex 的棋子，同时获取其合法移动集合
+        # 优先使用用户指定的棋子
         piece = None
         piece_moves = None
-        for p in self.pieces:
-            if not p.alive or p.hex is None:
-                continue
-            if self._piece_owner(p) != self.current_player:
-                continue
-            # 检查该棋子是否可以将 target_hex 作为合法移动目标
-            moves = self._get_piece_moves(p)
-            if target_hex in moves:
-                piece = p
-                piece_moves = moves
+
+        if piece_id is not None:
+            # 找到指定棋子
+            for p in self.pieces:
+                if not p.alive or p.hex is None:
+                    continue
+                if p.id != piece_id:
+                    continue
+                if self._piece_owner(p) != self.current_player:
+                    # 棋子不属于当前玩家
+                    info["piece_id_valid"] = False
+                    return -0.5, info
+                moves = self._get_piece_moves(p)
+                if target_hex in moves:
+                    piece = p
+                    piece_moves = moves
+                else:
+                    # 指定棋子无法移动到目标 hex
+                    info["piece_id_valid"] = False
+                    return -0.5, info
                 break
+
+        if piece is None:
+            # 未指定 piece_id 或未找到，回退到原有逻辑：取第一个能移动到的棋子
+            for p in self.pieces:
+                if not p.alive or p.hex is None:
+                    continue
+                if self._piece_owner(p) != self.current_player:
+                    continue
+                moves = self._get_piece_moves(p)
+                if target_hex in moves:
+                    piece = p
+                    piece_moves = moves
+                    break
 
         if piece is None:
             # 无合法移动
@@ -516,10 +629,10 @@ class PenguinChessCore:
         score_gain = target_hex.value
         if not dry_run:
             self.players_scores[self.current_player] += score_gain
-            # 还原旧格子原分值
+            # 棋子离开后，旧格子标记为已使用（value=-1），不可再占据
             if piece.hex is not None:
-                piece.hex.value = piece.hex_value
-            # 记录新格子的原始分值（用于以后还原）
+                piece.hex.value = -1
+            # 记录新格子的原始分值（用于未来可能的还原）
             piece.hex_value = target_hex.value
             # 设置新格子为被占据状态（value=0）
             target_hex.value = 0
@@ -589,9 +702,13 @@ class PenguinChessCore:
     # -------------------------------------------------------------------------
 
     def _destroy_piece(self, piece: Piece) -> None:
-        """移除棋子：还原格子原值，清除棋子引用。"""
+        """
+        移除棋子：格子标记为已使用（-1），不可再移动到。
+
+        与移动后的旧格子处理一致：无论是否移动过，格子都变为 -1。
+        """
         if piece.hex is not None:
-            piece.hex.value = piece.hex_value  # 还原格子原分值
+            piece.hex.value = -1  # 标记为已使用（不可再占据）
             piece.hex = None
         piece.alive = False
 
@@ -634,8 +751,13 @@ class PenguinChessCore:
 
         eliminated = 0
         for h in self.hexes:
+            # 格子满足以下条件时会被"消除"（eliminate）：
+            # - 活跃格子（value > 0）
+            # - 无法通过 value > 0 的格子路径连接到任何存活棋子
+            # 消除后格子值变为 1（而非 -1），因为-1表示"已使用过/不可再占据"
+            # 而消除是格子与棋盘断开连接，不代表已使用，设为1保留其活跃性
             if h.value > 0 and h not in connected:
-                h.value = -1
+                h.value = 1
                 eliminated += 1
 
         return eliminated
@@ -721,6 +843,13 @@ class PenguinChessCore:
         if 0 <= action_id < len(self.hexes):
             return self.hexes[action_id]
         return None
+
+    def _hex_to_index(self, hex_obj: Hex) -> Optional[int]:
+        """Hex 对象 → 动作 ID（数组索引）。"""
+        try:
+            return self.hexes.index(hex_obj)
+        except ValueError:
+            return None
 
     # -------------------------------------------------------------------------
     # 观测编码

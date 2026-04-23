@@ -132,7 +132,7 @@ def api_action(session_id: str):
     提交玩家动作（放置或移动）。
 
     Request body:
-        { "action": <int> }   # hexes 数组索引
+        { "action": <int>, "piece_id": <int?> }   # action: hexes 数组索引, piece_id: 要移动的棋子 ID（仅移动阶段）
 
     Response:
         { "state": <GameState>, "reward": <float>, "invalid": <bool> }
@@ -151,7 +151,14 @@ def api_action(session_id: str):
     except (TypeError, ValueError):
         return jsonify({"error": "action must be an integer"}), 400
 
-    result = session.step(action)
+    piece_id = data.get("piece_id")
+    if piece_id is not None:
+        try:
+            piece_id = int(piece_id)
+        except (TypeError, ValueError):
+            return jsonify({"error": "piece_id must be an integer"}), 400
+
+    result = session.step(action, piece_id=piece_id)
     return jsonify(result)
 
 

@@ -85,11 +85,13 @@ export const api = {
     return request(`/game/${sessionId}`);
   },
 
-  /** 提交动作（hex index） */
-  action(sessionId: string, action: number): Promise<ApiResponse> {
+  /** 提交动作（hex index，可选指定 piece_id） */
+  action(sessionId: string, action: number, pieceId?: number): Promise<ApiResponse> {
+    const body: Record<string, unknown> = { action };
+    if (pieceId !== undefined) body.piece_id = pieceId;
     return request(`/game/${sessionId}/action`, {
       method: "POST",
-      body: JSON.stringify({ action }),
+      body: JSON.stringify(body),
     });
   },
 
