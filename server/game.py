@@ -9,7 +9,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from penguinchess.core import PenguinChessCore
+from penguinchess.core import PenguinChessCore, create_board_from_coords, generate_sequence
 
 
 # =============================================================================
@@ -17,15 +17,38 @@ from penguinchess.core import PenguinChessCore
 # =============================================================================
 
 _sessions: Dict[str, "GameSession"] = {}
+_MAX_SESSIONS = 20  # 最多保留 20 个会话
 
 
 def get_session(session_id: str) -> Optional["GameSession"]:
     return _sessions.get(session_id)
 
 
-def create_session(seed: Optional[int] = None) -> "GameSession":
+def create_session(seed: Optional[int] = None, board_id: Optional[str] = None) -> "GameSession":
+    """
+    创建新游戏会话。
+
+    Args:
+        seed: 随机种子
+        board_id: 棋盘 ID。如果为 None，使用默认棋盘。
+    """
+    # 清理旧会话（保留最近的）
+    if len(_sessions) >= _MAX_SESSIONS:
+        oldest_keys = list(_sessions.keys())[:len(_sessions) - _MAX_SESSIONS + 1]
+        for k in oldest_keys:
+            del _sessions[k]
+
     session_id = str(uuid.uuid4())[:8]
-    session = GameSession(session_id=session_id, seed=seed)
+
+    # 获取棋盘配置
+    custom_coords = None
+    if board_id:
+        from . import boards as board_module
+        board_data = board_module.get_board(board_id)
+        if board_data:
+            custom_coords = board_data.get("hexes")
+
+    session = GameSession(session_id=session_id, seed=seed, custom_coords=custom_coords)
     _sessions[session_id] = session
     return session
 
@@ -45,6 +68,7 @@ class GameSession:
 
     session_id: str
     seed: Optional[int]
+    custom_coords: Optional[List[dict]] = None
 
     _core: PenguinChessCore = field(init=False)
     _game_over: bool = field(default=False, init=False)
@@ -52,7 +76,7 @@ class GameSession:
     _last_action: Optional[dict] = field(default=None, init=False)
 
     def __post_init__(self):
-        self._core = PenguinChessCore(seed=self.seed)
+        self._core = PenguinChessCore(seed=self.seed, custom_coords=self.custom_coords)
         self._core.reset(seed=self.seed)
 
     # -------------------------------------------------------------------------

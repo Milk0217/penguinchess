@@ -90,8 +90,8 @@ body {
 /* 棋盘容器 */
 .board-container {
   position: relative;
-  width: min(620px, 92vw);
-  height: min(620px, 92vw);
+  width: min(720px, 94vw);
+  height: min(720px, 94vw);
   margin: 0 auto;
 }
 

@@ -17,7 +17,8 @@ import os
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 
-from game import create_session, get_session
+from .game import create_session, get_session
+from .boards import list_boards, get_board, save_board, delete_board
 
 app = Flask(__name__, static_folder="../frontend/dist", static_url_path="")
 CORS(app)  # 开发环境允许跨域
@@ -33,6 +34,65 @@ def index():
 
 
 # =============================================================================
+# 棋盘 API
+# =============================================================================
+
+@app.route("/api/boards", methods=["GET"])
+def api_list_boards():
+    """获取所有已保存棋盘列表"""
+    return jsonify(list_boards())
+
+
+@app.route("/api/boards", methods=["POST"])
+def api_save_board():
+    """
+    保存新棋盘。
+
+    Request body:
+        { "name": <str>, "hexes": [{"q": int, "r": int, "s": int}, ...] }
+
+    Response:
+        { "id": <str>, "name": <str>, "hex_count": <int> }
+    """
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "invalid request"}), 400
+
+    name = data.get("name", "未命名棋盘")
+    hexes = data.get("hexes", [])
+
+    if not hexes:
+        return jsonify({"error": "hexes cannot be empty"}), 400
+    if len(hexes) != 60:
+        return jsonify({"error": f"hexes must be exactly 60, got {len(hexes)}"}), 400
+
+    # 生成 ID
+    import time
+    board_id = f"custom-{int(time.time())}"
+
+    result = save_board(board_id, name, hexes)
+    return jsonify(result), 201
+
+
+@app.route("/api/boards/<board_id>", methods=["GET"])
+def api_get_board(board_id: str):
+    """获取指定棋盘的详细信息"""
+    board = get_board(board_id)
+    if not board:
+        return jsonify({"error": "board not found"}), 404
+    return jsonify(board)
+
+
+@app.route("/api/boards/<board_id>", methods=["DELETE"])
+def api_delete_board(board_id: str):
+    """删除指定棋盘"""
+    success = delete_board(board_id)
+    if not success:
+        return jsonify({"error": "board not found or cannot be deleted"}), 404
+    return "", 204
+
+
+# =============================================================================
 # 游戏 API
 # =============================================================================
 
@@ -42,17 +102,18 @@ def api_create_game():
     创建新游戏。
 
     Request body (optional):
-        { "seed": <int> }
+        { "seed": <int>, "board_id": <str> }
 
     Response:
         { "state": <GameState> }
     """
     data = request.get_json(silent=True) or {}
     seed = data.get("seed")
+    board_id = data.get("board_id")
     if seed is not None:
         seed = int(seed)
 
-    session = create_session(seed=seed)
+    session = create_session(seed=seed, board_id=board_id)
     return jsonify({"state": session.state()})
 
 

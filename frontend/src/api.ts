@@ -42,6 +42,14 @@ export interface GameState {
   episode_steps: number;
 }
 
+/** 棋盘元数据 */
+export interface BoardInfo {
+  id: string;
+  name: string;
+  hex_count: number;
+  created_at: string;
+}
+
 interface ApiResponse {
   state: GameState;
   reward?: number;
@@ -62,11 +70,13 @@ async function request(path: string, options?: RequestInit): Promise<any> {
 }
 
 export const api = {
-  /** 创建新游戏 */
-  createGame(seed?: number): Promise<{ state: GameState }> {
+  // === 游戏 API ===
+
+  /** 创建新游戏（可选指定棋盘 ID） */
+  createGame(opts?: { seed?: number; board_id?: string }): Promise<{ state: GameState }> {
     return request("/game", {
       method: "POST",
-      body: JSON.stringify(seed !== undefined ? { seed } : {}),
+      body: JSON.stringify(opts || {}),
     });
   },
 
@@ -86,5 +96,25 @@ export const api = {
   /** 重置游戏 */
   reset(sessionId: string): Promise<{ state: GameState }> {
     return request(`/game/${sessionId}/reset`, { method: "POST" });
+  },
+
+  // === 棋盘 API ===
+
+  /** 获取所有已保存棋盘 */
+  getBoards(): Promise<BoardInfo[]> {
+    return request("/boards");
+  },
+
+  /** 保存棋盘 */
+  saveBoard(name: string, hexes: Array<{ q: number; r: number; s: number }>): Promise<{ id: string; name: string; hex_count: number }> {
+    return request("/boards", {
+      method: "POST",
+      body: JSON.stringify({ name, hexes }),
+    });
+  },
+
+  /** 删除棋盘 */
+  deleteBoard(boardId: string): Promise<void> {
+    return request(`/boards/${boardId}`, { method: "DELETE" });
   },
 };

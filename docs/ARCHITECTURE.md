@@ -35,12 +35,23 @@
 
 ### API 端点
 
+#### 游戏 API
+
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | `POST` | `/api/game` | 创建新游戏，返回初始状态 |
 | `GET` | `/api/game/<id>` | 获取指定游戏状态 |
 | `POST` | `/api/game/<id>/action` | 提交动作（放置/移动） |
 | `POST` | `/api/game/<id>/reset` | 重开一局（相同会话） |
+
+#### 棋盘 API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/boards` | 获取所有已保存棋盘列表 |
+| `POST` | `/api/boards` | 保存新棋盘（编辑器调用） |
+| `GET` | `/api/boards/<id>` | 获取指定棋盘完整数据 |
+| `DELETE` | `/api/boards/<id>` | 删除棋盘 |
 
 所有 API 响应均为完整游戏状态，前端无状态。
 
@@ -64,13 +75,37 @@ penguinchess/
 │   ├── main.js / board.js / piece.js / config.js
 │   └── style.css
 │
-├── frontend/                # React 前端（开发中）
+├── frontend/                # React 前端
 │   ├── src/
 │   │   ├── App.tsx          # 主应用状态机
-│   │   ├── Board.tsx        # 六边形棋盘渲染
 │   │   ├── api.ts           # 后端 API 客户端
-│   │   └── index.css        # Tailwind CSS
+│   │   └── board/           # 棋盘可视化系统（策略模式）
+│   │       ├── BoardContainer.tsx  # 棋盘容器
+│   │       ├── HexCell.tsx   # 六边形格子
+│   │       ├── Piece.tsx     # 棋子渲染
+│   │       ├── Legend.tsx    # 图例
+│   │       ├── types.ts      # 类型定义
+│   │       ├── layouts/      # 布局策略
+│   │       │   ├── index.ts
+│   │       │   ├── parallelogram.ts
+│   │       │   └── hexagon.ts
+│   │       └── themes/       # 主题策略
+│   │           ├── index.ts
+│   │           ├── default.ts
+│   │           └── dark.ts
 │   └── vite.config.ts
+│
+├── frontend/src/editor/     # 棋盘编辑器
+│   ├── BoardEditor.tsx      # 编辑器主组件
+│   ├── EditorCanvas.tsx      # SVG 画布
+│   ├── Sidebar.tsx           # 侧边栏
+│   └── templates.ts          # 预设模板
+│
+├── backend_data/
+│   └── boards/              # 已保存的棋盘 JSON
+│       ├── parallelogram.json
+│       ├── hexagon.json
+│       └── custom-*.json    # 用户自定义棋盘
 │
 └── tests/                   # pytest 测试套件
 ```

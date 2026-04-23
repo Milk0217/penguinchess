@@ -183,6 +183,28 @@ def create_board(value_sequence: List[int]) -> List[Hex]:
     return hexes
 
 
+def create_board_from_coords(coords: List[dict], value_sequence: List[int]) -> List[Hex]:
+    """
+    根据自定义坐标列表和值序列创建棋盘。
+
+    Args:
+        coords: 格子坐标列表 [{"q": int, "r": int, "s": int}, ...]
+        value_sequence: 对应的值序列，总和必须为 TOTAL_VALUE (99)
+
+    Returns:
+        Hex 对象列表
+    """
+    hexes: List[Hex] = []
+    for i, coord in enumerate(coords):
+        q = coord["q"]
+        r = coord["r"]
+        s = coord["s"]
+        value = value_sequence[i]
+        hex_obj = Hex(q=q, r=r, s=s, value=value, _q_raw=q)
+        hexes.append(hex_obj)
+    return hexes
+
+
 # =============================================================================
 # 核心游戏类
 # =============================================================================
@@ -201,9 +223,19 @@ class PenguinChessCore:
     PHASE_PLACEMENT = "placement"
     PHASE_MOVEMENT = "movement"
 
-    def __init__(self, *, seed: Optional[int] = None):
+    def __init__(self, *, seed: Optional[int] = None, custom_coords: Optional[List[dict]] = None):
+        """
+        初始化游戏核心。
+
+        Args:
+            seed: 随机种子
+            custom_coords: 可选，自定义格子坐标列表。
+                          如果为 None，使用默认平行四边形 60 格。
+                          格式: [{"q": int, "r": int, "s": int}, ...]
+        """
         self._rng = random.Random(seed)
         self._seed = seed
+        self._custom_coords = custom_coords  # 保存自定义坐标
 
         self.hexes: List[Hex] = []       # 当前所有格子
         self.pieces: List[Piece] = []    # 所有棋子
@@ -220,10 +252,6 @@ class PenguinChessCore:
         self._hex_map: dict = {}      # (q,r,s) → Hex，快速查找
         self._occupied_set: set = set()  # 已占据格子的 Hex 对象集合，O(1) 查询
 
-    # -------------------------------------------------------------------------
-    # 公共 API（与 Gymnasium 接口对齐）
-    # -------------------------------------------------------------------------
-
     def reset(self, *, seed: Optional[int] = None) -> None:
         """初始化/重置游戏到初始状态。"""
         if seed is None:
@@ -231,8 +259,16 @@ class PenguinChessCore:
         self._rng = random.Random(seed)
         self._seed = seed
 
-        seq = generate_sequence(rng=self._rng)
-        self.hexes = create_board(seq)
+        # 使用自定义坐标或默认坐标
+        if self._custom_coords is not None:
+            # 自定义棋盘：使用提供的坐标，生成随机值
+            hex_count = len(self._custom_coords)
+            seq = generate_sequence(rng=self._rng, hex_count=hex_count)
+            self.hexes = create_board_from_coords(self._custom_coords, seq)
+        else:
+            # 默认棋盘：平行四边形
+            seq = generate_sequence(rng=self._rng)
+            self.hexes = create_board(seq)
         self._build_hex_map()
 
         self.pieces = []
@@ -298,6 +334,8 @@ class PenguinChessCore:
         acting_player = self.current_player
 
         if self.phase == self.PHASE_MOVEMENT:
+            # 移动阶段开始前，销毁无合法移动的棋子
+            self._destroy_immobile_pieces()
             reward, info = self._do_movement(hex_obj)
         else:
             # 放置阶段守卫：当 6 个棋子全部放完后，切换到移动阶段并执行移动
@@ -477,15 +515,16 @@ class PenguinChessCore:
         # 目标格子的分值（移动到新格子获得该格子分值）
         score_gain = target_hex.value
         if not dry_run:
-            old_hex_value = piece.hex_value
             self.players_scores[self.current_player] += score_gain
             # 还原旧格子原分值
             if piece.hex is not None:
                 piece.hex.value = piece.hex_value
+            # 记录新格子的原始分值（用于以后还原）
+            piece.hex_value = target_hex.value
             # 设置新格子为被占据状态（value=0）
             target_hex.value = 0
-            piece.hex_value = old_hex_value
-            piece.hex = None
+            # 移动棋子到新格子
+            piece.hex = target_hex
 
             self._rebuild_occupied()  # 更新占据集合缓存
 
@@ -555,6 +594,15 @@ class PenguinChessCore:
             piece.hex.value = piece.hex_value  # 还原格子原分值
             piece.hex = None
         piece.alive = False
+
+    def _destroy_immobile_pieces(self) -> None:
+        """销毁所有无合法移动的棋子（规则：无路可走的棋子被移除）。"""
+        for piece in self.pieces:
+            if not piece.alive or piece.hex is None:
+                continue
+            moves = self._get_piece_moves(piece)
+            if not moves:
+                self._destroy_piece(piece)
 
     def _eliminate_disconnected_hexes(self) -> int:
         """

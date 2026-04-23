@@ -405,6 +405,77 @@ frontend/src/          # React 前端，通过 HTTP 调用 server/app.py
 
 ---
 
+## 八-2、棋盘可视化系统
+
+### 架构设计
+
+棋盘系统采用**策略模式**，将布局（Layout）与渲染逻辑分离，支持多种棋盘形状和主题。
+
+```
+frontend/src/board/
+├── types.ts              # 核心类型定义
+├── BoardContainer.tsx    # 主容器组件
+├── HexCell.tsx           # 六边形单元组件
+├── Piece.tsx             # 棋子组件
+├── Legend.tsx            # 图例组件
+├── layouts/
+│   ├── index.ts          # 布局注册表
+│   ├── parallelogram.ts  # 平行四边形布局（60格）
+│   └── hexagon.ts        # 正六角形布局（61格，半径4）
+└── themes/
+    ├── index.ts          # 主题注册表
+    ├── default.ts        # 默认主题（亮色）
+    └── dark.ts           # 暗色主题
+```
+
+### 核心接口
+
+```typescript
+// 棋盘布局接口
+interface BoardLayout {
+  id: string;
+  name: string;
+  generateHexes(): HexCoord[];           // 生成六边形坐标
+  cubeToPixel(q, r, config): PixelCoord; // 坐标转像素
+  getBounds(hexes, config): Bounds;       // 获取边界
+}
+
+// 主题配置
+interface BoardTheme {
+  id: string;
+  colors: ThemeColors;   // 11个颜色配置
+  sizes: ThemeSizes;     // 尺寸配置
+  effects: ThemeEffects; // 效果开关
+}
+```
+
+### 添加新布局
+
+1. 创建 `frontend/src/board/layouts/xxx.ts`
+2. 实现 `BoardLayout` 接口
+3. 在 `index.ts` 中注册: `register(xxxLayout)`
+
+### 添加新主题
+
+1. 创建 `frontend/src/board/themes/xxx.ts`
+2. 实现 `BoardTheme` 接口
+3. 在 `index.ts` 中注册: `register(xxxTheme)`
+
+### 使用方式
+
+```tsx
+<BoardContainer
+  state={gameState}
+  layout={getLayout("parallelogram")}  // 或 "hexagon"
+  theme={getTheme("default")}          // 或 "dark"
+  selectedPieceId={selectedPieceId}
+  targetIndices={targetIndices}
+  onHexClick={handleHexClick}
+/>
+```
+
+---
+
 ## 九、已知问题（已修复）
 
 以下问题已在实现过程中修复：

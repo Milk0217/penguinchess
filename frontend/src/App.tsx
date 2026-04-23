@@ -12,10 +12,17 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import Board from "./Board";
 import { api, type GameState, type HexData } from "./api";
+import BoardContainer from "./board/BoardContainer";
+import { getLayout } from "./board/layouts";
+import { getTheme, getAllThemes } from "./board/themes";
+import type { BoardLayout, HexCoord, LayoutConfig, PixelCoord, Bounds } from "./board/types";
+import BoardEditor from "./editor/BoardEditor";
 
 const PLAYER_NAMES = ["Player 1 (P1)", "Player 2 (P2)"];
+
+// 应用模式
+type AppMode = "game" | "editor";
 
 // -------------------------------------------------------------------------
 // 路径检查工具（与 PenguinChessCore._path_clear / JS calculatePossibleMoves 对齐）
@@ -78,6 +85,44 @@ function computeTargets(
   return targets;
 }
 
+/** 根据 hex 数据集动态创建 BoardLayout（用于自定义棋盘） */
+function createLayoutFromHexes(hexes: HexCoord[], boardId: string, boardName: string): BoardLayout {
+  function cubeToPixel(q: number, r: number, config: LayoutConfig): PixelCoord {
+    const { hexSize } = config;
+    return {
+      x: hexSize * 1.5 * q,
+      y: hexSize * (Math.sqrt(3) * 0.5 * q + Math.sqrt(3) * r),
+    };
+  }
+
+  function getBounds(hexes: HexCoord[], config: LayoutConfig): Bounds {
+    let minX = Infinity, maxX = -Infinity;
+    let minY = Infinity, maxY = -Infinity;
+    for (const hex of hexes) {
+      const { x, y } = cubeToPixel(hex.q, hex.r, config);
+      minX = Math.min(minX, x);
+      maxX = Math.max(maxX, x);
+      minY = Math.min(minY, y);
+      maxY = Math.max(maxY, y);
+    }
+    const hexSize = config.hexSize;
+    minX -= hexSize;
+    maxX += hexSize;
+    minY -= hexSize;
+    maxY += hexSize;
+    return { minX, maxX, minY, maxY, width: maxX - minX, height: maxY - minY };
+  }
+
+  return {
+    id: boardId,
+    name: boardName,
+    description: `Custom board: ${boardName}`,
+    generateHexes: () => [...hexes],
+    cubeToPixel,
+    getBounds,
+  };
+}
+
 function getStatusText(state: GameState): string {
   if (state.game_over) {
     if (state.winner === 0) return `${PLAYER_NAMES[0]} 获胜！`;
@@ -92,10 +137,33 @@ function getStatusText(state: GameState): string {
 }
 
 export default function App() {
+  // 应用模式
+  const [mode, setMode] = useState<AppMode>("game");
+
+  // 游戏相关状态
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [state, setState] = useState<GameState | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // 主题与布局
+  const [currentThemeId, setCurrentThemeId] = useState("default");
+  const [currentLayoutId, setCurrentLayoutId] = useState("custom-1776952580");
+  const currentTheme = useMemo(() => getTheme(currentThemeId), [currentThemeId]);
+
+  // 自定义棋盘 layout 缓存（key: boardId）
+  const [customLayouts, setCustomLayouts] = useState<Map<string, BoardLayout>>(new Map());
+
+  // 计算当前 layout（优先从缓存获取，否则用内置的）
+  const currentLayout = useMemo<BoardLayout | undefined>(() => {
+    const cached = customLayouts.get(currentLayoutId);
+    if (cached) return cached;
+    return getLayout(currentLayoutId);
+  }, [currentLayoutId, customLayouts]);
+
+  // 棋盘选择
+  const [availableBoards, setAvailableBoards] = useState<Array<{ id: string; name: string; hex_count: number }>>([]);
+  const [selectedBoardId, setSelectedBoardId] = useState<string>("custom-1776952580");
 
   // 移动阶段：选中棋子的可移动目标格子 index 集合
   const [selectedPieceId, setSelectedPieceId] = useState<number | null>(null);
@@ -108,9 +176,9 @@ export default function App() {
     }
     const hexMap = buildHexIndexMap(state.hexes);
     const piece = state.pieces.find((p) => p.id === selectedPieceId);
-    if (!piece) return new Set();
+    if (!piece || piece.q === null || piece.r === null || piece.s === null) return new Set<number>();
     return computeTargets(
-      { ...piece, q: piece.q!, r: piece.r!, s: piece.s!, value: 0 } as any,
+      { ...piece, q: piece.q, r: piece.r, s: piece.s, value: 0, index: piece.index ?? 0 },
       state.hexes,
       hexMap,
       state.pieces,
@@ -118,7 +186,7 @@ export default function App() {
   }, [state, selectedPieceId]);
 
   // 有效目标集合 = 选中棋子后计算出的目标（优先）或合法动作集合
-  const effectiveTargets = useMemo(() => {
+  const effectiveTargets = useMemo<Set<number>>(() => {
     if (targetIndices.size > 0) return targetIndices;
     return targetIndicesFromSelected;
   }, [targetIndices, targetIndicesFromSelected]);
@@ -126,20 +194,41 @@ export default function App() {
   // -------------------------------------------------------------------------
   // 初始化 / 重置游戏
   // -------------------------------------------------------------------------
-  const initGame = useCallback(async (seed?: number) => {
+  const initGame = useCallback(async (seed?: number, boardId?: string) => {
     setLoading(true);
     setError(null);
     setSelectedPieceId(null);
     setTargetIndices(new Set());
     try {
-      const res = await api.createGame(seed);
+      const res = await api.createGame({ seed, board_id: boardId ?? selectedBoardId });
       setSessionId(res.state.session_id);
       setState(res.state);
+
+      // 如果是自定义棋盘且尚未注册，则动态创建 layout
+      const actualBoardId = boardId ?? selectedBoardId;
+      const builtIn = getLayout(actualBoardId);
+      if (!builtIn && res.state.hexes) {
+        // 这是自定义棋盘，需要创建 layout
+        const hexCoords: HexCoord[] = res.state.hexes.map(h => ({ q: h.q, r: h.r, s: h.s }));
+        const boardInfo = availableBoards.find(b => b.id === actualBoardId);
+        const boardName = boardInfo?.name ?? actualBoardId;
+        const customLayout = createLayoutFromHexes(hexCoords, actualBoardId, boardName);
+        setCustomLayouts(prev => {
+          const next = new Map(prev);
+          next.set(actualBoardId, customLayout);
+          return next;
+        });
+      }
     } catch (e: any) {
       setError(e.message || "创建游戏失败");
     } finally {
       setLoading(false);
     }
+  }, [selectedBoardId, availableBoards]);
+
+  // 加载可用棋盘列表
+  useEffect(() => {
+    api.getBoards().then(setAvailableBoards).catch(console.error);
   }, []);
 
   useEffect(() => {
@@ -223,6 +312,10 @@ export default function App() {
     }
   };
 
+  if (mode === "editor") {
+    return <BoardEditor onBack={() => setMode("game")} />;
+  }
+
   if (loading && !state) {
     return (
       <div className="loading">
@@ -253,50 +346,54 @@ export default function App() {
       display: "flex",
       flexDirection: "column",
       alignItems: "center",
-      padding: "1.5rem 1rem",
+      padding: "1rem 0.5rem",
+      width: "100%",
+      maxWidth: "100vw",
+      overflow: "hidden",
+      boxSizing: "border-box",
     }}>
       {/* 标题 */}
-      <h1 style={{ fontSize: "1.6rem", fontWeight: 800, color: "#0f172a", margin: "0 0 0.5rem" }}>
+      <h1 style={{ fontSize: "1.3rem", fontWeight: 800, color: "#0f172a", margin: "0 0 0.25rem", textAlign: "center" }}>
         🐧 企鹅棋 PenguinChess
       </h1>
-      <p style={{ color: "#64748b", fontSize: "0.85rem", margin: "0 0 1.5rem" }}>
+      <p style={{ color: "#64748b", fontSize: "0.75rem", margin: "0 0 1rem", textAlign: "center" }}>
         前后端分离架构 · 游戏逻辑在后端执行
       </p>
 
-      {/* 分数板 */}
-      <div className="scoreboard">
+      {/* 分数板 - 响应式 */}
+      <div className="scoreboard" style={{ gap: "0.5rem", padding: "0.5rem 1rem" }}>
         <div>
-          <span style={{ color: "#3b82f6", fontWeight: 800, fontSize: "1.1rem" }}>
+          <span style={{ color: "#3b82f6", fontWeight: 800, fontSize: "1rem" }}>
             {PLAYER_NAMES[0]}
           </span>
-          <div style={{ fontSize: "2rem", fontWeight: 900, color: "#1e40af" }}>
+          <div style={{ fontSize: "1.6rem", fontWeight: 900, color: "#1e40af" }}>
             {state.scores[0]}
           </div>
           {state.current_player === 0 && !isGameOver && (
-            <span style={{ fontSize: "0.7rem", color: "#3b82f6", fontWeight: 700 }}>● 回合中</span>
+            <span style={{ fontSize: "0.65rem", color: "#3b82f6", fontWeight: 700 }}>● 回合中</span>
           )}
         </div>
-        <div className="vs" style={{ fontSize: "1.2rem", fontWeight: 700, paddingTop: "0.5rem" }}>vs</div>
+        <div className="vs" style={{ fontSize: "1rem", fontWeight: 700, paddingTop: "0.25rem" }}>vs</div>
         <div>
-          <span style={{ color: "#ef4444", fontWeight: 800, fontSize: "1.1rem" }}>
+          <span style={{ color: "#ef4444", fontWeight: 800, fontSize: "1rem" }}>
             {PLAYER_NAMES[1]}
           </span>
-          <div style={{ fontSize: "2rem", fontWeight: 900, color: "#b91c1c" }}>
+          <div style={{ fontSize: "1.6rem", fontWeight: 900, color: "#b91c1c" }}>
             {state.scores[1]}
           </div>
           {state.current_player === 1 && !isGameOver && (
-            <span style={{ fontSize: "0.7rem", color: "#ef4444", fontWeight: 700 }}>● 回合中</span>
+            <span style={{ fontSize: "0.65rem", color: "#ef4444", fontWeight: 700 }}>● 回合中</span>
           )}
         </div>
       </div>
 
       {/* 阶段标签 */}
-      <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", margin: "0 0 0.5rem" }}>
+      <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", margin: "0 0 0.25rem", flexWrap: "wrap", justifyContent: "center" }}>
         <span className={`phase-badge ${state.phase}`}>
           {state.phase === "placement" ? "放置阶段" : "移动阶段"}
         </span>
         {!isGameOver && (
-          <span style={{ color: "#94a3b8", fontSize: "0.8rem" }}>
+          <span style={{ color: "#94a3b8", fontSize: "0.75rem" }}>
             合法动作: {state.legal_actions.length}
           </span>
         )}
@@ -308,13 +405,16 @@ export default function App() {
       </div>
 
       {/* 棋盘 */}
-      <Board
-        state={state}
-        selectedHexIndex={null}
-        selectedPieceId={selectedPieceId}
-        targetIndices={effectiveTargets}
-        onHexClick={handleBoardHexClick}
-      />
+      {currentLayout && (
+        <BoardContainer
+          state={state}
+          layout={currentLayout}
+          theme={currentTheme}
+          selectedPieceId={selectedPieceId}
+          targetIndices={effectiveTargets}
+          onHexClick={handleBoardHexClick}
+        />
+      )}
 
       {/* 操作提示 */}
       {!isGameOver && (
@@ -327,11 +427,74 @@ export default function App() {
         </div>
       )}
 
-      {/* 重开按钮 */}
-      <div style={{ marginTop: "1.5rem", display: "flex", gap: "0.75rem" }}>
-        <button className="btn btn-primary" onClick={handleReset} disabled={loading}>
-          🔄 新游戏
+      {/* 控制按钮 - 响应式布局 */}
+      <div
+        style={{
+          marginTop: "1.5rem",
+          display: "flex",
+          flexWrap: "wrap",
+          gap: "0.5rem",
+          justifyContent: "center",
+          maxWidth: "100%",
+          padding: "0 0.5rem",
+        }}
+      >
+        <button
+          className="btn btn-secondary"
+          onClick={() => setMode("editor")}
+          style={{ background: "#8b5cf6", color: "white", border: "none" }}
+        >
+          棋盘编辑器
         </button>
+        <button className="btn btn-primary" onClick={() => initGame()} disabled={loading}>
+          新游戏
+        </button>
+        <button className="btn btn-secondary" onClick={handleReset} disabled={loading}>
+          重开
+        </button>
+        <select
+          value={selectedBoardId}
+          onChange={(e) => {
+            const newId = e.target.value;
+            setSelectedBoardId(newId);
+            setCurrentLayoutId(newId);
+            initGame(undefined, newId);
+          }}
+          style={{
+            padding: "6px 10px",
+            fontSize: "13px",
+            borderRadius: "6px",
+            border: "1px solid #e2e8f0",
+            background: "white",
+            cursor: "pointer",
+            minWidth: "100px",
+          }}
+        >
+          {availableBoards.map(board => (
+            <option key={board.id} value={board.id}>
+              {board.name} ({board.hex_count}格)
+            </option>
+          ))}
+        </select>
+        <select
+          value={currentThemeId}
+          onChange={(e) => setCurrentThemeId(e.target.value)}
+          style={{
+            padding: "6px 10px",
+            fontSize: "13px",
+            borderRadius: "6px",
+            border: "1px solid #e2e8f0",
+            background: "white",
+            cursor: "pointer",
+            minWidth: "80px",
+          }}
+        >
+          {getAllThemes().map(theme => (
+            <option key={theme.id} value={theme.id}>
+              {theme.name}
+            </option>
+          ))}
+        </select>
       </div>
 
       {/* 错误提示 */}

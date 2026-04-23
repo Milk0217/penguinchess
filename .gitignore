@@ -8,3 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Agent and runtime files
+.hermes/
+backend_data/
