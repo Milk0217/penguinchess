@@ -72,10 +72,10 @@ def save_board(board_id: str, name: str, hexes: List[Dict]) -> Dict:
 def delete_board(board_id: str) -> bool:
     """
     删除指定 ID 的棋盘文件。
-    如果是内置棋盘（parallelogram, hexagon）则不允许删除。
+    内置棋盘（default, parallelogram, hexagon）不允许删除。
     """
     # 内置棋盘不允许删除
-    if board_id in ("parallelogram", "hexagon"):
+    if board_id in ("default", "parallelogram", "hexagon"):
         return False
 
     path = _get_boards_dir() / f"{board_id}.json"
@@ -112,6 +112,10 @@ def init_builtin_boards():
                 hexagon_hexes.append({"q": q, "r": r, "s": s})
 
     builtins = {
+        "default": {
+            "name": "默认棋盘",
+            "hexes": parallelogram_hexes,
+        },
         "parallelogram": {
             "name": "平行四边形",
             "hexes": parallelogram_hexes,

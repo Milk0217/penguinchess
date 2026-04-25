@@ -19,7 +19,7 @@ interface SidebarProps {
   onRandom: () => void;
   onSave: () => void;
   onLoad: (boardId: string) => void;
-  onDelete: (boardId: string) => void;
+  onDelete: (boardId: string, boardName?: string) => void;
   exportCode: string | null;
   boardName: string;
   onBoardNameChange: (name: string) => void;
@@ -304,23 +304,21 @@ const Sidebar: React.FC<SidebarProps> = ({
                     >
                       加载
                     </button>
-                    {board.id.startsWith("custom-") && (
-                      <button
-                        onClick={() => onDelete(board.id)}
-                        disabled={isLoading}
-                        style={{
-                          padding: "0.25rem 0.5rem",
-                          background: "#dc2626",
-                          border: "none",
-                          borderRadius: "4px",
-                          color: "#fff",
-                          fontSize: "0.7rem",
-                          cursor: "pointer",
-                        }}
-                      >
-                        删除
-                      </button>
-                    )}
+                    <button
+                      onClick={() => onDelete(board.id, board.name)}
+                      disabled={isLoading}
+                      style={{
+                        padding: "0.25rem 0.5rem",
+                        background: "#dc2626",
+                        border: "none",
+                        borderRadius: "4px",
+                        color: "#fff",
+                        fontSize: "0.7rem",
+                        cursor: "pointer",
+                      }}
+                    >
+                      删除
+                    </button>
                   </div>
                 </div>
               ))

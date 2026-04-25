@@ -186,31 +186,37 @@ const BoardEditor: React.FC<BoardEditorProps> = ({ onBack }) => {
   const handleLoad = useCallback(async (boardId: string) => {
     setIsLoading(true);
     try {
-      const boards = await api.getBoards();
-      const board = boards.find((b: BoardInfo) => b.id === boardId);
-      if (board) {
-        // 需要获取完整数据才能加载
-        // 目前通过保存时的导出代码功能来获取
-        alert(`请在游戏中选择棋盘 "${board.name}" 进行对战。\n\n如需编辑，请使用导出代码功能。`);
+      const board = await api.getBoard(boardId);
+      if (board && board.hexes && board.hexes.length > 0) {
+        // 将后端坐标转为编辑器格式
+        const hexes = board.hexes;
+        const selectedSet = new Set(hexes.map(h => `${h.q},${h.r},${h.s}`));
+        setSelected(selectedSet);
+        setBoardName(board.name);
+        setExportCode(null);
+        console.log(`Board "${board.name}" loaded: ${hexes.length} hexes`);
+      } else {
+        alert(`棋盘 "${board.name || boardId}" 数据为空，无法加载。`);
       }
     } catch (e: any) {
-      alert(`加载失败: ${e.message}`);
+      alert(`加载失败: ${e.message || '未知错误'}`);
     } finally {
       setIsLoading(false);
     }
   }, []);
 
   // 删除棋盘
-  const handleDelete = useCallback(async (boardId: string) => {
-    if (!confirm(`确定要删除棋盘 "${boardId}" 吗？`)) return;
+  const handleDelete = useCallback(async (boardId: string, boardName?: string) => {
+    const name = boardName || boardId;
+    if (!confirm(`确定要删除棋盘 "${name}" 吗？此操作不可撤销。`)) return;
 
     setIsLoading(true);
     try {
       await api.deleteBoard(boardId);
       await loadBoards();
-      alert("删除成功");
+      alert(`棋盘 "${name}" 已删除。`);
     } catch (e: any) {
-      alert(`删除失败: ${e.message}`);
+      alert(`删除 "${name}" 失败: ${e.message || '服务器拒绝操作'}`);
     } finally {
       setIsLoading(false);
     }
