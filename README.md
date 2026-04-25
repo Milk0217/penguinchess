@@ -28,7 +28,9 @@ while not terminated and not truncated:
 env.close()
 ```
 
-### 目标 3：人机对战 Web 界面（React + Flask）
+### 目标 3：高平局率 AI
+
+在达成高胜率 AI 后，进一步训练追求**高平局率**的策略 AI（防守型/和棋型 AI）。目标是在无法获胜的情况下最大化平局概率，研究防守策略与博弈平衡。
 
 提供直观的浏览器对战界面，人类玩家对抗 AI 智能体。
 
