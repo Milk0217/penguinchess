@@ -464,16 +464,17 @@ const GLOBAL_THEMES: Record<GlobalTheme, {
 
       {/* DEBUG: 后端返回的 hex 数据 */}
       <div style={{
-        background: "#fef3c7",
-        border: "2px solid #f59e0b",
+        background: pageTheme.cardBg,
+        border: "1px solid " + pageTheme.cardBorder,
         borderRadius: "8px",
         padding: "0.75rem",
         marginBottom: "1rem",
         maxWidth: "500px",
         fontSize: "0.7rem",
-        fontFamily: "monospace"
+        fontFamily: "monospace",
+        color: pageTheme.textMuted,
       }}>
-        <strong style={{ color: "#92400e" }}>[DEBUG] 后端返回的 hex 数据:</strong>
+        <strong style={{ color: pageTheme.accent }}>[DEBUG] 后端返回的 hex 数据:</strong>
         <div style={{ marginTop: "0.5rem" }}>
           <div>hex 总数: <strong>{state.hexes.length}</strong></div>
           <div>hex 状态分布: <strong>{JSON.stringify(hexStates)}</strong></div>
@@ -557,8 +558,8 @@ const GLOBAL_THEMES: Record<GlobalTheme, {
           <span>当前: <strong style={{ color: state.current_player === 0 ? pageTheme.accent : (globalTheme==="dark"?"#f87171":"#ef4444") }}>
             {state.current_player === 0 ? "P1" : "P2"}
           </strong></span>
-          <span>P1 分数: <strong style={{ color: "#1e40af" }}>{state.scores[0]}</strong></span>
-          <span>P2 分数: <strong style={{ color: "#b91c1c" }}>{state.scores[1]}</strong></span>
+          <span>P1 分数: <strong style={{ color: globalTheme==="dark" ? "#93c5fd" : "#1e40af" }}>{state.scores[0]}</strong></span>
+          <span>P2 分数: <strong style={{ color: globalTheme==="dark" ? "#fca5a5" : "#b91c1c" }}>{state.scores[1]}</strong></span>
         </div>
 
         {/* 移动阶段额外信息 */}

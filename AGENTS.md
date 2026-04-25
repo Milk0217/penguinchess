@@ -40,7 +40,54 @@ penguinchess/
 │
 ├── statics/                         # 原始前端（Vanilla JS）
 │
-├── docs/                           # 文档
+├── docs/                      # 文档
+
+---
+
+## 十一、Agent 工作流程与可用工具
+
+### 11.1 调试与测试工具
+
+Agent 在任务执行过程中可以使用以下工具：
+
+| 工具 | 用途 |
+|------|------|
+| `uv run python ...` | 运行 Python 脚本（后端逻辑验证） |
+| `uv run python server/app.py` | 启动 Flask 后端服务器 |
+| `bun run dev` (前端目录) | 启动 Vite 前端开发服务器 |
+| `uv run python start_all.py` | 一键启动前后端 |
+| `gh` (GitHub CLI) | 查看 Issue、PR、代码审查 |
+| `opencode debug` | 启动交互式调试会话 |
+| `pytest` | 运行 Python 测试（如存在） |
+| 后端日志 | 查看 Flask 输出的游戏状态、棋子死亡、阶段变化等信息 |
+
+### 11.2 推荐工作流程
+
+1. **分析阶段**：使用 `explore` agent 并行搜索代码库，理解相关模块
+2. **调试阶段**：
+   - 启动后端：`uv run python server/app.py`（终端 1）
+   - 启动前端：`cd frontend && bun run dev`（终端 2）
+   - 通过浏览器操作游戏，观察后端日志输出
+   - 使用 `uv run python -c "..."` 直接测试后端逻辑
+3. **验证阶段**：确认问题修复后，检查无回归问题
+4. **提交**：使用 `git add/commit/push` 提交代码
+
+### 11.3 后端调试日志解读
+
+Flask 后端会输出详细的游戏状态日志：
+
+```
+[game_id] #001 | P1 placed | hex=57 (-6,+2,+4) | val=0 | +0.030 | P1:3/3 P2:3/3
+[game_id] #002 | P2 placed | hex=56 (-5,+1,+4) | val=0 | +0.010 | P1:3/3 P2:3/3
+[game_id] #003 | P1 placed | hex=55 (-7,+4,+3) | val=0 | +0.020 | P1:2/3 P2:3/3
+[game_id] | P1 piece DEAD | piece=4 | (+0,+0,+0) | reason=eliminated
+[game_id] MOVEMENT (seed=None)
+[game_id] #007 | P1 moved | piece=6 | (+3,-5,+2) -> (+3,-5,+2) | hex=38 | +0.010 | P1:1/3 P2:2/3
+```
+
+- `P1:3/3 P2:3/3` 表示双方存活棋子数/总数
+- `reason=eliminated` = 格子断连导致棋子被移除
+- `reason=no valid moves` = 棋子无合法移动被移除
 │   ├── RULES.md                   # 权威游戏规则
 │   ├── ARCHITECTURE.md            # 架构设计与演进路线
 │   └── BOARD_EDITOR.md            # 棋盘编辑器设计
