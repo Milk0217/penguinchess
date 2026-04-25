@@ -8,14 +8,15 @@ const Q_ADJUSTMENTS: Record<string, number> = {
   "0": 0, "1": -1, "2": -2, "3": -2,
 };
 
-function toRawCoords(hex: HexData): { q: number; r: number } {
+function toRawCoords(hex: HexData): { q: number; r: number; s: number } {
   // 后端存储: hex.q = adjusted_r = raw_r + adjustment
   //            hex.r = adjusted_s = -raw_q - adjusted_r
   //            hex.s = raw_q
   const raw_q = hex.s;
   const adj = Q_ADJUSTMENTS[String(raw_q)] ?? 0;
   const raw_r = hex.q - adj;
-  return { q: raw_q, r: raw_r };
+  const raw_s = -raw_q - raw_r;  // q + r + s = 0
+  return { q: raw_q, r: raw_r, s: raw_s };
 }
 
 interface HexCellProps {
@@ -97,7 +98,7 @@ const HexCell: React.FC<HexCellProps> = ({
       {showValue && <span>{hex.points}</span>}
       {showCoords && (
         <span style={{ fontSize: `${sizes.hexSize * 0.3}px`, opacity: 0.7 }}>
-          ({toRawCoords(hex).q},{toRawCoords(hex).r})
+          ({toRawCoords(hex).q},{toRawCoords(hex).r},{toRawCoords(hex).s})
         </span>
       )}
     </div>
