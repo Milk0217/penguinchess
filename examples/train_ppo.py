@@ -206,6 +206,12 @@ def train(args):
     model.save(gen_path)
     print(f"已保存: gen_{gen}")
 
+    # 同步更新 best 目录（供前端 AI 加载）
+    best_dir = MODELS_DIR / "best"
+    best_dir.mkdir(exist_ok=True)
+    best_path = str(best_dir / "best_model.zip")
+    model.save(best_path)
+
     # ===== 对战评估 & ELO =====
     print(f"\n--- Gen {gen} 对战评估 ---")
 

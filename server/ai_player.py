@@ -15,6 +15,19 @@ from penguinchess.core import PenguinChessCore
 MODELS_DIR = Path(__file__).parent.parent / "models"
 
 
+def _find_best_gen() -> Optional[Path]:
+    """找"最强"的 gen 模型（取最高 generation 编号）。"""
+    gens = sorted(MODELS_DIR.glob("ppo_penguinchess_gen_*.zip"))
+    if gens:
+        # 取最后一个（编号最大）
+        return gens[-1]
+    # 回退到 best 目录
+    best = MODELS_DIR / "best" / "best_model.zip"
+    if best.exists():
+        return best
+    return None
+
+
 class AIPlayer:
     """AI 玩家，加载 PPO 模型并做出决策。"""
 
@@ -28,12 +41,13 @@ class AIPlayer:
         self._model: Optional[PPO] = None
 
         if model_path is None:
-            # 自动选择最佳模型
-            best_path = MODELS_DIR / "best" / "best_model.zip"
-            if best_path.exists():
-                model_path = str(best_path)
+            # 优先加载最强一代（ELO 最高的）
+            best_gen = _find_best_gen()
+            if best_gen:
+                model_path = str(best_gen)
+                print(f"[AI] Auto-selected best gen: {best_gen.name}")
             else:
-                # 回退到最新 checkpoint
+                # 回退到 checkpoint
                 checkpoints = sorted(MODELS_DIR.glob("ppo_penguinchess_*.zip"))
                 if checkpoints:
                     model_path = str(checkpoints[-1])
