@@ -713,7 +713,7 @@ class PenguinChessCore:
         return candidates
 
     def _path_clear(self, from_hex: Hex, to_hex: Hex) -> bool:
-        """检查从 from_hex 到 to_hex 的路径是否畅通（不含任何棋子）。"""
+        """检查从 from_hex 到 to_hex 的路径是否畅通（不含任何棋子/已消除格子）。"""
         dq = to_hex.q - from_hex.q
         dr = to_hex.r - from_hex.r
         ds = to_hex.s - from_hex.s
@@ -727,17 +727,16 @@ class PenguinChessCore:
         sign_s = _sign(ds)
 
         for i in range(1, steps):
-            # q 轴偏移用 _q_raw，其他轴用存储值
-            key_q = from_hex.q + sign_q * i  # 沿 q 轴移动
+            # 中间格子使用调整后坐标（与 JS calculatePossibleMoves 一致）
+            key_q = from_hex.q + sign_q * i
             key_r = from_hex.r + sign_r * i
             key_s = from_hex.s + sign_s * i
-            # 若沿 q 轴移动，需要用 _q_raw 对齐
-            if dq != 0:
-                key_q = from_hex._q_raw + sign_q * i
             mid_idx = self._hex_map.get((key_q, key_r, key_s))
             if mid_idx is None:
-                continue  # 棋盘外，跳过
-            if mid_idx in self._occupied_set:
+                return False  # 中间格子不在棋盘上，路径无效
+            mid_hex = self.hexes[mid_idx]
+            # 中间格子被占据、已使用或已消除 → 阻挡
+            if mid_idx in self._occupied_set or not mid_hex.is_active():
                 return False
 
         return True
