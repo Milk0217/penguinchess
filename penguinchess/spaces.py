@@ -22,34 +22,9 @@ OBS_FLAT_SIZE = N_HEX * N_FEATURES + N_PIECES * PIECE_FEATURES  # 60*3 + 6*4 = 2
 # 观测空间
 # =============================================================================
 
-class PenguinChessFlatObs(gym.Space):
-    """
-    企鹅棋扁平观测空间。
-    形状: (204,)
-    - 前 60*3=180 维: 棋盘（每格 [q/8, r/8, value/3]）
-    - 后 6*4=24 维: 棋子（每棋子 [id/10, q/8, r/8, s/8]，已移除则 id=-1, 坐标=0）
-    """
-
-    def __init__(self):
-        super().__init__(shape=(OBS_FLAT_SIZE,), dtype=np.float32)
-
-    def sample(self, mask: np.ndarray = None) -> np.ndarray:
-        raise NotImplementedError("PenguinChessFlatObs 不支持随机采样，请使用 reset() 初始化")
-
-    def contains(self, x) -> bool:
-        if not isinstance(x, np.ndarray):
-            x = np.array(x, dtype=np.float32)
-        if x.shape != (OBS_FLAT_SIZE,):
-            return False
-        return (
-            (x >= -1.0).all() and (x <= 1.0).all()
-        )
-
-    def to_jsonable(self, x) -> list:
-        return x.tolist()
-
-    def from_jsonable(self, x) -> np.ndarray:
-        return np.array(x, dtype=np.float32)
+PenguinChessFlatObs: gym.spaces.Box = gym.spaces.Box(
+    low=-1.0, high=1.0, shape=(OBS_FLAT_SIZE,), dtype=np.float32
+)
 
 
 # =============================================================================

@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 
-const BASE_URL = 'http://localhost:5000';
+const BASE_URL = 'http://localhost:8080';
 
 test.describe('企鹅棋 E2E 测试', () => {
     test.beforeEach(async ({ page }) => {

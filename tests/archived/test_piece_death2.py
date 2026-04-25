@@ -17,7 +17,7 @@ def create_trapped_piece_scenario():
         core.step(legal[i % len(legal)])
 
     print(f"放置阶段完成: {core.phase}")
-    print(f"活跃格子: {len([h for h in core.hexes if h.value > 0])}")
+    print(f"活跃格子: {len([h for h in core.hexes if h.is_active()])}")
 
     # 找一个棋子，检查它的状态
     piece = core.pieces[0]  # P1 棋子 ID=4
@@ -45,12 +45,12 @@ def create_trapped_piece_scenario():
             in_moves = h in core._get_piece_moves(piece)
 
             status = []
-            if h.value <= 0: status.append(f"value={h.value}")
+            if not h.is_active(): status.append(f"state={h.state}")
             if is_occupied: status.append("被占据")
             if not path_clear and not is_occupied: status.append("路径不通")
             if in_moves: status.append("[可达]")
 
-            print(f"  ({h.q}, {h.r}, {h.s}): value={h.value:2d} {', '.join(status) if status else '空闲'}")
+            print(f"  ({h.q}, {h.r}, {h.s}): points={h.points:2d} {', '.join(status) if status else '空闲'}")
 
     moves = core._get_piece_moves(piece)
     print(f"\n棋子 {piece.id} 合法移动数: {len(moves)}")
@@ -61,8 +61,8 @@ def create_trapped_piece_scenario():
 
     # 标记所有非目标格子为已使用
     for h in core.hexes:
-        if h.value > 0 and not core._hex_occupied(h):
-            h.value = -1  # 设为已使用
+        if h.is_active() and not core._hex_occupied(h):
+            h.mark_used()  # 设为已使用
 
     # 重新计算合法移动
     moves_after = core._get_piece_moves(piece)
@@ -103,7 +103,7 @@ def test_scenario_with_elimination():
             core.step(legal[0])
 
     print(f"\n移动 5 回合后:")
-    print(f"活跃格子: {len([h for h in core.hexes if h.value > 0])}")
+    print(f"活跃格子: {len([h for h in core.hexes if h.is_active()])}")
 
     # 检查所有棋子
     for p in core.pieces:
@@ -114,7 +114,7 @@ def test_scenario_with_elimination():
     # 执行消除
     eliminated = core._eliminate_disconnected_hexes()
     print(f"\n消除 {eliminated} 个格子")
-    print(f"消除后活跃格子: {len([h for h in core.hexes if h.value > 0])}")
+    print(f"消除后活跃格子: {len([h for h in core.hexes if h.is_active()])}")
 
     # 再次检查
     print("\n消除后棋子状态:")

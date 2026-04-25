@@ -148,7 +148,7 @@ export default function App() {
 
   // 主题与布局
   const [currentThemeId, setCurrentThemeId] = useState("default");
-  const [currentLayoutId, setCurrentLayoutId] = useState("custom-1776952580");
+  const [currentLayoutId, setCurrentLayoutId] = useState("default");
   const currentTheme = useMemo(() => getTheme(currentThemeId), [currentThemeId]);
 
   // 自定义棋盘 layout 缓存（key: boardId）
@@ -163,7 +163,7 @@ export default function App() {
 
   // 棋盘选择
   const [availableBoards, setAvailableBoards] = useState<Array<{ id: string; name: string; hex_count: number }>>([]);
-  const [selectedBoardId, setSelectedBoardId] = useState<string>("custom-1776952580");
+  const [selectedBoardId, setSelectedBoardId] = useState<string>("default");
 
   // 移动阶段：选中棋子的可移动目标格子 index 集合
   const [selectedPieceId, setSelectedPieceId] = useState<number | null>(null);

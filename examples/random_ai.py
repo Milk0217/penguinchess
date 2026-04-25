@@ -145,7 +145,7 @@ def test_board_generation():
     print("\n测试 create_board()...")
     hexes = create_board(seq)
     print(f"  生成格子数: {len(hexes)} (应为 60)")
-    active = [h for h in hexes if h.value > 0]
+    active = [h for h in hexes if h.is_active()]
     print(f"  活跃格子数: {len(active)}")
 
     # 测试 PenguinChessCore

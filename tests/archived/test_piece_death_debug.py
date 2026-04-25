@@ -44,12 +44,12 @@ def test_piece_death_scenario():
 
     # 检查所有格子
     for h in core2.hexes:
-        if h.value > 0:
+        if h.is_active():
             # 检查是否与 piece 同轴
             if h.q == piece.hex.q or h.r == piece.hex.r or h.s == piece.hex.s:
                 moves = core2._get_piece_moves(piece)
                 is_target = h in moves
-                print(f"  ({h.q}, {h.r}, {h.s}) value={h.value} - {'可移动' if is_target else '不可移动'}")
+                print(f"  ({h.q}, {h.r}, {h.s}) points={h.points} - {'可移动' if is_target else '不可移动'}")
 
     print(f"\n棋子 {piece.id} 的合法移动: {len(core2._get_piece_moves(piece))} 个")
     print(f"棋子状态: alive={piece.alive}")
@@ -101,7 +101,7 @@ def test_isolated_piece():
 
     # 人为创造一个孤立场景：让所有格子都变成 -1 或 0
     # 先看看当前的 hex 状态
-    print("活跃格子数量:", len([h for h in core.hexes if h.value > 0]))
+    print("活跃格子数量:", len([h for h in core.hexes if h.is_active()]))
 
     # 找一个棋子，检查它到底有没有合法移动
     for p in core.pieces:
@@ -109,7 +109,7 @@ def test_isolated_piece():
             moves = core._get_piece_moves(p)
             print(f"棋子 {p.id} 在 ({p.hex.q},{p.hex.r},{p.hex.s}), 合法移动数: {len(moves)}")
             if moves:
-                print(f"  可移动目标: {[(m.q, m.r, m.s, m.value) for m in moves[:5]]}")
+                print(f"  可移动目标: {[(m.q, m.r, m.s, m.points) for m in moves[:5]]}")
 
 if __name__ == "__main__":
     test_piece_death_scenario()

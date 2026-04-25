@@ -100,6 +100,7 @@ export interface PieceData {
   q: number | null;
   r: number | null;
   s: number | null;
+  index: number | null;
   alive: boolean;
 }
 
@@ -115,4 +116,10 @@ export interface GameState {
   episode_steps: number;
   game_over: boolean;
   winner: number | null;
+  last_action: {
+    player: number;
+    action: number;
+    hex: { q: number; r: number; s: number; state: string; points: number };
+    phase_before: string;
+  } | null;
 }

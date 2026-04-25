@@ -116,6 +116,11 @@ export const api = {
     });
   },
 
+  /** 获取单个棋盘详情 */
+  getBoard(boardId: string): Promise<{ id: string; name: string; hexes: Array<{ q: number; r: number; s: number }> }> {
+    return request(`/boards/${boardId}`);
+  },
+
   /** 删除棋盘 */
   deleteBoard(boardId: string): Promise<void> {
     return request(`/boards/${boardId}`, { method: "DELETE" });

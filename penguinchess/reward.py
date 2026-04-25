@@ -11,7 +11,7 @@ from dataclasses import dataclass
 # Reward 配置
 # =============================================================================
 
-TOTAL_VALUE = 100  # 10×3 + 20×2 + 30×1 = 100，与 core.py 保持一致
+TOTAL_VALUE = 99  # 棋盘总分 99（与 core.py 保持一致）
 
 
 @dataclass

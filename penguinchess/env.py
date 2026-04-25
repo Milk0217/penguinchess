@@ -62,7 +62,7 @@ class PenguinChessEnv(gym.Env):
         self.reward_type = reward_type
 
         # 观测/动作空间
-        self.observation_space: gym.Space = PenguinChessFlatObs()
+        self.observation_space: gym.Space = PenguinChessFlatObs
         self.action_space: gym.Space = PenguinChessActionSpace(n=N_HEX)
 
         # 核心游戏逻辑
@@ -70,8 +70,6 @@ class PenguinChessEnv(gym.Env):
 
         # 内部状态
         self._obs: Optional[np.ndarray] = None
-        self._prev_scores: Optional[list[int]] = None
-        self._prev_pieces: Optional[Tuple[int, int]] = None
         self._winner: Optional[int] = None
         self._elapsed_steps: int = 0
 
@@ -93,11 +91,6 @@ class PenguinChessEnv(gym.Env):
 
         self._game.reset(seed=seed)
         self._obs = self._make_obs()
-        self._prev_scores = list(self._game.players_scores)
-        self._prev_pieces = (
-            self._game._count_alive_pieces(0),
-            self._game._count_alive_pieces(1),
-        )
         self._winner = None
         self._elapsed_steps = 0
 
@@ -126,22 +119,11 @@ class PenguinChessEnv(gym.Env):
             info["invalid_action"] = True
             return self._obs, -0.5, False, truncated, info
 
-        # 保存前一步状态
-        prev_scores = list(self._game.players_scores)
-        prev_pieces = (
-            self._game._count_alive_pieces(0),
-            self._game._count_alive_pieces(1),
-        )
-
         # 执行动作
         _, reward, terminated, step_info = self._game.step(action)
 
         # 更新观测
         self._obs = self._make_obs()
-
-        # 连通性消除（移动阶段每回合后执行）
-        if self._game.phase == self._game.PHASE_MOVEMENT:
-            self._game._eliminate_disconnected_hexes()
 
         # 判断胜负（游戏结束时）
         if self._game._terminated:

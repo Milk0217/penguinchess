@@ -848,8 +848,6 @@ class PenguinChessCore:
         """检查游戏是否结束，更新 self._terminated。"""
         p1_alive = self._count_alive_pieces(0)
         p2_alive = self._count_alive_pieces(1)
-        has_active = any(h.is_active() for h in self.hexes)
-
         # 情况1: 一方棋子全灭
         if not p1_alive or not p2_alive:
             survivor = 1 if not p1_alive else 0

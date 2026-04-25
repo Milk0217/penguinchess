@@ -46,12 +46,12 @@ def setup_corner_game():
                 if dist > 3:  # 距离较远，可能是边缘
                     is_corner = True
                     break
-        if is_corner and h.value > 0:
+        if is_corner and h.is_active():
             corner_hexes.append(h)
 
     print(f"找到 {len(corner_hexes)} 个角落格子")
     for h in corner_hexes[:5]:
-        print(f"  ({h.q}, {h.r}, {h.s}) value={h.value}")
+        print(f"  ({h.q}, {h.r}, {h.s}) points={h.points}")
 
     # 3. 把一个棋子移动到角落
     print("\n--- 移动棋子到角落 ---")
@@ -69,7 +69,7 @@ def setup_corner_game():
         # 找一个角落格子作为目标
         target_corner = None
         for corner in corner_hexes:
-            if corner.value > 0 and not core._hex_occupied(corner):
+            if corner.is_active() and not core._hex_occupied(corner):
                 # 检查是否能移动到这个角落
                 moves = core._get_piece_moves(piece_to_move)
                 if corner in moves:
@@ -84,10 +84,10 @@ def setup_corner_game():
 
             # 手动执行移动（直接操作）
             old_hex = piece_to_move.hex
-            old_hex.value = -1  # 旧格子标记为已使用
+            old_hex.mark_used()  # 旧格子标记为已使用
             piece_to_move.hex = target_corner
-            piece_to_move.hex_value = target_corner.value
-            target_corner.value = 0  # 新格子被占据
+            piece_to_move.hex_value = target_corner.points
+            target_corner.occupy()  # 新格子被占据
             core._rebuild_occupied()
 
             print(f"移动后: 棋子 {piece_to_move.id} 在 ({piece_to_move.hex.q}, {piece_to_move.hex.r}, {piece_to_move.hex.s})")
@@ -110,18 +110,18 @@ def setup_corner_game():
 
     # 先把所有邻居都标记为可占据
     for h, dist in neighbors_2:
-        if h.value > 0:
-            h.value = -1  # 设为已使用
+        if h.is_active():
+            h.mark_used()  # 设为已使用
 
     # 然后把除了角落本身外的所有格子设为已使用
     for h in core.hexes:
-        if h is not corner and h.value > 0:
-            h.value = -1
+        if h is not corner and h.is_active():
+            h.mark_used()
 
     core._rebuild_occupied()
 
     print(f"角落格子 ({corner.q}, {corner.r}, {corner.s}) 周围都是 -1 或 0")
-    print(f"角落格子 value: {corner.value}")
+    print(f"角落格子 points: {corner.points}")
 
     # 5. 检查棋子的合法移动
     print("\n--- 检查棋子状态 ---")
@@ -163,13 +163,13 @@ def manual_corner_test():
 
     print(f"同轴格子数: {len(same_axis)}")
     for h in sorted(same_axis, key=lambda x: (x.q, x.r, x.s)):
-        print(f"  ({h.q}, {h.r}, {h.s}): value={h.value}")
+        print(f"  ({h.q}, {h.r}, {h.s}): points={h.points}")
 
     # 把棋子移动到边缘的同轴格子
     # 找一个边缘位置的同轴格子
     edge_hex = None
     for h in same_axis:
-        if h.value > 0 and h is not piece.hex:
+        if h.is_active() and h is not piece.hex:
             # 检查是否在边缘
             is_edge = False
             for other in core.hexes:
@@ -189,19 +189,19 @@ def manual_corner_test():
 
         # 移动棋子
         old_hex = piece.hex
-        old_hex.value = -1
+        old_hex.mark_used()
         piece.hex = edge_hex
-        piece.hex_value = edge_hex.value
-        edge_hex.value = 0
+        piece.hex_value = edge_hex.points
+        edge_hex.occupy()
         core._rebuild_occupied()
 
         # 把棋盘上除了这个角落外的所有格子都设为 -1
         for h in core.hexes:
             if h is not edge_hex:
-                h.value = -1
+                h.mark_used()
 
         # 角落格子本身设为 0（被占据）
-        edge_hex.value = 0
+        edge_hex.occupy()
 
         print(f"现在角落格子 ({edge_hex.q}, {edge_hex.r}, {edge_hex.s}) 周围全是 -1")
 

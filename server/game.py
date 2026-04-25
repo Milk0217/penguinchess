@@ -135,7 +135,8 @@ class GameSession:
                 "q": hex_obj.q,
                 "r": hex_obj.r,
                 "s": hex_obj.s,
-                "value": getattr(hex_obj, "value", 0),
+                "state": hex_obj.state,
+                "points": hex_obj.points,
             },
             "phase_before": prev_phase,
         }
@@ -152,7 +153,7 @@ class GameSession:
                 "step": self._core._episode_steps,
                 "to": (hex_obj.q, hex_obj.r, hex_obj.s),
                 "hex_idx": action,
-                "hex_value": getattr(hex_obj, 'value', 0),
+                "hex_value": hex_obj.points,
                 "score": reward,
                 "pieces_remaining": [p1_alive, p2_alive],
             })
@@ -168,7 +169,7 @@ class GameSession:
                 "from": from_c,
                 "to": (hex_obj.q, hex_obj.r, hex_obj.s),
                 "hex_idx": action,
-                "hex_value": getattr(hex_obj, 'value', 0),
+                "hex_value": hex_obj.points,
                 "score": reward,
                 "pieces_remaining": [p1_alive, p2_alive],
             })

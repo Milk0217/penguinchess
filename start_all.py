@@ -21,7 +21,7 @@ def start_frontend():
     """启动 Vite 前端服务"""
     print("[Vite] Frontend starting on http://localhost:5173")
     frontend_dir = os.path.join(os.path.dirname(__file__), "frontend")
-    subprocess.run(["bun", "run", "dev"], cwd=frontend_dir)
+    subprocess.run(["npm", "run", "dev"], cwd=frontend_dir)
 
 if __name__ == "__main__":
     # 使用 daemon 线程，这样 Ctrl+C 可以同时停止两个服务

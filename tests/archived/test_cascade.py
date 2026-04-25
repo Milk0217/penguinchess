@@ -91,9 +91,9 @@ def test_cascading_destruction():
     p7 = core2.pieces[4]
 
     print(f"Before destruction:")
-    print(f"  P4 alive={p4.alive}, hex={p4.hex.qrs if p4.hex else None}")
-    print(f"  P6 alive={p6.alive}, hex={p6.hex.qrs if p6.hex else None}")
-    print(f"  P7 alive={p7.alive}, hex={p7.hex.qrs if p7.hex else None}")
+    print(f"  P4 alive={p4.alive}, hex={f'({p4.hex.q},{p4.hex.r},{p4.hex.s})' if p4.hex else None}")
+    print(f"  P6 alive={p6.alive}, hex={f'({p6.hex.q},{p6.hex.r},{p6.hex.s})' if p6.hex else None}")
+    print(f"  P7 alive={p7.alive}, hex={f'({p7.hex.q},{p7.hex.r},{p7.hex.s})' if p7.hex else None}")
     print(f"  P4 moves: {len(core2._get_piece_moves(p4))}")
     print(f"  P6 moves: {len(core2._get_piece_moves(p6))}")
     print(f"  P7 moves: {len(core2._get_piece_moves(p7))}")
@@ -103,7 +103,7 @@ def test_cascading_destruction():
 
     print(f"\nAfter _destroy_immobile_pieces:")
     for p in core2.pieces:
-        print(f"  Piece {p.id}: alive={p.alive}, hex={p.hex.qrs if p.hex else None}")
+        print(f"  Piece {p.id}: alive={p.alive}, hex={f'({p.hex.q},{p.hex.r},{p.hex.s})' if p.hex else None}")
 
 
 if __name__ == "__main__":

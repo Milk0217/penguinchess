@@ -20,42 +20,44 @@ class TestObservationSpace:
 
     def test_observation_space_shape(self):
         """观测空间形状应该是 (204,)。"""
-        space = PenguinChessFlatObs()
+        space = PenguinChessFlatObs
         assert space.shape == (OBS_FLAT_SIZE,), f"Expected shape ({OBS_FLAT_SIZE},), got {space.shape}"
 
     def test_observation_space_dtype(self):
         """观测空间数据类型应该是 float32。"""
-        space = PenguinChessFlatObs()
+        space = PenguinChessFlatObs
         assert space.dtype == np.float32
 
     def test_observation_space_contains_valid(self):
         """有效的观测应该被 contains() 接受。"""
-        space = PenguinChessFlatObs()
+        space = PenguinChessFlatObs
         # 创建一个全零的观测（所有值在有效范围内）
         valid_obs = np.zeros(OBS_FLAT_SIZE, dtype=np.float32)
         assert space.contains(valid_obs)
 
     def test_observation_space_contains_out_of_bounds(self):
         """超出范围的观测应该被 contains() 拒绝。"""
-        space = PenguinChessFlatObs()
+        space = PenguinChessFlatObs
         # 创建一个超出 [-1, 1] 范围的观测
         invalid_obs = np.full(OBS_FLAT_SIZE, 2.0, dtype=np.float32)
         assert not space.contains(invalid_obs)
 
     def test_observation_to_jsonable(self):
         """to_jsonable() 应该返回 list。"""
-        space = PenguinChessFlatObs()
+        space = PenguinChessFlatObs
         obs = np.zeros(OBS_FLAT_SIZE, dtype=np.float32)
         jsonable = space.to_jsonable(obs)
         assert isinstance(jsonable, list)
 
     def test_observation_from_jsonable(self):
         """from_jsonable() 应该返回正确的 numpy array。"""
-        space = PenguinChessFlatObs()
+        space = PenguinChessFlatObs
         obs_list = [0.0] * OBS_FLAT_SIZE
-        obs = space.from_jsonable(obs_list)
-        assert isinstance(obs, np.ndarray)
-        assert obs.shape == (OBS_FLAT_SIZE,)
+        result = space.from_jsonable([obs_list])
+        assert isinstance(result, list)
+        assert len(result) == 1
+        assert isinstance(result[0], np.ndarray)
+        assert result[0].shape == (OBS_FLAT_SIZE,)
 
 
 class TestActionSpace:
@@ -143,7 +145,7 @@ class TestSpaceContainsEdgeCases:
 
     def test_observation_with_none_values(self):
         """包含 None 的观测应该被正确处理。"""
-        space = PenguinChessFlatObs()
+        space = PenguinChessFlatObs
         # 观测不应该包含 Python None
         obs = np.zeros(OBS_FLAT_SIZE, dtype=np.float32)
         # 确认是有效的 float array
