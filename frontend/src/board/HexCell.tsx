@@ -1,6 +1,23 @@
 import React from "react";
 import type { HexData, ThemeColors, ThemeSizes, ThemeEffects } from "./types";
 
+// 与 penguinchess/core.py Q_ADJUSTMENTS 保持一致的坐标调整表
+// 用于将后端调整后坐标转换回原始显示坐标
+const Q_ADJUSTMENTS: Record<string, number> = {
+  "-4": 2, "-3": 1, "-2": 0, "-1": 0,
+  "0": 0, "1": -1, "2": -2, "3": -2,
+};
+
+function toRawCoords(hex: HexData): { q: number; r: number } {
+  // 后端存储: hex.q = adjusted_r = raw_r + adjustment
+  //            hex.r = adjusted_s = -raw_q - adjusted_r
+  //            hex.s = raw_q
+  const raw_q = hex.s;
+  const adj = Q_ADJUSTMENTS[String(raw_q)] ?? 0;
+  const raw_r = hex.q - adj;
+  return { q: raw_q, r: raw_r };
+}
+
 interface HexCellProps {
   hex: HexData;
   x: number;
@@ -80,7 +97,7 @@ const HexCell: React.FC<HexCellProps> = ({
       {showValue && <span>{hex.points}</span>}
       {showCoords && (
         <span style={{ fontSize: `${sizes.hexSize * 0.3}px`, opacity: 0.7 }}>
-          ({hex.q},{hex.r})
+          ({toRawCoords(hex).q},{toRawCoords(hex).r})
         </span>
       )}
     </div>
