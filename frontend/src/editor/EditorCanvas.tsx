@@ -189,6 +189,19 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
                       e.currentTarget.style.stroke = "transparent";
                     }}
                   />
+                  {/* 格子坐标 */}
+                  <text
+                    x={0}
+                    y={1.5}
+                    textAnchor="middle"
+                    dominantBaseline="central"
+                    fill={h.selected ? "#052e16" : "#94a3b8"}
+                    fontSize={h.selected ? 11 : 10}
+                    fontWeight={h.selected ? "bold" : "normal"}
+                    style={{ pointerEvents: "none", userSelect: "none" }}
+                  >
+                    {h.q},{h.r},{h.s}
+                  </text>
                 </g>
               ))}
           </g>
