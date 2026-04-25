@@ -59,13 +59,19 @@ interface ApiResponse {
 }
 
 async function request(path: string, options?: RequestInit): Promise<any> {
+  const start = performance.now();
   const res = await fetch(`${BASE}${path}`, {
     headers: { "Content-Type": "application/json" },
     ...options,
   });
+  const elapsed = (performance.now() - start).toFixed(1);
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
+    console.warn(`[API] ${options?.method || "GET"} ${path} ${res.status} ${elapsed}ms`, err);
     throw new Error(err.error || `HTTP ${res.status}`);
+  }
+  if (options?.method === "POST") {
+    console.debug(`[API] ${options?.method || "GET"} ${path} ${res.status} ${elapsed}ms`);
   }
   return res.json();
 }

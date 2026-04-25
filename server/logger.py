@@ -66,7 +66,11 @@ class GameLogger:
     def death(self, piece_id: int, player: int, coord: tuple, reason: str):
         warning(f"{self._p()} | P{player+1} piece DEAD | piece={piece_id} | ({coord[0]:+d},{coord[1]:+d},{coord[2]:+d}) | reason={reason}")
 
-    def elimination(self, count: int):
+    def piece_moves(self, player: int, piece_id: int, coord: tuple, move_count: int):
+        """记录棋子合法移动数"""
+        info(f"{self._p()} | P{player+1} piece={piece_id} @ ({coord[0]:+d},{coord[1]:+d},{coord[2]:+d}) | moves={move_count}")
+
+    def elimination(self, count: int, hexes: Optional[list] = None):
         info(f"{self._p()} | Eliminated {count} hexes (disconnected)")
 
     def game_over(self, winner: Optional[int], scores: tuple):

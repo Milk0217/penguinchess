@@ -136,6 +136,53 @@ function getStatusText(state: GameState): string {
   return `第 ${turn} 步 · ${PLAYER_NAMES[state.current_player]} 移动棋子`;
 }
 
+// =============================================================================
+// Error Boundary — 捕获 React 渲染错误
+// =============================================================================
+import React from "react";
+
+interface ErrorBoundaryProps { children: React.ReactNode }
+interface ErrorBoundaryState { hasError: boolean; error: Error | null }
+class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  constructor(props: ErrorBoundaryProps) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    console.error("[ErrorBoundary]", error, info.componentStack);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "#020617", color: "#f1f5f9", padding: "2rem" }}>
+          <h2 style={{ color: "#f87171" }}>应用出错</h2>
+          <pre style={{ color: "#94a3b8", fontSize: "0.8rem", maxWidth: "600px", overflow: "auto" }}>{this.state.error?.message}</pre>
+          <button onClick={() => { this.setState({ hasError: false }); window.location.reload(); }}
+            style={{ marginTop: "1rem", padding: "0.5rem 1rem", background: "#3b82f6", color: "white", border: "none", borderRadius: "6px", cursor: "pointer" }}>
+            重新加载
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+// =============================================================================
+// Debug 模式开关（通过 URL 参数 ?debug=1 开启）
+// =============================================================================
+function useDebugMode(): boolean {
+  const [debug] = React.useState(() => {
+    if (typeof window === "undefined") return false;
+    const params = new URLSearchParams(window.location.search);
+    return params.get("debug") === "1";
+  });
+  return debug;
+}
+
 export default function App() {
 // 全局主题
 type GlobalTheme = "dark" | "light";
@@ -178,6 +225,7 @@ const GLOBAL_THEMES: Record<GlobalTheme, {
   const [currentLayoutId, setCurrentLayoutId] = useState("default");
   const [globalTheme, setGlobalTheme] = useState<GlobalTheme>("dark");
   const pageTheme = GLOBAL_THEMES[globalTheme];
+  const debugMode = useDebugMode();
   const currentTheme = useMemo(() => getTheme(currentThemeId), [currentThemeId]);
 
   // 自定义棋盘 layout 缓存（key: boardId）
@@ -410,6 +458,7 @@ const GLOBAL_THEMES: Record<GlobalTheme, {
   const isGameOver = state.game_over;
 
   return (
+    <ErrorBoundary>
     <div style={{
       minHeight: "100vh",
       display: "flex",
@@ -462,6 +511,7 @@ const GLOBAL_THEMES: Record<GlobalTheme, {
         前后端分离架构 · 游戏逻辑在后端执行
       </p>
 
+      {debugMode && (<>
       {/* DEBUG: 后端返回的 hex 数据 */}
       <div style={{
         background: pageTheme.cardBg,
@@ -494,6 +544,7 @@ const GLOBAL_THEMES: Record<GlobalTheme, {
           </div>
         </div>
       </div>
+      </>)}
 
       {/* 分数板 - 响应式 */}
       <div className="scoreboard" style={{ gap: "0.5rem", padding: "0.5rem 1rem", background: pageTheme.cardBg, border: "1px solid " + pageTheme.cardBorder, borderRadius: "8px", marginBottom: "0.5rem", width: "100%", maxWidth: "560px", boxSizing: "border-box" }}>
@@ -775,5 +826,6 @@ const GLOBAL_THEMES: Record<GlobalTheme, {
         </div>
       )}
     </div>
+    </ErrorBoundary>
   );
 }

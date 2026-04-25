@@ -181,6 +181,14 @@ class GameSession:
                 reason = "eliminated" if p.hex is None else "no valid moves"
                 self._logger.death(p.id, p.id % 2, coord, reason)
 
+        # 日志：存活棋子的合法移动数（移动阶段）
+        if self._core.phase == self._core.PHASE_MOVEMENT:
+            for p in self._core.pieces:
+                if p.alive and p.hex is not None and self._core._piece_owner(p) == self._core.current_player:
+                    moves = self._core._get_piece_moves(p)
+                    coord = (p.hex.q, p.hex.r, p.hex.s)
+                    self._logger.piece_moves(self._core.current_player, p.id, coord, len(moves))
+
         # 检测阶段变化
         if prev_phase == "placement" and self._core.phase == "movement":
             self._logger.phase("movement")

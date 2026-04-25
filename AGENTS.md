@@ -88,6 +88,49 @@ Flask 后端会输出详细的游戏状态日志：
 - `P1:3/3 P2:3/3` 表示双方存活棋子数/总数
 - `reason=eliminated` = 格子断连导致棋子被移除
 - `reason=no valid moves` = 棋子无合法移动被移除
+
+### 11.4 调试信息位置总览
+
+#### 前端调试面板（浏览器）
+
+在 URL 后加 `?debug=1` 可显示 Hex 数据面板（否则默认隐藏）：
+
+| 面板 | 触发条件 | 内容 | 位置 |
+|------|---------|------|------|
+| **Hex 数据面板** | `?debug=1` | hex 总数/状态分布/前5个hex结构/第一个hex完整数据 | App.tsx `{debugMode && ...}` 区块 |
+| **计分板** | 始终可见 | P1/P2 分数、回合中指示 | App.tsx 分数板区块 |
+| **调试信息面板** | 始终可见 | 阶段、合法动作数、回合、活跃格子、存活棋子、分数、可移动棋子 | App.tsx 调试信息区块 |
+| **棋子状态表** | 始终可见 | 所有 6 个棋子的 ID/归属/状态/坐标/hex索引/格子值 | App.tsx 棋子状态面板区块 |
+| **状态提示** | 始终可见 | 当前操作提示（放置/移动/游戏结束） | App.tsx 操作提示区块 |
+| **错误提示** | 出错时 | 红色错误信息条 | App.tsx 错误提示区块 |
+| **Error Boundary** | 渲染崩溃时 | 错误信息 + 重新加载按钮 | App.tsx `<ErrorBoundary>` 包裹 |
+
+#### 前端 Console 日志
+
+| 日志 | 级别 | 触发 | 位置 |
+|------|------|------|------|
+| `[API] POST /api/game/xxx/action 200 5.2ms` | debug | 每次 POST 请求 | `api.ts request()` |
+| `[API] GET /api/boards 200 2.0ms` | debug | 每次 GET 请求 | `api.ts request()` |
+| `[API] ... 4xx 10.0ms` | warn | HTTP 错误响应 | `api.ts request()` |
+| `[DEBUG] Game state from backend` | log | 每次游戏状态更新 | `App.tsx` useEffect |
+| `[ErrorBoundary]` | error | React 渲染崩溃 | `App.tsx ErrorBoundary` |
+
+#### 后端日志（stdout）
+
+| 日志 | 级别 | 触发 | 位置 |
+|------|------|------|------|
+| `#001 | P1 placed | hex=...` | INFO | `server/game.py` → `step()` |
+| `#007 | P1 moved | piece=...` | INFO | `server/game.py` → `step()` |
+| `P1 piece DEAD | piece=4` | WARNING | `server/game.py` → `step()` |
+| `P1 piece=6 @ (x,y,z) | moves=N` | INFO | `server/game.py` → 移动阶段每回合 |
+| `MOVEMENT (seed=...)` | INFO | `server/game.py` → 阶段切换 |
+| `Eliminated N hexes` | INFO | `server/game.py` → 消除后 |
+| `GAME OVER | P1 WINS` | INFO | `server/game.py` → `step()` |
+| `P1 INVALID action=N` | WARNING | `server/game.py` → 非法动作 |
+| `POST /api/game 200 5.0ms` | INFO | `server/app.py` → request timing |
+| `GET /api/game/xxx 404 1.0ms` | WARNING | `server/app.py` → 会话不存在 |
+| `Unhandled exception: ...` | ERROR | `server/app.py` → `@app.errorhandler` |
+| `Created builtin board: ...` | INFO | `server/boards.py` → 初始化 |
 │   ├── RULES.md                   # 权威游戏规则
 │   ├── ARCHITECTURE.md            # 架构设计与演进路线
 │   └── BOARD_EDITOR.md            # 棋盘编辑器设计

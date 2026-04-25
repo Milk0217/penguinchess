@@ -9,6 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from .logger import info as log_info
+
 # 存储目录
 BOARD_DIR = Path(__file__).parent.parent / "backend_data" / "boards"
 
@@ -130,7 +132,7 @@ def init_builtin_boards():
         path = _get_boards_dir() / f"{board_id}.json"
         if not path.exists():
             save_board(board_id, data["name"], data["hexes"])
-            print(f"  Created builtin board: {board_id}")
+            log_info(f"Created builtin board: {board_id}")
 
 
 # 启动时初始化内置棋盘

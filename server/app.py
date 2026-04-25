@@ -14,13 +14,14 @@ Flask API 服务端：企鹅棋前后端分离架构后端。
 from __future__ import annotations
 
 import os
+import traceback
 import time
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 
 from .game import create_session, get_session
 from .boards import list_boards, get_board, save_board, delete_board
-from .logger import setup_request_logging, info
+from .logger import setup_request_logging, info, error as log_error
 
 app = Flask(__name__, static_folder="../frontend/dist", static_url_path="")
 CORS(app)  # 开发环境允许跨域
@@ -182,6 +183,17 @@ def api_reset(session_id: str):
 @app.route("/api/health", methods=["GET"])
 def api_health():
     return jsonify({"status": "ok"})
+
+
+# =============================================================================
+# 全局错误处理器
+# =============================================================================
+
+@app.errorhandler(Exception)
+def handle_uncaught_error(e: Exception):
+    """捕获所有未处理的异常，记录完整堆栈并返回 JSON 错误"""
+    log_error(f"Unhandled exception: {e}\n{traceback.format_exc()}")
+    return jsonify({"error": "Internal server error"}), 500
 
 
 # =============================================================================
