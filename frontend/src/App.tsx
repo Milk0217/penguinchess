@@ -480,7 +480,7 @@ const GLOBAL_THEMES: Record<GlobalTheme, {
           <div>hex 状态分布: <strong>{JSON.stringify(hexStates)}</strong></div>
           <div>phase: <strong>{state.phase}</strong></div>
           <div>前 5 个 hex:
-            <pre style={{ margin: "0.25rem 0 0", background: "#fff", padding: "0.25rem", borderRadius: "4px", overflow: "auto" }}>
+            <pre style={{ margin: "0.25rem 0 0", background: globalTheme==="dark" ? "#0f172a" : "#ffffff", padding: "0.25rem", borderRadius: "4px", overflow: "auto", color: pageTheme.text }}>
               {JSON.stringify(state.hexes.slice(0, 5).map(h => ({
                 i: h.index, q: h.q, r: h.r, s: h.s, st: h.state, pt: h.points
               })), null, 0)}
@@ -488,7 +488,7 @@ const GLOBAL_THEMES: Record<GlobalTheme, {
           </div>
           <div style={{ marginTop: "0.5rem" }}>
             第一个 hex 对象完整结构:
-            <pre style={{ margin: "0.25rem 0 0", background: "#fff", padding: "0.25rem", borderRadius: "4px", overflow: "auto" }}>
+            <pre style={{ margin: "0.25rem 0 0", background: globalTheme==="dark" ? "#0f172a" : "#ffffff", padding: "0.25rem", borderRadius: "4px", overflow: "auto", color: pageTheme.text }}>
               {JSON.stringify(state.hexes[0], null, 2)}
             </pre>
           </div>
