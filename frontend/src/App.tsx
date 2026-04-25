@@ -401,10 +401,6 @@ const GLOBAL_THEMES: Record<GlobalTheme, {
       }
     }
   };
-    } finally {
-      setLoading(false);
-    }
-  };
 
   // -------------------------------------------------------------------------
   // 棋盘格子点击处理（由 Board 组件触发）
