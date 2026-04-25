@@ -137,7 +137,34 @@ function getStatusText(state: GameState): string {
 }
 
 export default function App() {
-  // 应用模式
+// 全局主题
+type GlobalTheme = "dark" | "light";
+
+const GLOBAL_THEMES: Record<GlobalTheme, {
+  bg: string;
+  text: string;
+  textMuted: string;
+  cardBg: string;
+  cardBorder: string;
+  accent: string;
+}> = {
+  dark: {
+    bg: "#020617",
+    text: "#f1f5f9",
+    textMuted: "#94a3b8",
+    cardBg: "#0f172a",
+    cardBorder: "#1e293b",
+    accent: "#3b82f6",
+  },
+  light: {
+    bg: "#f8fafc",
+    text: "#1e293b",
+    textMuted: "#64748b",
+    cardBg: "#ffffff",
+    cardBorder: "#e2e8f0",
+    accent: "#2563eb",
+  },
+};
   const [mode, setMode] = useState<AppMode>("game");
 
   // 游戏相关状态
@@ -147,7 +174,10 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
 
   // 主题与布局
-  const [currentThemeId, setCurrentThemeId] = useState("default");
+  const [currentThemeId, setCurrentThemeId] = useState("dark");
+  const [currentLayoutId, setCurrentLayoutId] = useState("default");
+  const [globalTheme, setGlobalTheme] = useState<GlobalTheme>("dark");
+  const pageTheme = GLOBAL_THEMES[globalTheme];
   const [currentLayoutId, setCurrentLayoutId] = useState("default");
   const currentTheme = useMemo(() => getTheme(currentThemeId), [currentThemeId]);
 
@@ -391,12 +421,45 @@ export default function App() {
       maxWidth: "100vw",
       overflow: "hidden",
       boxSizing: "border-box",
+      background: pageTheme.bg,
+      color: pageTheme.text,
+      transition: "all 0.2s ease",
     }}>
-      {/* 标题 */}
-      <h1 style={{ fontSize: "1.3rem", fontWeight: 800, color: "#0f172a", margin: "0 0 0.25rem", textAlign: "center" }}>
-        🐧 企鹅棋 PenguinChess
-      </h1>
-      <p style={{ color: "#64748b", fontSize: "0.75rem", margin: "0 0 1rem", textAlign: "center" }}>
+      {/* 标题栏 + 主题切换 */}
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: "0.75rem",
+        marginBottom: "0.25rem",
+        width: "100%",
+        maxWidth: "560px",
+      }}>
+        <h1 style={{ fontSize: "1.3rem", fontWeight: 800, color: pageTheme.text, margin: 0 }}>
+          🐧 企鹅棋 PenguinChess
+        </h1>
+        <button
+          onClick={() => {
+            const next = globalTheme === "dark" ? "light" : "dark";
+            setGlobalTheme(next);
+            setCurrentThemeId(next === "dark" ? "dark" : "default");
+          }}
+          title={globalTheme === "dark" ? "切换到白天模式" : "切换到暗色模式"}
+          style={{
+            background: "transparent",
+            border: "1px solid " + pageTheme.cardBorder,
+            borderRadius: "6px",
+            padding: "0.3rem 0.6rem",
+            cursor: "pointer",
+            fontSize: "1.1rem",
+            color: pageTheme.text,
+            lineHeight: 1,
+          }}
+        >
+          {globalTheme === "dark" ? "☀️" : "🌙"}
+        </button>
+      </div>
+      <p style={{ color: pageTheme.textMuted, fontSize: "0.75rem", margin: "0 0 1rem", textAlign: "center" }}>
         前后端分离架构 · 游戏逻辑在后端执行
       </p>
 
@@ -433,29 +496,31 @@ export default function App() {
       </div>
 
       {/* 分数板 - 响应式 */}
-      <div className="scoreboard" style={{ gap: "0.5rem", padding: "0.5rem 1rem" }}>
-        <div>
-          <span style={{ color: "#3b82f6", fontWeight: 800, fontSize: "1rem" }}>
-            {PLAYER_NAMES[0]}
-          </span>
-          <div style={{ fontSize: "1.6rem", fontWeight: 900, color: "#1e40af" }}>
-            {state.scores[0]}
+      <div className="scoreboard" style={{ gap: "0.5rem", padding: "0.5rem 1rem", background: pageTheme.cardBg, border: "1px solid " + pageTheme.cardBorder, borderRadius: "8px", marginBottom: "0.5rem", width: "100%", maxWidth: "560px", boxSizing: "border-box" }}>
+        <div style={{ display: "flex", justifyContent: "space-around", alignItems: "center" }}>
+          <div style={{ textAlign: "center" }}>
+            <span style={{ color: globalTheme==="dark" ? "#60a5fa" : "#3b82f6", fontWeight: 800, fontSize: "1rem" }}>
+              {PLAYER_NAMES[0]}
+            </span>
+            <div style={{ fontSize: "1.6rem", fontWeight: 900, color: globalTheme==="dark" ? "#93c5fd" : "#1e40af" }}>
+              {state.scores[0]}
+            </div>
+            {state.current_player === 0 && !isGameOver && (
+              <span style={{ fontSize: "0.65rem", color: globalTheme==="dark" ? "#60a5fa" : "#3b82f6", fontWeight: 700 }}>● 回合中</span>
+            )}
           </div>
-          {state.current_player === 0 && !isGameOver && (
-            <span style={{ fontSize: "0.65rem", color: "#3b82f6", fontWeight: 700 }}>● 回合中</span>
-          )}
-        </div>
-        <div className="vs" style={{ fontSize: "1rem", fontWeight: 700, paddingTop: "0.25rem" }}>vs</div>
-        <div>
-          <span style={{ color: "#ef4444", fontWeight: 800, fontSize: "1rem" }}>
-            {PLAYER_NAMES[1]}
-          </span>
-          <div style={{ fontSize: "1.6rem", fontWeight: 900, color: "#b91c1c" }}>
-            {state.scores[1]}
+          <div className="vs" style={{ fontSize: "1rem", fontWeight: 700, color: pageTheme.textMuted }}>vs</div>
+          <div style={{ textAlign: "center" }}>
+            <span style={{ color: globalTheme==="dark" ? "#f87171" : "#ef4444", fontWeight: 800, fontSize: "1rem" }}>
+              {PLAYER_NAMES[1]}
+            </span>
+            <div style={{ fontSize: "1.6rem", fontWeight: 900, color: globalTheme==="dark" ? "#fca5a5" : "#b91c1c" }}>
+              {state.scores[1]}
+            </div>
+            {state.current_player === 1 && !isGameOver && (
+              <span style={{ fontSize: "0.65rem", color: globalTheme==="dark" ? "#f87171" : "#ef4444", fontWeight: 700 }}>● 回合中</span>
+            )}
           </div>
-          {state.current_player === 1 && !isGameOver && (
-            <span style={{ fontSize: "0.65rem", color: "#ef4444", fontWeight: 700 }}>● 回合中</span>
-          )}
         </div>
       </div>
 
@@ -465,32 +530,32 @@ export default function App() {
         maxWidth: "560px",
         marginBottom: "0.5rem",
         padding: "0.5rem 0.75rem",
-        background: "#f8fafc",
-        border: "1px solid #e2e8f0",
+        background: pageTheme.cardBg,
+        border: "1px solid " + pageTheme.cardBorder,
         borderRadius: "8px",
         fontFamily: "monospace",
         fontSize: "0.68rem",
-        color: "#475569",
+        color: pageTheme.textMuted,
       }}>
         {/* 第一行：阶段 + 总合法动作数 */}
         <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap", marginBottom: "0.25rem" }}>
-          <span style={{ fontWeight: 700, color: state.phase === "placement" ? "#1e40af" : "#9d174d" }}>
+          <span style={{ fontWeight: 700, color: state.phase === "placement" ? (globalTheme==="dark"?"#60a5fa":"#1e40af") : (globalTheme==="dark"?"#f0abfc":"#9d174d") }}>
             [{state.phase === "placement" ? "放置" : "移动"}]
           </span>
-          <span>总合法动作: <strong style={{ color: "#0f172a" }}>{state.legal_actions.length}</strong></span>
-          <span>回合: <strong style={{ color: "#0f172a" }}>{state.episode_steps + 1}</strong></span>
-          <span>活跃格子: <strong style={{ color: "#0f172a" }}>{state.hexes.filter(h => h.state === 'active').length}</strong></span>
+          <span>总合法动作: <strong style={{ color: pageTheme.text }}>{state.legal_actions.length}</strong></span>
+          <span>回合: <strong style={{ color: pageTheme.text }}>{state.episode_steps + 1}</strong></span>
+          <span>活跃格子: <strong style={{ color: pageTheme.text }}>{state.hexes.filter(h => h.state === 'active').length}</strong></span>
         </div>
 
         {/* 第二行：棋子存活情况 */}
         <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap", marginBottom: "0.25rem" }}>
-          <span style={{ color: "#3b82f6" }}>P1 棋子: {state.pieces.filter(p => p.owner === 0 && p.alive).length}/3</span>
-          <span style={{ color: "#ef4444" }}>P2 棋子: {state.pieces.filter(p => p.owner === 1 && p.alive).length}/3</span>
+          <span style={{ color: globalTheme==="dark" ? "#60a5fa" : "#3b82f6" }}>P1 棋子: {state.pieces.filter(p => p.owner === 0 && p.alive).length}/3</span>
+          <span style={{ color: globalTheme==="dark" ? "#f87171" : "#ef4444" }}>P2 棋子: {state.pieces.filter(p => p.owner === 1 && p.alive).length}/3</span>
         </div>
 
         {/* 第三行：当前玩家 + 分数 */}
         <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap", marginBottom: state.phase === "movement" || selectedPieceId !== null ? "0.25rem" : "0" }}>
-          <span>当前: <strong style={{ color: state.current_player === 0 ? "#3b82f6" : "#ef4444" }}>
+          <span>当前: <strong style={{ color: state.current_player === 0 ? pageTheme.accent : (globalTheme==="dark"?"#f87171":"#ef4444") }}>
             {state.current_player === 0 ? "P1" : "P2"}
           </strong></span>
           <span>P1 分数: <strong style={{ color: "#1e40af" }}>{state.scores[0]}</strong></span>
@@ -540,17 +605,17 @@ export default function App() {
         maxWidth: "560px",
         marginBottom: "0.5rem",
         padding: "0.4rem 0.6rem",
-        background: "#f1f5f9",
-        border: "1px solid #cbd5e1",
+        background: pageTheme.cardBg,
+        border: "1px solid " + pageTheme.cardBorder,
         borderRadius: "8px",
         fontFamily: "monospace",
         fontSize: "0.65rem",
-        color: "#334155",
+        color: pageTheme.textMuted,
       }}>
-        <div style={{ fontWeight: 700, marginBottom: "0.3rem", color: "#0f172a" }}>棋子状态</div>
+        <div style={{ fontWeight: 700, marginBottom: "0.3rem", color: pageTheme.text }}>棋子状态</div>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ background: "#e2e8f0" }}>
+            <tr style={{ background: globalTheme==="dark" ? "#1e293b" : "#e2e8f0" }}>
               <th style={{ padding: "2px 6px", textAlign: "center" }}>ID</th>
               <th style={{ padding: "2px 6px", textAlign: "center" }}>归属</th>
               <th style={{ padding: "2px 6px", textAlign: "center" }}>状态</th>
@@ -620,7 +685,7 @@ export default function App() {
 
       {/* 操作提示 */}
       {!isGameOver && (
-        <div style={{ color: "#64748b", fontSize: "0.8rem", marginTop: "0.75rem", textAlign: "center" }}>
+        <div style={{ color: pageTheme.textMuted, fontSize: "0.8rem", marginTop: "0.75rem", textAlign: "center" }}>
           {state.phase === "placement"
             ? "点击空白格子放置棋子（双方轮流各放 3 个）"
             : selectedPieceId === null
@@ -644,14 +709,16 @@ export default function App() {
         <button
           className="btn btn-secondary"
           onClick={() => setMode("editor")}
-          style={{ background: "#8b5cf6", color: "white", border: "none" }}
+          style={{ background: "#8b5cf6", color: "white", border: "none", padding: "8px 16px", borderRadius: "6px", fontSize: "14px", cursor: "pointer", fontWeight: 600 }}
         >
           棋盘编辑器
         </button>
-        <button className="btn btn-primary" onClick={() => initGame()} disabled={loading}>
+        <button className="btn btn-primary" onClick={() => initGame()} disabled={loading}
+          style={{ background: pageTheme.accent, color: "white", border: "none", padding: "8px 16px", borderRadius: "6px", fontSize: "14px", cursor: loading ? "not-allowed" : "pointer", fontWeight: 600, opacity: loading ? 0.6 : 1 }}>
           新游戏
         </button>
-        <button className="btn btn-secondary" onClick={handleReset} disabled={loading}>
+        <button className="btn btn-secondary" onClick={handleReset} disabled={loading}
+          style={{ background: globalTheme==="dark" ? "#475569" : "#64748b", color: "white", border: "none", padding: "8px 16px", borderRadius: "6px", fontSize: "14px", cursor: loading ? "not-allowed" : "pointer", fontWeight: 600, opacity: loading ? 0.6 : 1 }}>
           重开
         </button>
         <select
@@ -666,8 +733,9 @@ export default function App() {
             padding: "6px 10px",
             fontSize: "13px",
             borderRadius: "6px",
-            border: "1px solid #e2e8f0",
-            background: "white",
+            border: "1px solid " + pageTheme.cardBorder,
+            background: pageTheme.cardBg,
+            color: pageTheme.text,
             cursor: "pointer",
             minWidth: "100px",
           }}
@@ -685,8 +753,9 @@ export default function App() {
             padding: "6px 10px",
             fontSize: "13px",
             borderRadius: "6px",
-            border: "1px solid #e2e8f0",
-            background: "white",
+            border: "1px solid " + pageTheme.cardBorder,
+            background: pageTheme.cardBg,
+            color: pageTheme.text,
             cursor: "pointer",
             minWidth: "80px",
           }}
