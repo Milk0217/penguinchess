@@ -27,11 +27,10 @@ import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import (
     CheckpointCallback,
-    EvalCallback,
-    StopTrainingOnRewardThreshold,
 )
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv, VecNormalize
+from stable_baselines3.common.utils import set_random_seed
 
 from penguinchess.env import PenguinChessEnv
 
@@ -44,14 +43,23 @@ LOGS_DIR.mkdir(exist_ok=True)
 # 环境工厂
 # =============================================================================
 
-def make_env(seed: int = 0) -> gym.Env:
-    """创建 PenguinChess 环境实例（用于 DummyVecEnv）。"""
+def make_env(rank: int = 0, seed: int = 0) -> callable:
+    """创建 PenguinChess 环境实例（用于 VecEnv 的工厂函数）。"""
     def _init():
         env = gym.make("PenguinChess-v0")
         env = Monitor(env)
-        env.reset(seed=seed)
+        env.reset(seed=seed + rank)
         return env
     return _init
+
+
+def create_vec_env(num_envs: int = 1, seed: int = 0) -> VecNormalize:
+    """创建向量化环境（自动选择并行加速或单进程）。"""
+    if num_envs > 1:
+        vec_env = SubprocVecEnv([make_env(i, seed) for i in range(num_envs)])
+    else:
+        vec_env = DummyVecEnv([make_env(0, seed)])
+    return VecNormalize(vec_env, norm_obs=True, norm_reward=False)
 
 
 # =============================================================================
@@ -132,39 +140,58 @@ def get_next_gen() -> int:
     return (max(existing) + 1) if existing else 1
 
 
+def compute_elo(rating_a: float, rating_b: float, score_a: float, K: float = 32) -> tuple:
+    """计算 ELO 评分变化。score_a: P1 胜率 (0~1)。"""
+    ea = 1 / (1 + 10 ** ((rating_b - rating_a) / 400))
+    new_a = rating_a + K * (score_a - ea)
+    new_b = rating_b + K * (ea - score_a)
+    return new_a, new_b
+
+
 def train(args):
     """训练 PPO 模型。"""
     print("=" * 60)
     print("PPO 训练 - PenguinChess")
     print("=" * 60)
 
-    # 创建环境
-    vec_env = DummyVecEnv([make_env(seed=0)])
-    vec_env = VecNormalize(vec_env, norm_obs=True, norm_reward=False)
+    device = "cpu"  # MLP 策略在 CPU 更快
+    if args.force_gpu:
+        device = "cuda"
+
+    # 创建并行环境（加速数据收集）
+    num_envs = args.num_envs
+    vec_env = create_vec_env(num_envs, seed=0)
+    print(f"环境: {num_envs} 个并行, 设备: {device}")
+
+    # 学习率衰减
+    lr_schedule = args.lr
 
     # 模型配置
     if args.resume and os.path.exists(args.resume):
         print(f"续训练模型: {args.resume}")
-        model = PPO.load(args.resume, env=vec_env, device="auto",
-                         learning_rate=args.lr,
-                         n_steps=args.n_steps,
+        model = PPO.load(args.resume, env=vec_env, device=device,
+                         learning_rate=lr_schedule,
+                         n_steps=args.n_steps // max(num_envs, 1),
                          batch_size=args.batch_size,
                          n_epochs=args.n_epochs,
                          gamma=args.gamma,
                          clip_range=args.clip_range,
-                         ent_coef=0.01,
+                         ent_coef=args.ent_coef,
                          vf_coef=0.5,
                          max_grad_norm=0.5,
                          tensorboard_log=str(LOGS_DIR),
                          verbose=1)
     else:
         model = PPO("MlpPolicy", vec_env,
-                     learning_rate=args.lr, n_steps=args.n_steps,
-                     batch_size=args.batch_size, n_epochs=args.n_epochs,
+                     learning_rate=lr_schedule,
+                     n_steps=args.n_steps // max(num_envs, 1),
+                     batch_size=args.batch_size,
+                     n_epochs=args.n_epochs,
                      gamma=args.gamma, gae_lambda=0.95,
-                     clip_range=args.clip_range, ent_coef=0.01,
+                     clip_range=args.clip_range,
+                     ent_coef=args.ent_coef,
                      vf_coef=0.5, max_grad_norm=0.5,
-                     tensorboard_log=str(LOGS_DIR), verbose=1, device="auto")
+                     tensorboard_log=str(LOGS_DIR), verbose=1, device=device)
 
     # 训练
     print(f"\n开始训练 {args.timesteps} 步...")
@@ -174,30 +201,48 @@ def train(args):
     print(f"训练完成! 耗时: {elapsed:.1f}s ({args.timesteps / elapsed:.0f} steps/s)")
 
     # 保存为新一代
-    gen = get_next_gen() if not args.resume else get_next_gen()  # always new gen
+    gen = get_next_gen()
     gen_path = str(MODELS_DIR / f"ppo_penguinchess_gen_{gen}.zip")
     model.save(gen_path)
     print(f"已保存: gen_{gen}")
 
-    # ===== 对战评估 =====
+    # ===== 对战评估 & ELO =====
     print(f"\n--- Gen {gen} 对战评估 ---")
 
     # 1) 对随机 AI
     r = compete(model, None, args.eval_episodes)
     print(f"vs 随机 AI:  胜 {r['p1_win']:.1%}  负 {r['p2_win']:.1%}  平 {r['draw']:.1%}")
 
-    # 2) 对上一代（如果存在）
-    prev_gen = gen - 1
-    prev_path = MODELS_DIR / f"ppo_penguinchess_gen_{prev_gen}.zip"
-    if prev_path.exists():
-        prev_model = PPO.load(str(prev_path), device="auto")
-        r2 = compete(model, prev_model, args.eval_episodes)
-        print(f"vs gen_{prev_gen}:  胜 {r2['p1_win']:.1%}  负 {r2['p2_win']:.1%}  平 {r2['draw']:.1%}")
-        beat_prev = r2['p1_win'] > 0.5
-        print(f"{'[OK] 超越前代!' if beat_prev else '[..] 未超越前代'}")
-    else:
-        print("（无上一代模型，跳过对比）")
+    # 2) 对前几代（交叉评估）
+    elo_ratings = {g: 1200.0 for g in range(1, gen + 1)}  # 初始 ELO 1200
+    eval_models = {}
+    for g in range(1, gen + 1):
+        p = MODELS_DIR / f"ppo_penguinchess_gen_{g}.zip"
+        if p.exists():
+            eval_models[g] = PPO.load(str(p), device="cpu")
 
+    # 当前代与所有前代对战
+    total_wins = 0
+    total_games = 0
+    for g in range(1, gen):
+        if g in eval_models:
+            r2 = compete(model, eval_models[g], args.eval_episodes)
+            score_a = r2['p1_win'] + 0.5 * r2['draw']
+            elo_ratings[gen], elo_ratings[g] = compute_elo(elo_ratings[gen], elo_ratings[g], score_a)
+            total_wins += r2['p1_win']
+            total_games += 1
+            rival = f"gen_{g}"
+            if g == gen - 1:
+                print(f"vs {rival}:      胜 {r2['p1_win']:.1%}  负 {r2['p2_win']:.1%}  平 {r2['draw']:.1%}  ELO={elo_ratings[gen]:.0f}")
+            else:
+                print(f"vs {rival}:      胜 {r2['p1_win']:.1%}  负 {r2['p2_win']:.1%}  平 {r2['draw']:.1%}")
+
+    if total_games > 0 and total_wins / total_games > 0.5:
+        print("[OK] 超越前代平均值!")
+    else:
+        print("[..] 未超越前代平均值")
+
+    print(f"ELO: {elo_ratings[gen]:.0f}")
     vec_env.close()
 
 
@@ -256,10 +301,13 @@ if __name__ == "__main__":
     parser.add_argument("--n-epochs", type=int, default=10, help="每次更新 epoch 数")
     parser.add_argument("--gamma", type=float, default=0.99, help="折扣因子")
     parser.add_argument("--clip-range", type=float, default=0.2, help="PPO clip 范围")
+    parser.add_argument("--ent-coef", type=float, default=0.01, help="熵正则系数")
+    parser.add_argument("--num-envs", type=int, default=1, help="并行环境数（加速训练）")
+    parser.add_argument("--force-gpu", action="store_true", help="强制使用 GPU（默认 CPU）")
     parser.add_argument("--eval-episodes", type=int, default=100, help="评估局数")
     parser.add_argument("--evaluate-only", action="store_true", help="仅评估，不训练")
     parser.add_argument("--model-path", type=str, default=None, help="模型路径（评估时使用）")
-    parser.add_argument("--resume", type=str, default=None, help="继续训练的模型路径，例如 models/ppo_penguinchess_50000_steps.zip")
+    parser.add_argument("--resume", type=str, default=None, help="继续训练的模型路径")
 
     args = parser.parse_args()
 
