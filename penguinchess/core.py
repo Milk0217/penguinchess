@@ -14,11 +14,8 @@ from typing import List, Optional, Tuple
 # 常量（与 statics/config.js 对齐）
 # =============================================================================
 
-TOTAL_VALUE = 99  # 10×3 + 20×2 + 30×1 = 99
+TOTAL_VALUE = 100  # 10×3 + 20×2 + 30×1 = 100（标准 60 格棋盘）
 HEX_COUNT = 60  # 与 JS CONFIG.HEX_COUNT 一致
-COUNT_OF_THREE_MIN = 8
-COUNT_OF_THREE_MAX = 10
-THREE_VALUE = 3
 
 # 玩家棋子 ID
 PLAYER_1_PIECES = [4, 6, 8]
@@ -155,15 +152,14 @@ class Piece:
 
 def generate_sequence(
     total_sum: int = TOTAL_VALUE,
-    hex_count: int = None,
+    hex_count: int | None = None,
     rng: random.Random | None = None,
 ) -> List[int]:
     """
-    生成随机数列，总和为 total_sum，包含 COUNT_OF_THREE_MIN~MAX 个 3。
-    与 JS generateSequence() 完全对齐。
+    生成随机数列，总和为 total_sum。
 
-    Args:
-        rng: 可选的随机数生成器。如果为 None，则使用全局 random。
+    标准棋盘 (60 格): 固定 10 个 3、20 个 2、30 个 1（总和 100）。
+    自定义棋盘: 使用原算法，随机生成 count3 个 3，其余用 1 和 2 填充。
     """
     if rng is None:
         rng = random.Random()
@@ -171,21 +167,29 @@ def generate_sequence(
     if hex_count is None:
         hex_count = HEX_COUNT
 
-    for _ in range(10000):  # 防死循环
+    # 标准 60 格棋盘：固定分配
+    if hex_count == 60 and total_sum == 100:
+        sequence = [3] * 10 + [2] * 20 + [1] * 30
+        rng.shuffle(sequence)
+        return sequence
+
+    # 自定义棋盘：原算法（保留）
+    THREE_VALUE = 3
+    COUNT_OF_THREE_MIN = 8
+    COUNT_OF_THREE_MAX = 10
+
+    for _ in range(10000):
         sequence: List[int] = []
         remaining_sum = total_sum
         remaining_length = hex_count
 
-        # 随机决定 3 的个数
         count3 = rng.randint(COUNT_OF_THREE_MIN, COUNT_OF_THREE_MAX)
 
-        # 填入 3
         for _ in range(count3):
             sequence.append(THREE_VALUE)
             remaining_sum -= THREE_VALUE
             remaining_length -= 1
 
-        # 用 1 和 2 填满剩余位置
         success = True
         while remaining_length > 0:
             next_num = rng.choice([1, 2])
@@ -202,7 +206,6 @@ def generate_sequence(
                 break
 
         if success and sum(sequence) == total_sum and len(sequence) == hex_count:
-            # Fisher-Yates 洗牌
             rng.shuffle(sequence)
             return sequence
 
