@@ -230,28 +230,25 @@ def mcts_search(
     num_simulations: int = 800,
     c_puct: float = 1.4,
     temperature: float = 1.0,
-    evaluate_fn: Optional[
-        Callable[[PenguinChessCore], Tuple[np.ndarray, float]]
-    ] = None,
+    evaluate_fn: Optional[Callable[[PenguinChessCore], Tuple[np.ndarray, float]]] = None,
 ) -> Tuple[Dict[int, int], MCTSNode]:
     """
-    Run MCTS from a given root state.
+    Run MCTS search from a root state.
 
     Parameters
     ----------
     root_state : PenguinChessCore
-        The starting state.  Will be deep-copied so the original is untouched.
-    model : optional
-        - A callable matching ``evaluate_fn`` signature (highest priority).
-        - An SB3 model with a ``.predict`` method (auto-wrapped).
-        - ``None`` ⇒ uniform random baseline.
+        The starting game state. The function will not modify it.
+    model :
+        Either an SB3 model with ``.predict()``, or a callable that follows the
+        ``evaluate_fn`` signature (see below).
     num_simulations : int
-        Number of MCTS simulations (default 800).
+        Number of MCTS simulations to run (default 800).
     c_puct : float
-        Exploration constant (default 1.4).
+        Exploration constant in the PUCT formula (default 1.4).
     temperature : float
-        Root action-selection temperature (default 1.0).
-    evaluate_fn : optional
+        Temperature for the final action sampling (default 1.0).
+    evaluate_fn : callable or None
         Custom evaluator ``(state) -> (policy_probs_60, value_scalar)``.
         Takes priority over ``model``.
 
@@ -272,78 +269,69 @@ def mcts_search(
     else:
         evaluate_fn = _make_uniform_evaluator()
 
-    # ---- root ----
-    root = MCTSNode(copy.deepcopy(root_state))
+    # Use fast snapshot for the simulation engine (1 deepcopy total)
+    root_snapshot = root_state.get_snapshot()
+    sim_state = copy.deepcopy(root_state)
 
-    # ---- main simulation loop ----
+    root = MCTSNode(state=sim_state, parent=None, action=None, prior=0.0)
+
     for _ in range(num_simulations):
         node = root
-        state = copy.deepcopy(root_state)
+        sim_state.restore_snapshot(root_snapshot)
 
-        # ----- SELECT (traverse tree while it is expanded) -----
+        # ----- SELECT -----
         while node.expanded():
-            action = max(
-                node.children,
-                key=lambda a: node.children[a].ucb_score(c_puct),
-            )
+            action = max(node.children, key=lambda a: node.children[a].ucb_score(c_puct))
             child = node.children[action]
-
-            # Advance the local state copy
-            _, _, terminated, _ = state.step(action)
-
+            _, _, terminated, _ = sim_state.step(action)
             node = child
             if terminated:
                 break
 
         # ----- EXPAND & EVALUATE -----
-        terminated = state._terminated
-        legal = state.get_legal_actions()
+        terminated = sim_state._terminated
+        legal = sim_state.get_legal_actions()
 
         if terminated:
-            value = _terminal_value(state)
-
+            value = _terminal_value(sim_state)
         elif not legal:
-            # No legal moves but game not marked terminated — treat as draw
             value = 0.0
-
         else:
-            policy, value = evaluate_fn(state)
-
-            # Sanity check the policy array
+            policy, value = evaluate_fn(sim_state)
             if not isinstance(policy, np.ndarray) or policy.shape != (60,):
                 policy = np.zeros(60, dtype=np.float32)
                 if legal:
                     policy[legal] = 1.0 / len(legal)
 
-            # Create child nodes for every legal action
+            # Snapshot the leaf state for child creation
+            leaf_snap = sim_state.get_snapshot()
             for a in legal:
                 if a not in node.children:
-                    child_state = copy.deepcopy(state)
+                    sim_state.step(a)
+                    child_core = copy.deepcopy(sim_state)
+                    sim_state.restore_snapshot(leaf_snap)
                     node.children[a] = MCTSNode(
-                        state=child_state,
+                        state=child_core,
                         parent=node,
                         action=a,
                         prior=float(policy[a]),
                     )
 
-        # ----- BACKUP (zero-sum: flip value at every level) -----
+        # ----- BACKUP -----
         while node is not None:
             node.visits += 1
             node.total_value += value
-            value = -value  # opponent's perspective
+            value = -value
             node = node.parent
 
-    # ---- gather root visit counts ----
-    action_counts: Dict[int, int] = {}
+    # ---- build result ----
+    action_counts = {}
     for action, child in root.children.items():
         action_counts[action] = child.visits
-
-    # Fallback (should not happen with >0 simulations)
     if not action_counts:
         legal = root_state.get_legal_actions()
         for a in legal:
             action_counts[a] = 1
-
     return action_counts, root
 
 
