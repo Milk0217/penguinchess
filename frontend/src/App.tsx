@@ -24,6 +24,24 @@ const PLAYER_NAMES = ["Player 1 (P1)", "Player 2 (P2)"];
 // 应用模式
 type AppMode = "game" | "editor";
 
+// 坐标调整表（与 penguinchess/core.py Q_ADJUSTMENTS 一致）
+// 用于将后端调整后坐标转回原始立方体坐标
+const Q_ADJUSTMENTS: Record<string, number> = {
+  "-4": 2, "-3": 1, "-2": 0, "-1": 0,
+  "0": 0, "1": -1, "2": -2, "3": -2,
+};
+
+/** 将后端调整后坐标转换为原始立方体坐标（用于布局生成） */
+function adjustedToRawCoords(q: number, r: number, s: number): HexCoord {
+  // 后端内部: adjusted_r = raw_r + Q_ADJUSTMENTS[raw_q]
+  //             adjusted_s = -raw_q - adjusted_r
+  //             s = raw_q
+  const raw_q = s;
+  const adj = Q_ADJUSTMENTS[String(raw_q)] ?? 0;
+  const raw_r = q - adj;
+  return { q: raw_q, r: raw_r, s: -raw_q - raw_r };
+}
+
 // -------------------------------------------------------------------------
 // 路径检查工具（与 PenguinChessCore._path_clear / JS calculatePossibleMoves 对齐）
 // -------------------------------------------------------------------------
@@ -209,7 +227,13 @@ export default function App() {
       const builtIn = getLayout(actualBoardId);
       if (!builtIn && res.state.hexes) {
         // 这是自定义棋盘，需要创建 layout
-        const hexCoords: HexCoord[] = res.state.hexes.map(h => ({ q: h.q, r: h.r, s: h.s }));
+        // 后端发送调整后坐标，需要转回原始坐标才能正确计算像素位置
+        const hexCoords: HexCoord[] = res.state.hexes.map(h =>
+          adjustedToRawCoords(h.q, h.r, h.s)
+        );
+        const boardInfo = availableBoards.find(b => b.id === actualBoardId);
+        const boardName = boardInfo?.name ?? actualBoardId;
+        const customLayout = createLayoutFromHexes(hexCoords, actualBoardId, boardName);
         const boardInfo = availableBoards.find(b => b.id === actualBoardId);
         const boardName = boardInfo?.name ?? actualBoardId;
         const customLayout = createLayoutFromHexes(hexCoords, actualBoardId, boardName);
