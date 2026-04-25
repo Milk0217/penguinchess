@@ -14,14 +14,17 @@ Flask API 服务端：企鹅棋前后端分离架构后端。
 from __future__ import annotations
 
 import os
+import time
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 
 from .game import create_session, get_session
 from .boards import list_boards, get_board, save_board, delete_board
+from .logger import setup_request_logging, info
 
 app = Flask(__name__, static_folder="../frontend/dist", static_url_path="")
 CORS(app)  # 开发环境允许跨域
+setup_request_logging(app)  # 启用请求日志
 
 
 # =============================================================================
@@ -186,7 +189,8 @@ def api_health():
 # =============================================================================
 
 if __name__ == "__main__":
+    from .logger import info
     port = int(os.environ.get("PORT", 8080))
     debug = os.environ.get("FLASK_DEBUG", "0") == "1"
-    print(f"🐧 PenguinChess API starting on http://localhost:{port}")
+    info(f"PenguinChess API starting on http://localhost:{port}")
     app.run(host="0.0.0.0", port=port, debug=debug)

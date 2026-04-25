@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from penguinchess.core import PenguinChessCore, create_board_from_coords, generate_sequence
+from .logger import GameLogger
 
 
 # =============================================================================
@@ -74,10 +75,13 @@ class GameSession:
     _game_over: bool = field(default=False, init=False)
     _winner: Optional[int] = field(default=None, init=False)
     _last_action: Optional[dict] = field(default=None, init=False)
+    _logger: GameLogger = field(init=False)
 
     def __post_init__(self):
         self._core = PenguinChessCore(seed=self.seed, custom_coords=self.custom_coords)
         self._core.reset(seed=self.seed)
+        self._logger = GameLogger(self.session_id)
+        self._logger.phase("placement", self.seed)
 
     # -------------------------------------------------------------------------
     # 游戏控制
@@ -104,6 +108,7 @@ class GameSession:
         }
         """
         if self._game_over:
+            self._logger.invalid(self._core.current_player, action, "game already over")
             return {
                 "state": self.state(),
                 "reward": 0.0,
@@ -111,8 +116,10 @@ class GameSession:
                 "error": "game already over",
             }
 
-        # 保存动作前的状态（用于生成历史记录）
+        # 保存动作前的状态（用于生成历史记录和检测棋子死亡）
         prev_player = self._core.current_player
+        prev_pieces_alive = {p.id: p.alive for p in self._core.pieces}
+        prev_phase = self._core.phase
 
         # 执行动作
         obs, reward, terminated, info = self._core.step(action, piece_id=piece_id)
@@ -129,8 +136,52 @@ class GameSession:
                 "s": hex_obj.s,
                 "value": getattr(hex_obj, "value", 0),
             },
-            "phase_before": self._core.phase,
+            "phase_before": prev_phase,
         }
+
+        # 获取当前棋子存活数
+        p1_alive = sum(1 for p in self._core.pieces if p.alive and p.id % 2 == 0)
+        p2_alive = sum(1 for p in self._core.pieces if p.alive and p.id % 2 == 1)
+
+        # 记录日志
+        if info.get("invalid"):
+            self._logger.invalid(prev_player, action, info.get("reason", "unknown"))
+        elif prev_phase == "placement":
+            self._logger.action("PLACEMENT", prev_player, {
+                "step": self._core._episode_steps,
+                "to": (hex_obj.q, hex_obj.r, hex_obj.s),
+                "hex_idx": action,
+                "hex_value": getattr(hex_obj, 'value', 0),
+                "score": reward,
+                "pieces_remaining": [p1_alive, p2_alive],
+            })
+        else:
+            from_c = (
+                self._last_action["hex"]["q"],
+                self._last_action["hex"]["r"],
+                self._last_action["hex"]["s"]
+            )
+            self._logger.action("MOVEMENT", prev_player, {
+                "step": self._core._episode_steps,
+                "piece_id": piece_id or 0,
+                "from": from_c,
+                "to": (hex_obj.q, hex_obj.r, hex_obj.s),
+                "hex_idx": action,
+                "hex_value": getattr(hex_obj, 'value', 0),
+                "score": reward,
+                "pieces_remaining": [p1_alive, p2_alive],
+            })
+
+        # 检测棋子死亡
+        for p in self._core.pieces:
+            if prev_pieces_alive.get(p.id) and not p.alive:
+                coord = (p.hex.q if p.hex else 0, p.hex.r if p.hex else 0, p.hex.s if p.hex else 0) if p.hex else (0, 0, 0)
+                reason = "eliminated" if p.hex is None else "no valid moves"
+                self._logger.death(p.id, p.id % 2, coord, reason)
+
+        # 检测阶段变化
+        if prev_phase == "placement" and self._core.phase == "movement":
+            self._logger.phase("movement")
 
         # 检查游戏结束
         if terminated:
@@ -142,6 +193,7 @@ class GameSession:
                 self._winner = 1
             else:
                 self._winner = 2  # 平局
+            self._logger.game_over(self._winner, (s1, s2))
 
         return {
             "state": self.state(),
@@ -165,7 +217,8 @@ class GameSession:
                 "q": h.q,
                 "r": h.r,
                 "s": h.s,
-                "value": h.value,    # 1/2/3=活跃, 0=被占据, -1=已消除
+                "state": h.state,    # 'active' | 'occupied' | 'used' | 'eliminated'
+                "points": h.points,  # 1/2/3 分值（仅 active 时有效）
             })
 
         pieces = []

@@ -13,27 +13,50 @@
 
 ```
 penguinchess/
-├── main.py                          # Flask Web 服务器（人类对战）
-├── templates/index.html             # Web UI
-├── statics/                         # Web 前端 JS/CSS
-│   ├── main.js                      # 游戏逻辑（Web 版本）
-│   ├── board.js                     # Hex 棋盘类
-│   ├── piece.js                     # 棋子类
-│   ├── player.js                   # 玩家类
-│   └── config.js                   # 配置常量
+├── server/                          # Flask HTTP 服务层
+│   ├── app.py                      # HTTP 路由、会话管理
+│   └── game.py                     # Game 会话封装
 │
-├── penguinchess/                    # RL 环境模块
+├── frontend/                        # React 前端
+│   └── src/
+│       ├── App.tsx                 # 主应用状态机
+│       ├── board/                  # 棋盘可视化系统
+│       │   ├── BoardContainer.tsx  # 主容器
+│       │   ├── HexCell.tsx        # 六边形格子
+│       │   ├── Piece.tsx          # 棋子组件
+│       │   ├── Legend.tsx         # 图例
+│       │   ├── types.ts           # 类型定义
+│       │   ├── layouts/           # 布局策略
+│       │   └── themes/            # 主题策略
+│       └── editor/                # 棋盘编辑器
+│
+├── penguinchess/                    # Python 游戏核心 / RL 环境
 │   ├── __init__.py
-│   ├── env.py                      # ★ Gymnasium 环境核心（待实现）
-│   ├── spaces.py                   # ★ 观测空间 / 动作空间定义（待实现）
-│   ├── reward.py                   # ★ Reward shaping 函数（待实现）
-│   └── wrapped.py                  # ★ Gymnasium 包装器（待实现）
+│   ├── core.py                     # PenguinChessCore 游戏逻辑
+│   ├── env.py                      # Gymnasium 环境
+│   ├── spaces.py                   # 观测/动作空间定义
+│   ├── reward.py                   # Reward shaping 函数
+│   └── random_ai.py               # 随机 AI 基准
 │
-└── examples/                        # 训练示例
-    ├── train_ppo.py                # ★ PPO 训练（待实现）
-    ├── train_sac.py                # ★ SAC 训练（待实现）
-    ├── selfplay.py                 # ★ Self-play 训练（待实现）
-    └── evaluate.py                 # ★ 评估工具（待实现）
+├── statics/                         # 原始前端（Vanilla JS）
+│
+├── docs/                           # 文档
+│   ├── RULES.md                   # 权威游戏规则
+│   ├── ARCHITECTURE.md            # 架构设计与演进路线
+│   └── BOARD_EDITOR.md            # 棋盘编辑器设计
+│
+├── examples/                        # 训练示例
+│   └── random_ai.py               # 随机 AI 基准（已完成）
+│   └── train_ppo.py              # ★ PPO 训练（待实现）
+│   └── train_sac.py              # ★ SAC 训练（待实现）
+│   └── selfplay.py               # ★ Self-play 训练（待实现）
+│   └── evaluate.py               # ★ 评估工具（待实现）
+│
+└── game_engine/                    # ★ Rust 游戏核心（待实现）
+    ├── board.rs
+    ├── piece.rs
+    ├── rules.rs
+    └── state.rs
 ```
 
 ---
@@ -492,16 +515,16 @@ interface BoardTheme {
 
 ## 十、运行测试
 
+> **注意**: 本项目使用 `uv` 作为包管理器，**不是** pip/venv。
+
 ```bash
 # Web 对战（人类 vs 人类）
 cd /mnt/e/programming/penguinchess
-source .venv/bin/activate
-python server/app.py
+uv run python server/app.py
 # 访问 http://localhost:8080
 
 # Gymnasium 环境自检
-source .venv/bin/activate
-python -c "
+uv run python -c "
 import gymnasium as gym
 from penguinchess.env import PenguinChessEnv
 env = gym.make('PenguinChess-v0')
@@ -511,6 +534,5 @@ env.close()
 "
 
 # 100 局随机对战基准测试
-source .venv/bin/activate
-python penguinchess/random_ai.py
+uv run python penguinchess/random_ai.py
 ```

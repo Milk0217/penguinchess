@@ -73,7 +73,11 @@ class PenguinChessActionSpace(gym.Space):
 
     def sample(self, mask: np.ndarray = None) -> int:
         if mask is None:
-            return self.np_random.randint(self.n)
+            # numpy.random.Generator uses integers(), older numpy uses randint()
+            if hasattr(self.np_random, 'integers'):
+                return self.np_random.integers(self.n)
+            else:
+                return self.np_random.randint(self.n)
         valid = np.where(mask == 1)[0]
         if len(valid) == 0:
             raise ValueError("mask 无效，所有动作均被禁用")

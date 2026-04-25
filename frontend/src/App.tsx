@@ -56,7 +56,7 @@ function isPathClear(
     if (!hexMap.has(key)) return false;           // 棋盘外
     const idx = hexMap.get(key)!;
     const h = hexes[idx];
-    if (h.value <= 0 || occupiedKeys.has(key)) return false; // 被占据/消除
+    if (h.state !== 'active' || occupiedKeys.has(key)) return false; // 非活跃/已占据
   }
   return true;
 }
@@ -75,7 +75,7 @@ function computeTargets(
   }
   const targets = new Set<number>();
   for (const h of hexes) {
-    if (h.value <= 0) continue;
+    if (h.state !== 'active') continue;
     if (occupiedKeys.has(`${h.q},${h.r},${h.s}`)) continue;
     if (h.q !== piece.q && h.r !== piece.r && h.s !== piece.s) continue;
     if (isPathClear(piece.q, piece.r, piece.s, h.q, h.r, h.s, hexMap, hexes, occupiedKeys)) {
@@ -178,7 +178,7 @@ export default function App() {
     const piece = state.pieces.find((p) => p.id === selectedPieceId);
     if (!piece || piece.q === null || piece.r === null || piece.s === null) return new Set<number>();
     return computeTargets(
-      { ...piece, q: piece.q, r: piece.r, s: piece.s, value: 0, index: piece.index ?? 0 },
+      { ...piece, q: piece.q, r: piece.r, s: piece.s, state: 'occupied', points: 0, index: piece.index ?? 0 },
       state.hexes,
       hexMap,
       state.pieces,
@@ -234,6 +234,36 @@ export default function App() {
   useEffect(() => {
     initGame();
   }, [initGame]);
+
+  // DEBUG: 打印从后端获取的棋盘数据
+  useEffect(() => {
+    if (state) {
+      console.log('[DEBUG] Game state from backend:', {
+        session_id: state.session_id,
+        phase: state.phase,
+        current_player: state.current_player,
+        hexes_count: state.hexes.length,
+        hexes_sample: state.hexes.slice(0, 5).map(h => ({
+          index: h.index,
+          q: h.q,
+          r: h.r,
+          s: h.s,
+          state: h.state,
+          points: h.points
+        })),
+        pieces: state.pieces.map(p => ({
+          id: p.id,
+          owner: p.owner,
+          alive: p.alive,
+          q: p.q,
+          r: p.r,
+          s: p.s
+        })),
+        legal_actions: state.legal_actions.slice(0, 10),
+        scores: state.scores
+      });
+    }
+  }, [state]);
 
   // -------------------------------------------------------------------------
   // 重开（保持 seed 不变）
@@ -338,6 +368,12 @@ export default function App() {
 
   if (!state) return null;
 
+  // DEBUG: 显示后端返回的棋盘数据
+  const hexStates = state.hexes.reduce((acc, h) => {
+    acc[h.state] = (acc[h.state] || 0) + 1;
+    return acc;
+  }, {} as Record<string, number>);
+
   const statusText = getStatusText(state);
   const isGameOver = state.game_over;
 
@@ -360,6 +396,38 @@ export default function App() {
       <p style={{ color: "#64748b", fontSize: "0.75rem", margin: "0 0 1rem", textAlign: "center" }}>
         前后端分离架构 · 游戏逻辑在后端执行
       </p>
+
+      {/* DEBUG: 后端返回的 hex 数据 */}
+      <div style={{
+        background: "#fef3c7",
+        border: "2px solid #f59e0b",
+        borderRadius: "8px",
+        padding: "0.75rem",
+        marginBottom: "1rem",
+        maxWidth: "500px",
+        fontSize: "0.7rem",
+        fontFamily: "monospace"
+      }}>
+        <strong style={{ color: "#92400e" }}>[DEBUG] 后端返回的 hex 数据:</strong>
+        <div style={{ marginTop: "0.5rem" }}>
+          <div>hex 总数: <strong>{state.hexes.length}</strong></div>
+          <div>hex 状态分布: <strong>{JSON.stringify(hexStates)}</strong></div>
+          <div>phase: <strong>{state.phase}</strong></div>
+          <div>前 5 个 hex:
+            <pre style={{ margin: "0.25rem 0 0", background: "#fff", padding: "0.25rem", borderRadius: "4px", overflow: "auto" }}>
+              {JSON.stringify(state.hexes.slice(0, 5).map(h => ({
+                i: h.index, q: h.q, r: h.r, s: h.s, st: h.state, pt: h.points
+              })), null, 0)}
+            </pre>
+          </div>
+          <div style={{ marginTop: "0.5rem" }}>
+            第一个 hex 对象完整结构:
+            <pre style={{ margin: "0.25rem 0 0", background: "#fff", padding: "0.25rem", borderRadius: "4px", overflow: "auto" }}>
+              {JSON.stringify(state.hexes[0], null, 2)}
+            </pre>
+          </div>
+        </div>
+      </div>
 
       {/* 分数板 - 响应式 */}
       <div className="scoreboard" style={{ gap: "0.5rem", padding: "0.5rem 1rem" }}>
@@ -408,7 +476,7 @@ export default function App() {
           </span>
           <span>总合法动作: <strong style={{ color: "#0f172a" }}>{state.legal_actions.length}</strong></span>
           <span>回合: <strong style={{ color: "#0f172a" }}>{state.episode_steps + 1}</strong></span>
-          <span>活跃格子: <strong style={{ color: "#0f172a" }}>{state.hexes.filter(h => h.value > 0).length}</strong></span>
+          <span>活跃格子: <strong style={{ color: "#0f172a" }}>{state.hexes.filter(h => h.state === 'active').length}</strong></span>
         </div>
 
         {/* 第二行：棋子存活情况 */}
@@ -436,7 +504,7 @@ export default function App() {
                   const pieceHex = state.hexes.find(h => h.q === p.q && h.r === p.r && h.s === p.s);
                   if (!pieceHex) return false;
                   const targets = computeTargets(
-                    { ...p, index: pieceHex.index, value: 0 },
+                    { ...p, index: pieceHex.index, state: 'occupied', points: 0 },
                     state.hexes,
                     buildHexIndexMap(state.hexes),
                     state.pieces,
@@ -491,7 +559,7 @@ export default function App() {
           <tbody>
             {state.pieces.map(piece => {
               const pieceHex = piece.q !== null ? state.hexes.find(h => h.q === piece.q && h.r === piece.r && h.s === piece.s) : null;
-              const hexValue = pieceHex ? pieceHex.value : null;
+              const hexValue = pieceHex ? (pieceHex.state === 'active' ? pieceHex.points : pieceHex.state) : null;
               const isSelected = piece.id === selectedPieceId;
               return (
                 <tr
@@ -510,9 +578,9 @@ export default function App() {
                   <td style={{
                     padding: "2px 6px",
                     textAlign: "center",
-                    color: piece.q === null ? "#94a3b8" : piece.alive ? "#16a34a" : "#dc2626",
+                    color: !piece.alive ? "#dc2626" : piece.q === null ? "#94a3b8" : "#16a34a",
                   }}>
-                    {piece.q === null ? "未放置" : piece.alive ? "存活" : "已消除"}
+                    {!piece.alive ? "已消除" : piece.q === null ? "未放置" : "存活"}
                   </td>
                   <td style={{ padding: "2px 6px", textAlign: "center" }}>
                     {piece.q !== null ? `(${piece.q},${piece.r},${piece.s})` : "—"}

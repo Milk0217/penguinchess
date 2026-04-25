@@ -18,16 +18,16 @@ function getBackgroundColor(
   colors: ThemeColors,
 ): string {
   if (isTarget) return colors.hexTarget;
-  if (hex.value < 0) return colors.hexEliminated;
-  if (hex.value === 0) return colors.hexOccupied;
-  if (hex.value === 1) return colors.hexValue1;
-  if (hex.value === 2) return colors.hexValue2;
-  if (hex.value === 3) return colors.hexValue3;
+  if (hex.state === 'eliminated' || hex.state === 'used') return colors.hexEliminated;
+  if (hex.state === 'occupied') return colors.hexOccupied;
+  if (hex.points === 1) return colors.hexValue1;
+  if (hex.points === 2) return colors.hexValue2;
+  if (hex.points === 3) return colors.hexValue3;
   return colors.hexValue1;
 }
 
 function getTextColor(hex: HexData, colors: ThemeColors): string {
-  if (hex.value === 2 || hex.value === 0) return colors.textOnDark;
+  if (hex.points === 2 || hex.state === 'occupied') return colors.textOnDark;
   return colors.text;
 }
 
@@ -41,7 +41,7 @@ const HexCell: React.FC<HexCellProps> = ({
   isTarget,
   onClick,
 }) => {
-  const isEliminated = hex.value < 0;
+  const isEliminated = hex.state === 'eliminated' || hex.state === 'used';
 
   const handleClick = () => {
     if (!isEliminated && onClick) {
@@ -72,12 +72,12 @@ const HexCell: React.FC<HexCellProps> = ({
     fontSize: `${sizes.hexSize * 0.6}px`,
   };
 
-  const showValue = effects.showValues && hex.value > 0;
+  const showValue = effects.showValues && hex.state === 'active';
   const showCoords = effects.showCoords;
 
   return (
     <div style={style} onClick={handleClick}>
-      {showValue && <span>{hex.value}</span>}
+      {showValue && <span>{hex.points}</span>}
       {showCoords && (
         <span style={{ fontSize: `${sizes.hexSize * 0.3}px`, opacity: 0.7 }}>
           ({hex.q},{hex.r})

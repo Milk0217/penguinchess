@@ -89,7 +89,8 @@ export interface HexData {
   q: number;
   r: number;
   s: number;
-  value: number;
+  state: 'active' | 'occupied' | 'used' | 'eliminated';
+  points: number;
 }
 
 /** 棋子状态 */

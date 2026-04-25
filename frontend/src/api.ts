@@ -10,7 +10,8 @@ export interface HexData {
   q: number;
   r: number;
   s: number;
-  value: number;   // 1/2/3=活跃, 0=被占据, -1=已消除
+  state: 'active' | 'occupied' | 'used' | 'eliminated';
+  points: number;   // 1/2/3 分值（仅 active 时有效）
 }
 
 export interface PieceData {
@@ -36,7 +37,7 @@ export interface GameState {
   last_action: {
     player: number;
     action: number;
-    hex: { q: number; r: number; s: number; value: number };
+    hex: { q: number; r: number; s: number; state: string; points: number };
     phase_before: string;
   } | null;
   episode_steps: number;
