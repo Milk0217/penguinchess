@@ -124,8 +124,23 @@ def train(args):
     vec_env = DummyVecEnv([make_env(seed=0)])
     vec_env = VecNormalize(vec_env, norm_obs=True, norm_reward=False)
 
-    # 模型配置
-    model = PPO(
+    # 模型配置：从零开始或续训
+    if args.resume and os.path.exists(args.resume):
+        print(f"续训练模型: {args.resume}")
+        model = PPO.load(args.resume, env=vec_env, device="auto",
+                         learning_rate=args.lr,
+                         n_steps=args.n_steps,
+                         batch_size=args.batch_size,
+                         n_epochs=args.n_epochs,
+                         gamma=args.gamma,
+                         clip_range=args.clip_range,
+                         ent_coef=0.01,
+                         vf_coef=0.5,
+                         max_grad_norm=0.5,
+                         tensorboard_log=str(LOGS_DIR),
+                         verbose=1)
+    else:
+        model = PPO(
         "MlpPolicy",
         vec_env,
         learning_rate=args.lr,
@@ -234,6 +249,7 @@ if __name__ == "__main__":
     parser.add_argument("--eval-episodes", type=int, default=100, help="评估局数")
     parser.add_argument("--evaluate-only", action="store_true", help="仅评估，不训练")
     parser.add_argument("--model-path", type=str, default=None, help="模型路径（评估时使用）")
+    parser.add_argument("--resume", type=str, default=None, help="继续训练的模型路径，例如 models/ppo_penguinchess_50000_steps.zip")
 
     args = parser.parse_args()
 
