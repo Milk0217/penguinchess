@@ -727,27 +727,36 @@ class PenguinChessCore:
 
     def _destroy_immobile_pieces(self) -> None:
         """
-        销毁所有周围没有可移动格子的棋子。
+        销毁所有周围没有可移动格子的棋子（多轮迭代直到稳定）。
 
         判断逻辑：检查棋子周围一圈（6 个邻居）中是否有 active 格子。
-        简化版检查，不走完整路径——只要邻居中有空位就能移动。
+
+        级联效应：棋子 A 被销毁后，它占据的格子变为 used，可能导致：
+        1. 其他棋子的邻居格子突然可用（不再被 A 阻挡）
+        2. 某些格子断连被 eliminate，导致新的死子
+        因此需要多轮迭代直到没有新棋子被销毁。
         """
-        for piece in self.pieces:
-            if not piece.alive or piece.hex is None:
-                continue
-            # 获取棋子所在格子的索引
-            hex_idx = self._hex_map.get((piece.hex.q, piece.hex.r, piece.hex.s))
-            if hex_idx is None:
-                self._destroy_piece(piece)
-                continue
-            # 检查邻居中是否有 active 格子
-            has_valid_move = False
-            for neighbor_idx in self._neighbors[hex_idx]:
-                if self.hexes[neighbor_idx].is_active():
-                    has_valid_move = True
-                    break
-            if not has_valid_move:
-                self._destroy_piece(piece)
+        changed = True
+        while changed:
+            changed = False
+            for piece in self.pieces:
+                if not piece.alive or piece.hex is None:
+                    continue
+                # 获取棋子所在格子的索引
+                hex_idx = self._hex_map.get((piece.hex.q, piece.hex.r, piece.hex.s))
+                if hex_idx is None:
+                    self._destroy_piece(piece)
+                    changed = True
+                    continue
+                # 检查邻居中是否有 active 格子
+                has_valid_move = False
+                for neighbor_idx in self._neighbors[hex_idx]:
+                    if self.hexes[neighbor_idx].is_active():
+                        has_valid_move = True
+                        break
+                if not has_valid_move:
+                    self._destroy_piece(piece)
+                    changed = True
 
     def _eliminate_disconnected_hexes(self) -> int:
         """
