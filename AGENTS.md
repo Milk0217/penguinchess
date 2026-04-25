@@ -342,6 +342,90 @@ env.action_space.seed(42)   # 动作空间也要设置种子
 
 **GPU 加速**: 本机配备 NVIDIA GPU，PyTorch 自动使用 CUDA 加速训练（`device="auto"`）。可通过 `nvidia-smi` 确认 GPU 状态。
 
+### 5.2 PPO 训练流程
+
+#### 训练方式：自对弈
+
+PPO 在 Gymnasium 环境中与自己下棋，每一回合环境自动切换玩家（P1↔P2），模型学会同时应对黑白两方的局面。
+
+```
+训练:  PPO ←step()→ Gymnasium(switch player) ←step()→ PPO
+评估:  Gen_N → 随机 AI / Gen_{N-1} / Gen_{N-2} ...
+```
+
+#### 世代追踪（Generation）
+
+每次训练产出新一代模型，自动与所有前代交叉对比：
+
+```bash
+# 训练 100k 步，4 个并行环境（推荐）
+uv run python examples/train_ppo.py --timesteps 100000 --num-envs 4
+
+# 续训已有模型
+uv run python examples/train_ppo.py --resume models/ppo_penguinchess_gen_4.zip
+```
+
+训练结束后自动：
+1. 保存到 `models/ppo_penguinchess_gen_N.zip`
+2. vs 随机 AI — 测试基础强度
+3. vs 所有前代 — 交叉对比，计算 ELO 评分
+
+```
+--- Gen 4 对战评估 ---
+vs 随机 AI:  胜 56.7%  负 43.3%
+vs gen_1:    胜 50.0%  负 23.3%  平 26.7%
+vs gen_2:    胜 53.3%  负 20.0%  平 26.7%
+vs gen_3:    胜 70.0%  负 23.3%  平 6.7%   ELO=1216
+[OK] 超越前代平均值!
+```
+
+#### 速度优化
+
+| 配置 | steps/s | 说明 |
+|------|---------|------|
+| GPU 单环境 | ~70 | MLP 策略不适用 GPU |
+| CPU 单环境 | ~200 | CPU 对小模型更快 |
+| CPU + 4 并行 | ~700+ | `--num-envs 4` 大幅加速 |
+
+#### 超参数
+
+```bash
+uv run python examples/train_ppo.py \
+    --timesteps 100000 \      # 训练步数
+    --num-envs 4 \             # 并行环境数
+    --lr 3e-4 \                # 学习率
+    --batch-size 64 \          # 批次大小
+    --n-steps 2048 \           # 每次更新步数
+    --ent-coef 0.01 \          # 熵正则（鼓励探索）
+    --force-gpu                # 强制 GPU（默认 CPU）
+```
+
+#### 评估已有模型
+
+```bash
+uv run python examples/train_ppo.py --evaluate-only
+```
+
+自动加载最新 `gen_N`，对比随机 AI 和所有前代。
+
+### 5.3 前端 AI 对战
+
+训练完成后，启动服务器即可在浏览器中选择 👤 vs 🤖 模式对战：
+
+```bash
+# 1. 训练（产出一代模型）
+uv run python examples/train_ppo.py --timesteps 100000 --num-envs 4
+
+# 2. 启动后端
+uv run python server/app.py
+
+# 3. 启动前端
+cd frontend && bun run dev
+# 浏览器 → 点击 👤 vs 🤖 → 新游戏 → 对战
+```
+
+前端 AI 自动加载最强一代模型（最新 `gen_N`）。
+
 ### 5.2 Self-Play 训练
 
 ```python
