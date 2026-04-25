@@ -10,6 +10,11 @@ PPO 训练脚本 — 使用 Stable-Baselines3 训练 PenguinChess 智能体。
     uv run python examples/train_ppo.py              # 默认训练 100k 步
     uv run python examples/train_ppo.py --timesteps 500000  # 训练 500k 步
     uv run python examples/train_ppo.py --evaluate-only     # 仅评估已有模型
+
+GPU 说明:
+    MLP 策略网络在 GPU 上的加速效果有限，小规模训练时 CPU 可能更快。
+    如需使用 GPU 训练，脚本默认 device="auto" 会自动检测。
+    也可强制使用 CPU: --device cpu
 """
 
 import argparse

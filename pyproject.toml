@@ -24,6 +24,9 @@ dev = [
     "playwright>=1.40.0",
 ]
 
+[tool.uv]
+extra-index-url = ["https://download.pytorch.org/whl/cu124"]
+
 [project.scripts]
 penguinchess = "penguinchess.__main__:main"
 
