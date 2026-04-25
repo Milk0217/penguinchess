@@ -178,7 +178,6 @@ const GLOBAL_THEMES: Record<GlobalTheme, {
   const [currentLayoutId, setCurrentLayoutId] = useState("default");
   const [globalTheme, setGlobalTheme] = useState<GlobalTheme>("dark");
   const pageTheme = GLOBAL_THEMES[globalTheme];
-  const [currentLayoutId, setCurrentLayoutId] = useState("default");
   const currentTheme = useMemo(() => getTheme(currentThemeId), [currentThemeId]);
 
   // 自定义棋盘 layout 缓存（key: boardId）
