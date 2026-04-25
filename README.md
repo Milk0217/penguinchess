@@ -136,7 +136,8 @@ penguinchess/
 | 游戏核心 | Python | Rust |
 | HTTP 框架 | Flask | Axum / Actix-web |
 | 前端 | React + TypeScript | React + TypeScript |
-| AI 训练 | Python Gymnasium + PyTorch | Python Gymnasium + PyTorch |
+| AI 训练 | Python Gymnasium + PyTorch（CPU/GPU 自动检测） | Python Gymnasium + PyTorch |
+| 后端加速 | — | Rust（训练规模扩大后迁移游戏核心） |
 
 ---
 

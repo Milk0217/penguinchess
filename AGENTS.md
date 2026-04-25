@@ -340,6 +340,8 @@ env.action_space.seed(42)   # 动作空间也要设置种子
 - 社区成熟，文档丰富
 - 超参数鲁棒
 
+**GPU 加速**: 本机配备 NVIDIA GPU，PyTorch 自动使用 CUDA 加速训练（`device="auto"`）。可通过 `nvidia-smi` 确认 GPU 状态。
+
 ### 5.2 Self-Play 训练
 
 ```python
@@ -408,6 +410,8 @@ while training:
 ### Phase 3: 游戏核心迁移到 Rust（🚧 待开始）
 
 **目标**: 用 Rust 重写游戏核心逻辑，极致性能。
+
+**动机**: 随着训练规模扩大，Python 游戏核心的性能瓶颈会越来越明显。Rust 版本可将单步推理延迟从 ~10-100μs 降至 ~0.1-1μs（100 倍提升），大幅缩短训练时间。
 
 **交付物**:
 - `game_engine/` — Rust 游戏核心 crate

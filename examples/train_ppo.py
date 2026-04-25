@@ -2,6 +2,9 @@
 """
 PPO 训练脚本 — 使用 Stable-Baselines3 训练 PenguinChess 智能体。
 
+本机配备 NVIDIA GPU 时，PyTorch 会自动使用 GPU 加速训练（`device="auto"`）。
+可通过 `nvidia-smi` 确认 GPU 状态。
+
 运行方式:
     cd /mnt/e/programming/penguinchess
     uv run python examples/train_ppo.py              # 默认训练 100k 步
