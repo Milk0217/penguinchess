@@ -2,6 +2,8 @@
 企鹅棋核心游戏逻辑单元测试。
 """
 
+import json
+import os
 import pytest
 from penguinchess.core import (
     PenguinChessCore,
@@ -9,6 +11,8 @@ from penguinchess.core import (
     Piece,
     generate_sequence,
     create_board,
+    create_board_from_coords,
+    json_board_to_coords,
     TOTAL_VALUE,
     HEX_COUNT,
     PLAYER_1_PIECES,
@@ -17,20 +21,36 @@ from penguinchess.core import (
 )
 
 
+def get_default_board_coords():
+    """加载 default.json 棋盘并转换为 Python 内部坐标格式。"""
+    board_path = os.path.join(
+        os.path.dirname(__file__), "..", "backend_data", "boards", "default.json"
+    )
+    with open(board_path, encoding="utf-8") as f:
+        data = json.load(f)
+    return json_board_to_coords(data["hexes"])
+
+
 class TestBoardGeneration:
     """棋盘生成测试。"""
 
-    def test_board_value_sum_equals_99(self):
+    @pytest.fixture
+    def default_board_core(self):
+        """使用 default.json 棋盘的 PenguinChessCore 实例。"""
+        coords = get_default_board_coords()
+        return PenguinChessCore(custom_coords=coords)
+
+    def test_board_value_sum_equals_99(self, default_board_core):
         """棋盘格子分值总和必须等于 99。"""
-        core = PenguinChessCore()
+        core = default_board_core
         core.reset()
         # 注意: 活跃格子 (is_active) 的 points 总和应该等于 99
         active_total = sum(h.points for h in core.hexes if h.is_active())
         assert active_total == 99, f"Active hex value sum should be 99, got {active_total}"
 
-    def test_hex_count_equals_60(self):
+    def test_hex_count_equals_60(self, default_board_core):
         """默认棋盘应该有 60 个格子。"""
-        core = PenguinChessCore()
+        core = default_board_core
         core.reset()
         assert len(core.hexes) == 60, f"Expected 60 hexes, got {len(core.hexes)}"
 

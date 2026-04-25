@@ -9,7 +9,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from penguinchess.core import PenguinChessCore, create_board_from_coords, generate_sequence
+from penguinchess.core import PenguinChessCore, create_board_from_coords, generate_sequence, json_board_to_coords
 from .logger import GameLogger
 
 
@@ -47,7 +47,8 @@ def create_session(seed: Optional[int] = None, board_id: Optional[str] = None) -
         from . import boards as board_module
         board_data = board_module.get_board(board_id)
         if board_data:
-            custom_coords = board_data.get("hexes")
+            # JSON 棋盘使用原始坐标，需要转换
+            custom_coords = json_board_to_coords(board_data.get("hexes", []))
 
     session = GameSession(session_id=session_id, seed=seed, custom_coords=custom_coords)
     _sessions[session_id] = session

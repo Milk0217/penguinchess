@@ -288,6 +288,35 @@ def create_board_from_coords(coords: List[dict], value_sequence: List[int]) -> L
     return hexes
 
 
+def json_board_to_coords(json_board: List[dict]) -> List[dict]:
+    """
+    将 JSON 棋盘格式转换为 Python 内部坐标格式。
+
+    JSON 棋盘使用原始立方体坐标 (q, r, s)，需要转换为 Python 内部调整后坐标。
+
+    Args:
+        json_board: JSON 棋盘的 hexes 数组，每个元素为 {"q": int, "r": int, "s": int, ...}
+
+    Returns:
+        Python 格式的坐标列表，可直接传给 create_board_from_coords()
+    """
+    coords = []
+    for h in json_board:
+        raw_q = h["q"]
+        raw_r = h["r"]
+        # 应用与 create_board() 相同的调整逻辑
+        adj = Q_ADJUSTMENTS.get(str(raw_q), 0)
+        py_q = raw_r + adj      # adjusted_r
+        py_r = -raw_q - py_q    # adjusted_s
+        py_s = raw_q            # s 存储原始 q 值
+        coords.append({
+            "q": py_q,
+            "r": py_r,
+            "s": py_s,
+        })
+    return coords
+
+
 # =============================================================================
 # 核心游戏类
 # =============================================================================
