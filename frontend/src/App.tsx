@@ -234,9 +234,6 @@ export default function App() {
         const boardInfo = availableBoards.find(b => b.id === actualBoardId);
         const boardName = boardInfo?.name ?? actualBoardId;
         const customLayout = createLayoutFromHexes(hexCoords, actualBoardId, boardName);
-        const boardInfo = availableBoards.find(b => b.id === actualBoardId);
-        const boardName = boardInfo?.name ?? actualBoardId;
-        const customLayout = createLayoutFromHexes(hexCoords, actualBoardId, boardName);
         setCustomLayouts(prev => {
           const next = new Map(prev);
           next.set(actualBoardId, customLayout);
