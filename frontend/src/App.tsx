@@ -540,7 +540,7 @@ export default function App() {
               return (
                 <>
                   <span style={{ color: "#7c3aed" }}>
-                    选中: ID={selectedPieceId}{piece && piece.q !== null ? ` @ (${piece.q},${piece.r},${piece.s})` : ""}
+                    选中: ID={selectedPieceId}{piece && piece.q !== null ? (() => { const r = adjustedToRawCoords(piece.q, piece.r, piece.s); return ` @ (${r.q},${r.r},${r.s})`; })() : ""}
                   </span>
                   <span style={{ color: "#7c3aed" }}>
                     目标: {effectiveTargets.size}
@@ -604,7 +604,10 @@ export default function App() {
                     {!piece.alive ? "已消除" : piece.q === null ? "未放置" : "存活"}
                   </td>
                   <td style={{ padding: "2px 6px", textAlign: "center" }}>
-                    {piece.q !== null ? `(${piece.q},${piece.r},${piece.s})` : "—"}
+                    {piece.q !== null ? (() => {
+                      const raw = adjustedToRawCoords(piece.q, piece.r, piece.s);
+                      return `(${raw.q},${raw.r},${raw.s})`;
+                    })() : "—"}
                   </td>
                   <td style={{ padding: "2px 6px", textAlign: "center" }}>
                     {piece.index !== undefined && piece.index !== null ? piece.index : "—"}
