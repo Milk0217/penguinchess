@@ -55,18 +55,17 @@ const BoardContainer: React.FC<BoardContainerProps> = ({
   const containerWidth = Math.ceil(bounds.width + padding * 2 + sizes.hexSize);
   const containerHeight = Math.ceil(bounds.height + padding * 2 + sizes.hexSize);
 
-  // Map hex index → pixel coordinates
+  // Map hex index → pixel coordinates (using layout raw coordinates)
   const hexCoordMap = useMemo(() => {
     const map = new Map<number, { x: number; y: number }>();
-    for (const hex of state.hexes) {
-      const pixel = layout.cubeToPixel(hex.q, hex.r, sizes);
-      map.set(hex.index, {
-        x: pixel.x + offsetX,
-        y: pixel.y + offsetY,
-      });
+    const layoutHexesList = layout.generateHexes();
+    for (let i = 0; i < layoutHexesList.length; i++) {
+      const h = layoutHexesList[i];
+      const pixel = layout.cubeToPixel(h.q, h.r, sizes);
+      map.set(i, { x: pixel.x + offsetX, y: pixel.y + offsetY });
     }
     return map;
-  }, [state.hexes, layout, sizes, offsetX, offsetY]);
+  }, [layout, sizes, offsetX, offsetY]);
 
   const boardWidth = containerWidth;
   const boardHeight = containerHeight;
@@ -114,16 +113,15 @@ const BoardContainer: React.FC<BoardContainerProps> = ({
 
         {/* Pieces layer */}
         {state.pieces.map((piece) => {
-          if (piece.q === null || piece.r === null || piece.s === null) return null;
-          const pixel = layout.cubeToPixel(piece.q, piece.r, sizes);
-          const px = pixel.x + offsetX;
-          const py = pixel.y + offsetY;
+          if (piece.index === null || piece.index === undefined) return null;
+          const pCoord = hexCoordMap.get(piece.index);
+          if (!pCoord) return null;
           return (
             <Piece
               key={piece.id}
               piece={piece}
-              x={px}
-              y={py}
+              x={pCoord.x}
+              y={pCoord.y}
               colors={theme.colors}
               sizes={theme.sizes}
               isSelected={piece.id === selectedPieceId}

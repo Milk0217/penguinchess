@@ -513,26 +513,160 @@ interface BoardTheme {
 
 ---
 
-## 十、运行测试
+## 十、环境设置与运行指南
 
-> **注意**: 本项目使用 `uv` 作为包管理器，**不是** pip/venv。
+### 10.1 系统要求
+
+| 依赖 | 版本要求 | 说明 |
+|------|----------|------|
+| Python | 3.11+ | 游戏核心与后端 |
+| Node.js | 18+ | 前端开发与构建 |
+| npm | 9+ | 前端依赖管理 |
+| uv | ≥ 0.1.0 | Python 包管理器（推荐）|
+
+### 10.2 安装依赖
 
 ```bash
-# Web 对战（人类 vs 人类）
-cd /mnt/e/programming/penguinchess
+# 1. 克隆仓库
+git clone https://github.com/Milk0217/penguinchess.git
+cd penguinchess
+
+# 2. 安装 Python 依赖（使用 uv）
+uv sync
+# 或使用 pip
+pip install -e ".[dev]"
+
+# 3. 安装前端依赖
+cd frontend
+npm install
+cd ..
+```
+
+### 10.3 启动方式
+
+#### 方式 A：纯后端（人类 vs 人类，Flask 托管静态文件）
+
+```bash
+# Flask 会同时托管编译后的前端静态文件
 uv run python server/app.py
 # 访问 http://localhost:8080
+```
 
-# Gymnasium 环境自检
+#### 方式 B：前后端分离开发（推荐）
+
+终端 1 - 后端 API 服务器：
+```bash
+uv run python server/app.py
+```
+
+终端 2 - 前端 Vite 开发服务器（热重载）：
+```bash
+cd frontend
+npm run dev
+# 访问 http://localhost:5173
+```
+
+#### 方式 C：一键启动（后端 + 前端开发服务器）
+
+```bash
+uv run python start_all.py
+# 同时启动 Flask:8080 和 Vite:5173
+```
+
+### 10.4 棋盘编辑器
+
+1. 启动后端和前端（方式 B 或 C）
+2. 访问前端页面（http://localhost:5173 或 http://localhost:8080）
+3. 点击 **"Board Editor"** 按钮进入编辑器
+4. 在画布上点击格子选择/取消选择，构建自定义棋盘形状
+5. 至少选择 60 个格子后，点击 **"Save Board"** 保存
+6. 保存后可在游戏中选择该棋盘
+
+**注意**：编辑器生成的棋盘坐标存储在 `backend_data/boards/` 目录中，以 JSON 格式保存。
+
+### 10.5 运行测试
+
+```bash
+# 运行所有 Python 测试
+pytest tests/ -q
+
+# 运行指定测试文件
+pytest tests/test_core.py -v
+pytest tests/test_env.py -v
+pytest tests/test_spaces.py -v
+
+# 运行前端测试
+cd frontend
+npx vitest run
+
+# 运行 E2E 测试（需先启动后端）
+cd frontend
+npx playwright test
+```
+
+### 10.6 Gymnasium 环境验证
+
+```bash
+# 环境自检
 uv run python -c "
 import gymnasium as gym
 from penguinchess.env import PenguinChessEnv
+
 env = gym.make('PenguinChess-v0')
 obs, info = env.reset()
-print('OK: env.reset() works')
+print('Observation space:', env.observation_space)
+print('Action space:', env.action_space)
+print('OK: env test passed')
 env.close()
 "
 
-# 100 局随机对战基准测试
-uv run python penguinchess/random_ai.py
+# 随机 AI 基准测试
+uv run python examples/random_ai.py
+
+# Python 环境直接使用
+uv run python -c "
+from penguinchess import PenguinChessCore
+
+core = PenguinChessCore()
+core.reset(seed=42)
+print('Initial phase:', core.phase)
+print('Player:', core.current_player)
+for step in range(6):  # 放置阶段 6 步
+    legal = core.get_legal_actions()
+    core.step(legal[0])
+print('Phase after placement:', core.phase)
+print('Scores:', core.players_scores)
+"
 ```
+
+### 10.7 Web 对战流程
+
+1. 启动服务器（方式 A 或 B）
+2. 浏览器打开
+3. 点击 **"New Game"** 创建游戏
+4. 两名玩家轮流点击棋盘格子进行放置（各 3 个棋子）
+5. 放置阶段结束后自动进入移动阶段
+6. 点击棋子选中，再点击高亮目标格子移动
+7. 游戏结束时显示胜负和分数
+
+### 10.8 项目结构速览
+
+```
+penguinchess/
+├── penguinchess/              # Python 游戏核心
+│   ├── core.py               # 游戏规则引擎（~900 行）
+│   ├── env.py                # Gymnasium 环境
+│   ├── spaces.py             # 观测/动作空间
+│   └── reward.py             # 奖励函数
+├── server/                    # Flask HTTP 后端
+│   ├── app.py                # 路由与 API
+│   ├── game.py               # 游戏会话
+│   └── boards.py             # 棋盘存储
+├── frontend/                  # React + Vite 前端
+│   ├── src/App.tsx           # 主应用
+│   ├── src/api.ts            # API 客户端
+│   ├── src/board/            # 棋盘可视化
+│   └── src/editor/           # 棋盘编辑器
+├── tests/                     # 测试套件
+├── backend_data/boards/      # 已保存的棋盘
+└── docs/                      # 文档
