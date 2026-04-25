@@ -55,69 +55,82 @@ def make_env(seed: int = 0) -> gym.Env:
 
 
 # =============================================================================
-# 评估：与随机 AI 对战
+# 对战/评估工具
 # =============================================================================
 
-def evaluate_against_random(
-    model: PPO,
+def compete(
+    model_p1: PPO | None,
+    model_p2: PPO | None,
     num_episodes: int = 100,
-    render: bool = False,
+    deterministic: bool = True,
 ) -> dict:
     """
-    评估 PPO 模型与随机策略的对战胜率。
+    model_p1 与 model_p2 对战 num_episodes 局。
+    
+    如果某个 model 为 None，则该方使用随机策略。
     
     Returns:
-        {"win_rate": float, "draw_rate": float, "loss_rate": float, "avg_reward": float}
+        {"p1_win": float, "p2_win": float, "draw": float,
+         "p1_avg_reward": float, "p2_avg_reward": float}
     """
     env = gym.make("PenguinChess-v0")
-    wins = 0
-    draws = 0
-    losses = 0
-    total_reward = 0.0
+    p1_wins = 0; p2_wins = 0; draws = 0
+    p1_total_r = 0.0; p2_total_r = 0.0
 
     for ep in range(num_episodes):
         obs, info = env.reset(seed=ep)
-        terminated = False
-        truncated = False
-        episode_reward = 0.0
+        terminated = False; truncated = False
 
         while not terminated and not truncated:
-            # PPO 扮演 P1（玩家 0）
-            action, _ = model.predict(obs, deterministic=True)
+            # P1 选动作
+            if model_p1:
+                act_arr, _ = model_p1.predict(obs, deterministic=deterministic)
+                action = int(act_arr.item())
+            else:
+                legal = info.get("valid_actions", [])
+                action = int(np.random.choice(legal)) if legal else 0
             obs, reward, terminated, truncated, info = env.step(action)
-            episode_reward += reward
+            if terminated or truncated: break
 
-            if terminated or truncated:
-                break
+            # P2 选动作
+            if model_p2:
+                act_arr, _ = model_p2.predict(obs, deterministic=deterministic)
+                action = int(act_arr.item())
+            else:
+                legal = info.get("valid_actions", [])
+                action = int(np.random.choice(legal)) if legal else 0
+            obs, reward, terminated, truncated, info = env.step(action)
 
-            # 随机 AI 扮演 P2（玩家 1）
-            legal = info.get("valid_actions", [])
-            random_action = np.random.choice(legal) if legal else 0
-            obs, reward, terminated, truncated, info = env.step(random_action)
-            episode_reward += reward
-
-        total_reward += episode_reward
         winner = info.get("winner")
-        if winner == 0:
-            wins += 1
-        elif winner == 2:
-            draws += 1
-        elif winner == 1:
-            losses += 1
+        if winner is None and truncated:
+            # 截断时按分数判胜负
+            scores = info.get("scores", [0, 0])
+            if scores[0] > scores[1]:
+                winner = 0
+            elif scores[1] > scores[0]:
+                winner = 1
+            else:
+                winner = 2
+        if winner == 0: p1_wins += 1
+        elif winner == 1: p2_wins += 1
+        elif winner == 2: draws += 1
 
     env.close()
-
+    n = num_episodes
     return {
-        "win_rate": wins / num_episodes,
-        "draw_rate": draws / num_episodes,
-        "loss_rate": losses / num_episodes,
-        "avg_reward": total_reward / num_episodes,
+        "p1_win": p1_wins / n, "p2_win": p2_wins / n, "draw": draws / n,
     }
 
 
 # =============================================================================
 # 主训练流程
 # =============================================================================
+
+def get_next_gen() -> int:
+    """返回下一个可用的 generation 编号。"""
+    existing = [int(p.stem.split("_gen_")[1]) for p in MODELS_DIR.glob("ppo_penguinchess_gen_*.zip") if "_gen_" in p.stem]
+    return (max(existing) + 1) if existing else 1
+
 
 def train(args):
     """训练 PPO 模型。"""
@@ -129,7 +142,7 @@ def train(args):
     vec_env = DummyVecEnv([make_env(seed=0)])
     vec_env = VecNormalize(vec_env, norm_obs=True, norm_reward=False)
 
-    # 模型配置：从零开始或续训
+    # 模型配置
     if args.resume and os.path.exists(args.resume):
         print(f"续训练模型: {args.resume}")
         model = PPO.load(args.resume, env=vec_env, device="auto",
@@ -145,97 +158,89 @@ def train(args):
                          tensorboard_log=str(LOGS_DIR),
                          verbose=1)
     else:
-        model = PPO(
-        "MlpPolicy",
-        vec_env,
-        learning_rate=args.lr,
-        n_steps=args.n_steps,
-        batch_size=args.batch_size,
-        n_epochs=args.n_epochs,
-        gamma=args.gamma,
-        gae_lambda=0.95,
-        clip_range=args.clip_range,
-        ent_coef=0.01,
-        vf_coef=0.5,
-        max_grad_norm=0.5,
-        tensorboard_log=str(LOGS_DIR),
-        verbose=1,
-        device="auto",
-    )
-
-    # 回调函数
-    checkpoint_callback = CheckpointCallback(
-        save_freq=max(args.timesteps // 10, 1000),
-        save_path=str(MODELS_DIR),
-        name_prefix="ppo_penguinchess",
-    )
-
-    eval_env = DummyVecEnv([make_env(seed=42)])
-    eval_env = VecNormalize(eval_env, norm_obs=True, norm_reward=False)
-
-    stop_callback = StopTrainingOnRewardThreshold(reward_threshold=0.8, verbose=1)
-    eval_callback = EvalCallback(
-        eval_env,
-        callback_on_new_best=stop_callback,
-        eval_freq=max(args.timesteps // 20, 500),
-        best_model_save_path=str(MODELS_DIR / "best"),
-        verbose=1,
-    )
+        model = PPO("MlpPolicy", vec_env,
+                     learning_rate=args.lr, n_steps=args.n_steps,
+                     batch_size=args.batch_size, n_epochs=args.n_epochs,
+                     gamma=args.gamma, gae_lambda=0.95,
+                     clip_range=args.clip_range, ent_coef=0.01,
+                     vf_coef=0.5, max_grad_norm=0.5,
+                     tensorboard_log=str(LOGS_DIR), verbose=1, device="auto")
 
     # 训练
     print(f"\n开始训练 {args.timesteps} 步...")
     start_time = time.time()
-    model.learn(
-        total_timesteps=args.timesteps,
-        callback=[checkpoint_callback, eval_callback],
-        progress_bar=False,
-    )
+    model.learn(total_timesteps=args.timesteps, progress_bar=False)
     elapsed = time.time() - start_time
     print(f"训练完成! 耗时: {elapsed:.1f}s ({args.timesteps / elapsed:.0f} steps/s)")
 
-    # 保存最终模型
-    final_path = str(MODELS_DIR / "ppo_penguinchess_final.zip")
-    model.save(final_path)
-    print(f"最终模型已保存: {final_path}")
+    # 保存为新一代
+    gen = get_next_gen() if not args.resume else get_next_gen()  # always new gen
+    gen_path = str(MODELS_DIR / f"ppo_penguinchess_gen_{gen}.zip")
+    model.save(gen_path)
+    print(f"已保存: gen_{gen}")
 
-    # 评估
-    print("\n评估中...")
-    results = evaluate_against_random(model, num_episodes=args.eval_episodes)
-    print(f"  胜率: {results['win_rate']:.1%}")
-    print(f"  平局率: {results['draw_rate']:.1%}")
-    print(f"  负率: {results['loss_rate']:.1%}")
-    print(f"  平均奖励: {results['avg_reward']:.3f}")
+    # ===== 对战评估 =====
+    print(f"\n--- Gen {gen} 对战评估 ---")
+
+    # 1) 对随机 AI
+    r = compete(model, None, args.eval_episodes)
+    print(f"vs 随机 AI:  胜 {r['p1_win']:.1%}  负 {r['p2_win']:.1%}  平 {r['draw']:.1%}")
+
+    # 2) 对上一代（如果存在）
+    prev_gen = gen - 1
+    prev_path = MODELS_DIR / f"ppo_penguinchess_gen_{prev_gen}.zip"
+    if prev_path.exists():
+        prev_model = PPO.load(str(prev_path), device="auto")
+        r2 = compete(model, prev_model, args.eval_episodes)
+        print(f"vs gen_{prev_gen}:  胜 {r2['p1_win']:.1%}  负 {r2['p2_win']:.1%}  平 {r2['draw']:.1%}")
+        beat_prev = r2['p1_win'] > 0.5
+        print(f"{'[OK] 超越前代!' if beat_prev else '[..] 未超越前代'}")
+    else:
+        print("（无上一代模型，跳过对比）")
 
     vec_env.close()
-    eval_env.close()
 
 
 # =============================================================================
-# 仅评估
+# 评估已有模型
 # =============================================================================
 
 def evaluate(args):
-    """加载已训练的模型并评估。"""
+    """加载已有模型，与随机 AI 和上一代对战。"""
     model_path = args.model_path or str(MODELS_DIR / "ppo_penguinchess_final.zip")
     if not os.path.exists(model_path):
-        print(f"模型文件不存在: {model_path}")
-        return
+        # 尝试最新的 generation
+        gens = sorted(MODELS_DIR.glob("ppo_penguinchess_gen_*.zip"))
+        if gens:
+            model_path = str(gens[-1])
+        else:
+            print(f"模型文件不存在: {model_path}")
+            return
 
     print(f"加载模型: {model_path}")
-    model = PPO.load(model_path)
+    model = PPO.load(model_path, device="auto")
 
-    results = evaluate_against_random(model, num_episodes=args.eval_episodes)
-    print(f"\n评估结果 ({args.eval_episodes} 局):")
-    print(f"  胜率: {results['win_rate']:.1%}")
-    print(f"  平局率: {results['draw_rate']:.1%}")
-    print(f"  负率: {results['loss_rate']:.1%}")
-    print(f"  平均奖励: {results['avg_reward']:.3f}")
+    gen_str = "（最终版）" if "gen_" not in model_path else f"（gen_{model_path.split('_gen_')[1].split('.')[0]}）"
+    print(f"\n评估 {gen_str}，{args.eval_episodes} 局:")
+
+    # vs 随机
+    r = compete(model, None, args.eval_episodes)
+    print(f"vs 随机 AI:  胜 {r['p1_win']:.1%}  负 {r['p2_win']:.1%}  平 {r['draw']:.1%}")
+
+    # vs 前代（如果有）
+    if "gen_" in model_path:
+        n = int(model_path.split("_gen_")[1].split(".")[0])
+        prev_path = MODELS_DIR / f"ppo_penguinchess_gen_{n-1}.zip"
+        if prev_path.exists():
+            prev = PPO.load(str(prev_path), device="auto")
+            r2 = compete(model, prev, args.eval_episodes)
+            print(f"vs gen_{n-1}:         胜 {r2['p1_win']:.1%}  负 {r2['p2_win']:.1%}  平 {r2['draw']:.1%}")
 
     # 验收标准
-    if results["win_rate"] > 0.80:
+    if r['p1_win'] > 0.80:
         print("\n✅ 通过验收: 对随机策略胜率 > 80%")
     else:
-        print(f"\n❌ 未通过验收: 胜率 {results['win_rate']:.1%} < 80%")
+        print(f"\n❌ 未通过验收: 对随机策略胜率 {r['p1_win']:.1%} < 80%")
 
 
 # =============================================================================
