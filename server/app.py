@@ -92,7 +92,7 @@ def api_delete_board(board_id: str):
     success = delete_board(board_id)
     if not success:
         return jsonify({"error": "board not found or cannot be deleted"}), 404
-    return "", 204
+    return jsonify({"success": True})
 
 
 # =============================================================================
