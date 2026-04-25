@@ -160,8 +160,11 @@ class PenguinChessEnv(gym.Env):
         # 棋子: 6*4=24
         pieces = np.array(obs["pieces"], dtype=np.float32).flatten()  # (24,)
 
+        # 元数据: current_player(0/1), phase(0/1)
+        meta = np.array([float(obs["current_player"]), float(obs["phase"])], dtype=np.float32)  # (2,)
+
         # 拼接
-        flat = np.concatenate([board, pieces]).astype(np.float32)  # (204,)
+        flat = np.concatenate([board, pieces, meta]).astype(np.float32)  # (206,)
         assert flat.shape == (OBS_FLAT_SIZE,), f"观测形状错误: {flat.shape}"
         return flat
 

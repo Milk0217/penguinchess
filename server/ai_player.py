@@ -93,11 +93,10 @@ class AIPlayer:
 
 def _encode_flat_obs(obs: dict) -> np.ndarray:
     """将观测字典编码为扁平向量（与训练时一致）。"""
-    # board: 60 hex × 3 features (q, r, value)
     board = obs["board"]
-    # pieces: 6 pieces × 4 features (piece_id, q, r, s)
     pieces = obs["pieces"]
 
     board_flat = np.array(board, dtype=np.float32).flatten()
     pieces_flat = np.array(pieces, dtype=np.float32).flatten()
-    return np.concatenate([board_flat, pieces_flat]).reshape(1, -1)
+    meta = np.array([float(obs["current_player"]), float(obs["phase"])], dtype=np.float32)
+    return np.concatenate([board_flat, pieces_flat, meta]).reshape(1, -1)
