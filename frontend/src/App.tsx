@@ -209,9 +209,9 @@ export default function App() {
       const builtIn = getLayout(actualBoardId);
       if (!builtIn && res.state.hexes) {
         // 这是自定义棋盘，需要创建 layout
-        // 后端发送调整后坐标，需要转回原始坐标才能正确计算像素位置
+        // 后端发送原始坐标，直接使用
         const hexCoords: HexCoord[] = res.state.hexes.map(h =>
-          { q: h.q, r: h.r, s: h.s }
+          ({ q: h.q, r: h.r, s: h.s })
         );
         const boardInfo = availableBoards.find(b => b.id === actualBoardId);
         const boardName = boardInfo?.name ?? actualBoardId;
