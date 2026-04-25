@@ -726,12 +726,27 @@ class PenguinChessCore:
         piece.alive = False
 
     def _destroy_immobile_pieces(self) -> None:
-        """销毁所有无合法移动的棋子（规则：无路可走的棋子被移除）。"""
+        """
+        销毁所有周围没有可移动格子的棋子。
+
+        判断逻辑：检查棋子周围一圈（6 个邻居）中是否有 active 格子。
+        简化版检查，不走完整路径——只要邻居中有空位就能移动。
+        """
         for piece in self.pieces:
             if not piece.alive or piece.hex is None:
                 continue
-            moves = self._get_piece_moves(piece)
-            if not moves:
+            # 获取棋子所在格子的索引
+            hex_idx = self._hex_map.get((piece.hex.q, piece.hex.r, piece.hex.s))
+            if hex_idx is None:
+                self._destroy_piece(piece)
+                continue
+            # 检查邻居中是否有 active 格子
+            has_valid_move = False
+            for neighbor_idx in self._neighbors[hex_idx]:
+                if self.hexes[neighbor_idx].is_active():
+                    has_valid_move = True
+                    break
+            if not has_valid_move:
                 self._destroy_piece(piece)
 
     def _eliminate_disconnected_hexes(self) -> int:
