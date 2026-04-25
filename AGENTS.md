@@ -521,7 +521,7 @@ interface BoardTheme {
 |------|----------|------|
 | Python | 3.11+ | 游戏核心与后端 |
 | Node.js | 18+ | 前端开发与构建 |
-| npm | 9+ | 前端依赖管理 |
+| bun | ≥ 1.0 | 前端包管理器与运行器（也可用 npm） |
 | uv | ≥ 0.1.0 | Python 包管理器（推荐）|
 
 ### 10.2 安装依赖
@@ -536,9 +536,10 @@ uv sync
 # 或使用 pip
 pip install -e ".[dev]"
 
-# 3. 安装前端依赖
+# 3. 安装前端依赖（bun 或 npm）
 cd frontend
-npm install
+bun install
+# 或 npm install
 cd ..
 ```
 
@@ -562,7 +563,7 @@ uv run python server/app.py
 终端 2 - 前端 Vite 开发服务器（热重载）：
 ```bash
 cd frontend
-npm run dev
+bun run dev  # 或 npm run dev
 # 访问 http://localhost:5173
 ```
 
@@ -595,13 +596,13 @@ pytest tests/test_core.py -v
 pytest tests/test_env.py -v
 pytest tests/test_spaces.py -v
 
-# 运行前端测试
+# 运行前端测试（vitest）
 cd frontend
-npx vitest run
+bun run test  # 或 npx vitest run
 
 # 运行 E2E 测试（需先启动后端）
 cd frontend
-npx playwright test
+bunx playwright test  # 或 npx playwright test
 ```
 
 ### 10.6 Gymnasium 环境验证
