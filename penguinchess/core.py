@@ -28,6 +28,13 @@ PIECES_PER_PLAYER = 3
 # 棋盘 q 值有效范围（对应 JS qAdjustments 的键）
 VALID_Q_RANGE = list(range(-4, 4))  # -4, -3, -2, -1, 0, 1, 2, 3
 
+# q 值调整表（对应 JS qAdjustments）
+# 键为字符串，与 JS 行为一致
+Q_ADJUSTMENTS = {
+    "-4": 2, "-3": 1, "-2": 0, "-1": 0,
+    "0": 0, "1": -1, "2": -2, "3": -2,
+}
+
 # 6 个立方体方向偏移量
 HEX_DIRECTIONS = [
     (1, -1, 0),
@@ -219,12 +226,6 @@ def create_board(value_sequence: List[int]) -> List[Hex]:
     qAdjustments 键为字符串（与 JS 一致），
     因此 qAdjustments[2] 查不到会当作 0（与 JS 行为一致）。
     """
-    # 键为字符串，与 JS 的 qAdjustments 行为一致
-    q_adjustments = {
-        "-4": 2, "-3": 1, "-2": 0, "-1": 0,
-        "0": 0, "1": -1, "2": -2, "3": -2,
-    }
-
     # 行范围（对应 JS rowRanges）
     row_ranges = {
         "even": (-4, 3),  # q 为偶数
@@ -244,7 +245,7 @@ def create_board(value_sequence: List[int]) -> List[Hex]:
             if abs(s_raw) > 8:
                 continue
 
-            adjustment = q_adjustments.get(str(q), 0)
+            adjustment = Q_ADJUSTMENTS.get(str(q), 0)
             adjusted_r = r + adjustment
             # JS: s 用 adjusted_r: Hex(q=adjusted_r, r=-q-adjusted_r, s=q)
             adjusted_s = -q - adjusted_r
@@ -850,11 +851,21 @@ class PenguinChessCore:
 
         # 预计算每个 hex 的邻居索引
         for idx, h in enumerate(self.hexes):
+            # 将 adjusted 坐标转换为 raw 坐标
+            raw_q = h.s
+            raw_r = h.q - Q_ADJUSTMENTS.get(str(raw_q), 0)
+
             for dq, dr, ds in HEX_DIRECTIONS:
-                # q 轴邻居用 _q_raw 对齐
-                key_q = h.q + dq if dq == 0 else h._q_raw + dq
-                key_r = h.r + dr
-                key_s = h.s + ds
+                # 在 raw 坐标空间添加方向偏移
+                new_raw_q = raw_q + dq
+                new_raw_r = raw_r + dr
+
+                # 将 raw 坐标转换回 adjusted 坐标
+                adj = Q_ADJUSTMENTS.get(str(new_raw_q), 0)
+                key_q = new_raw_r + adj
+                key_r = -new_raw_q - key_q
+                key_s = new_raw_q
+
                 neighbor_idx = self._hex_map.get((key_q, key_r, key_s))
                 if neighbor_idx is not None:
                     self._neighbors[idx].append(neighbor_idx)
