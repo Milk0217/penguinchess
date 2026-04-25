@@ -572,21 +572,22 @@ class PenguinChessCore:
 
     def _do_placement(self, hex_obj: Hex) -> float:
         """执行放置动作，返回 reward。"""
-        # JS 守卫: pieces.length >= 6 后直接 resolve()，不再处理 place 动作
+        # 守卫：检查当前玩家是否已经放满 3 个棋子
         current_player_placed = sum(
             1 for p in self.pieces
             if self._piece_owner(p) == self.current_player and p.hex is not None
         )
         if current_player_placed >= PIECES_PER_PLAYER:
-            # 棋子放满了，拒绝放置（JS 会提前在 handleClick 里 resolve 跳过这里）
             raise RuntimeError(
                 f"Placement guard: cp={self.current_player} placed={current_player_placed}"
             )
 
-        # 分配棋子
+        # 分配棋子：使用 _placement_count 确定当前是第几步放置
+        # 放置顺序严格交替: P1(step0) P2(step1) P1(step2) P2(step3) P1(step4) P2(step5)
+        # 每个玩家在第 N 次放置时使用第 N 个棋子（即使之前放置的棋子已阵亡）
         player_pieces = PLAYER_1_PIECES if self.current_player == 0 else PLAYER_2_PIECES
-        piece_id = player_pieces[current_player_placed]
-
+        piece_index = self._placement_count // 2
+        piece_id = player_pieces[piece_index]
         piece = next(p for p in self.pieces if p.id == piece_id)
         piece.hex = hex_obj
         piece.hex_value = hex_obj.points  # 记录格子原始分值
