@@ -445,10 +445,11 @@ class PenguinChessCore:
 
         self._episode_steps += 1
 
-        # 移动阶段每回合后：
+        # 每回合后：
         # 1. 消除断连格子（不能通过非-1路径连接到任何存活棋子的格子）
         # 2. 棋子离场检查（消除后可能产生新的无路棋子）
-        if self.phase == self.PHASE_MOVEMENT and not self._terminated:
+        # 注意：放置阶段也可能触发格子消除和棋子销毁
+        if not self._terminated:
             self._eliminate_disconnected_hexes()
             # 消除格子后，可能有棋子因断连而失去所有合法移动，再次销毁
             self._destroy_immobile_pieces()
