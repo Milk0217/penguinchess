@@ -63,7 +63,7 @@ class PenguinChessEnv(gym.Env):
 
         # 观测/动作空间
         self.observation_space: gym.Space = PenguinChessFlatObs
-        self.action_space: gym.Space = PenguinChessActionSpace(n=N_HEX)
+        self.action_space: gym.Space = PenguinChessActionSpace
 
         # 核心游戏逻辑
         self._game: PenguinChessCore = PenguinChessCore()
