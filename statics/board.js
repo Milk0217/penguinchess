@@ -150,16 +150,6 @@ export function createBoard({ radius = 8, valueSequence = [] } = {}) {
   const centerX = board.clientWidth / 2;
   const centerY = board.clientHeight / 2;
 
-  // 预计算qAdjustments
-  const qAdjustments = {
-    "1": -1,
-    "2": -1,
-    "3": -2,
-    "-2": 1,
-    "-3": 1,
-    "-4": 2
-  };
-
   // 预计算行范围
   const rowRanges = {
     even: { start: -4, end: 3 },
@@ -183,19 +173,10 @@ export function createBoard({ radius = 8, valueSequence = [] } = {}) {
       const value = valueSequence[valueIndex++];
       if (valueIndex >= valueSequence.length) valueIndex = 0; // 防止越界
 
-      // 只创建满足x + y + z = 0的六边形
+      // 只创建满足 x + y + z = 0 的六边形
       if (Math.abs(s) <= radius) {
-        // 获取调整量，默认为 0（即不调整）
-        const adjustment = qAdjustments[q] || 0;
-
-        // 计算 adjustedR
-        const adjustedR = r + adjustment;
-
-        // 根据 adjustedR 计算 adjustedS
-        const adjustedS = 0 - q - adjustedR
-
-        // 创建 Hex 实例并添加到棋盘
-        const hex = new Hex(q, adjustedR, adjustedS, value, false, centerX, centerY, radius);
+        // 使用原始立方体坐标创建 Hex 实例
+        const hex = new Hex(q, r, s, value, false, centerX, centerY, radius);
         hex.appendToBoard(board);
         hexes.push(hex); // 将 Hex 实例存入数组
       }

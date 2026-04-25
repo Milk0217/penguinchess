@@ -25,15 +25,8 @@ PLAYER_1_PIECES = [4, 6, 8]
 PLAYER_2_PIECES = [5, 7, 9]
 PIECES_PER_PLAYER = 3
 
-# 棋盘 q 值有效范围（对应 JS qAdjustments 的键）
+# 棋盘 q 值有效范围
 VALID_Q_RANGE = list(range(-4, 4))  # -4, -3, -2, -1, 0, 1, 2, 3
-
-# q 值调整表（对应 JS qAdjustments）
-# 键为字符串，与 JS 行为一致
-Q_ADJUSTMENTS = {
-    "-4": 2, "-3": 1, "-2": 0, "-1": 0,
-    "0": 0, "1": -1, "2": -2, "3": -2,
-}
 
 # 6 个立方体方向偏移量
 HEX_DIRECTIONS = [
@@ -53,10 +46,9 @@ HEX_DIRECTIONS = [
 @dataclass(slots=True)
 class Hex:
     """
-    六边形格子。坐标使用立方体坐标 (q, r, s)，满足 q + r + s = 0。
+    六边形格子。使用立方体坐标 (q, r, s)，满足 q + r + s = 0。
 
-    q/r/s 存储的是经过 row_range 调整后的值（与 JS createBoard 一致），
-    额外记录 _q_raw = 原始 q 值（用于邻居查找中对齐 q 轴）。
+    由 create_board() 生成，所有坐标均为原始立方体坐标。
 
     状态机:
       state: 'active'    - 可放置/可移动，points 有效
@@ -65,12 +57,11 @@ class Hex:
              'eliminated' - 断连被消除，不可再占据
       points: 1/2/3 分值，仅 state='active' 时有效
     """
-    q: int       # adjusted_r: r + qAdjustments[q_raw]
-    r: int       # adjusted_s: -q_raw - adjusted_r
-    s: int       # s_raw: q_raw + r_raw（原始 q + 原始 r，用于合法性检查）
+    q: int       # 立方体坐标 q
+    r: int       # 立方体坐标 r
+    s: int       # 立方体坐标 s，满足 q + r + s = 0
     points: int = 0   # 分值（1/2/3），仅 active 时有效
     state: str = 'active'  # 'active' | 'occupied' | 'used' | 'eliminated'
-    _q_raw: int = field(default=0)  # 原始 q 值，用于邻居 q 轴偏移
 
     def __hash__(self):
         return hash((self.q, self.r, self.s))
@@ -221,12 +212,9 @@ def generate_sequence(
 def create_board(value_sequence: List[int]) -> List[Hex]:
     """
     根据值序列创建棋盘。
-    对应 JS createBoard()，包含完全相同的坐标逻辑。
-
-    qAdjustments 键为字符串（与 JS 一致），
-    因此 qAdjustments[2] 查不到会当作 0（与 JS 行为一致）。
+    使用原始立方体坐标 (q, r, s)，满足 q + r + s = 0。
     """
-    # 行范围（对应 JS rowRanges）
+    # 行范围
     row_ranges = {
         "even": (-4, 3),  # q 为偶数
         "odd": (-3, 3),   # q 为奇数
@@ -240,21 +228,14 @@ def create_board(value_sequence: List[int]) -> List[Hex]:
         start, end = row_ranges["even"] if is_even_row else row_ranges["odd"]
 
         for r in range(start, end + 1):
-            # JS s 约束: if (Math.abs(s) <= radius) 其中 s = q (原始) + r (原始)
-            s_raw = q + r
-            if abs(s_raw) > 8:
+            s = -q - r  # 立方体坐标约束 q + r + s = 0
+            if abs(s) > 8:
                 continue
-
-            adjustment = Q_ADJUSTMENTS.get(str(q), 0)
-            adjusted_r = r + adjustment
-            # JS: s 用 adjusted_r: Hex(q=adjusted_r, r=-q-adjusted_r, s=q)
-            adjusted_s = -q - adjusted_r
 
             value = value_sequence[idx]
             idx += 1
 
-            # 与 JS: new Hex(adjusted_r, adjusted_s, q_raw, value) 对齐
-            hex_obj = Hex(q=adjusted_r, r=adjusted_s, s=q, points=value, state='active', _q_raw=q)
+            hex_obj = Hex(q=q, r=r, s=s, points=value, state='active')
             hexes.append(hex_obj)
 
     return hexes
@@ -283,36 +264,24 @@ def create_board_from_coords(coords: List[dict], value_sequence: List[int]) -> L
             value = coord["value"]
         else:
             value = value_sequence[i]
-        hex_obj = Hex(q=q, r=r, s=s, points=value, state='active', _q_raw=q)
+        hex_obj = Hex(q=q, r=r, s=s, points=value, state='active')
         hexes.append(hex_obj)
     return hexes
 
 
 def json_board_to_coords(json_board: List[dict]) -> List[dict]:
     """
-    将 JSON 棋盘格式转换为 Python 内部坐标格式。
+    将 JSON 棋盘格式转换为 Python 内部坐标格式（现在是透明传递）。
 
-    JSON 棋盘使用原始立方体坐标 (q, r, s)，需要转换为 Python 内部调整后坐标。
-
-    Args:
-        json_board: JSON 棋盘的 hexes 数组，每个元素为 {"q": int, "r": int, "s": int, ...}
-
-    Returns:
-        Python 格式的坐标列表，可直接传给 create_board_from_coords()
+    JSON 棋盘使用原始立方体坐标 (q, r, s)，Python 内部也使用原始坐标，
+    因此直接返回，无需转换。
     """
     coords = []
     for h in json_board:
-        raw_q = h["q"]
-        raw_r = h["r"]
-        # 应用与 create_board() 相同的调整逻辑
-        adj = Q_ADJUSTMENTS.get(str(raw_q), 0)
-        py_q = raw_r + adj      # adjusted_r
-        py_r = -raw_q - py_q    # adjusted_s
-        py_s = raw_q            # s 存储原始 q 值
         coords.append({
-            "q": py_q,
-            "r": py_r,
-            "s": py_s,
+            "q": h["q"],
+            "r": h["r"],
+            "s": h["s"],
         })
     return coords
 
@@ -876,23 +845,12 @@ class PenguinChessCore:
         for idx, h in enumerate(self.hexes):
             self._hex_map[(h.q, h.r, h.s)] = idx
 
-        # 预计算每个 hex 的邻居索引
+        # 预计算每个 hex 的邻居索引（使用原始立方体坐标）
         for idx, h in enumerate(self.hexes):
-            # 将 adjusted 坐标转换为 raw 坐标
-            raw_q = h.s
-            raw_r = h.q - Q_ADJUSTMENTS.get(str(raw_q), 0)
-
             for dq, dr, ds in HEX_DIRECTIONS:
-                # 在 raw 坐标空间添加方向偏移
-                new_raw_q = raw_q + dq
-                new_raw_r = raw_r + dr
-
-                # 将 raw 坐标转换回 adjusted 坐标
-                adj = Q_ADJUSTMENTS.get(str(new_raw_q), 0)
-                key_q = new_raw_r + adj
-                key_r = -new_raw_q - key_q
-                key_s = new_raw_q
-
+                key_q = h.q + dq
+                key_r = h.r + dr
+                key_s = h.s + ds
                 neighbor_idx = self._hex_map.get((key_q, key_r, key_s))
                 if neighbor_idx is not None:
                     self._neighbors[idx].append(neighbor_idx)
