@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 
 from penguinchess.core import PenguinChessCore, create_board_from_coords, generate_sequence
 from .logger import GameLogger
+from .ai_player import AIPlayer
 
 
 # =============================================================================
@@ -25,13 +26,14 @@ def get_session(session_id: str) -> Optional["GameSession"]:
     return _sessions.get(session_id)
 
 
-def create_session(seed: Optional[int] = None, board_id: Optional[str] = None) -> "GameSession":
+def create_session(seed: Optional[int] = None, board_id: Optional[str] = None, opponent: str = "human") -> "GameSession":
     """
     创建新游戏会话。
 
     Args:
         seed: 随机种子
         board_id: 棋盘 ID。如果为 None，使用默认棋盘。
+        opponent: 对手类型，"human"（人类）或 "ai"（AI）
     """
     # 清理旧会话（保留最近的）
     if len(_sessions) >= _MAX_SESSIONS:
@@ -50,7 +52,7 @@ def create_session(seed: Optional[int] = None, board_id: Optional[str] = None) -
             # JSON 棋盘使用原始坐标，Python 内部也使用原始坐标，直接传递
             custom_coords = board_data.get("hexes", [])
 
-    session = GameSession(session_id=session_id, seed=seed, custom_coords=custom_coords)
+    session = GameSession(session_id=session_id, seed=seed, custom_coords=custom_coords, opponent_type=opponent)
     _sessions[session_id] = session
     return session
 
@@ -71,18 +73,22 @@ class GameSession:
     session_id: str
     seed: Optional[int]
     custom_coords: Optional[List[dict]] = None
+    opponent_type: str = "human"  # "human" | "ai"（AI 对手）
 
     _core: PenguinChessCore = field(init=False)
     _game_over: bool = field(default=False, init=False)
     _winner: Optional[int] = field(default=None, init=False)
     _last_action: Optional[dict] = field(default=None, init=False)
     _logger: GameLogger = field(init=False)
+    _ai_player: AIPlayer = field(init=False)
 
     def __post_init__(self):
         self._core = PenguinChessCore(seed=self.seed, custom_coords=self.custom_coords)
         self._core.reset(seed=self.seed)
         self._logger = GameLogger(self.session_id)
         self._logger.phase("placement", self.seed)
+        # AI 对手（P2 由 AI 控制）
+        self._ai_player = AIPlayer(player_index=1) if self.opponent_type == "ai" else None
 
     # -------------------------------------------------------------------------
     # 游戏控制
@@ -249,12 +255,38 @@ class GameSession:
             "session_id": self.session_id,
             "hexes": hexes,
             "pieces": pieces,
-            "current_player": self._core.current_player,  # 0 或 1
-            "phase": self._core.phase,                    # "placement" | "movement"
-            "scores": list(self._core.players_scores),   # [p1, p2]
-            "legal_actions": legal,                        # [hex_index, ...]
+            "current_player": self._core.current_player,
+            "phase": self._core.phase,
+            "scores": list(self._core.players_scores),
+            "legal_actions": legal,
             "game_over": self._game_over,
-            "winner": self._winner,                       # None/0/1/2
+            "winner": self._winner,
             "last_action": self._last_action,
             "episode_steps": self._core._episode_steps,
+            "opponent_type": self.opponent_type,
         }
+
+    # -------------------------------------------------------------------------
+    # AI 移动
+    # -------------------------------------------------------------------------
+
+    def ai_move(self) -> dict:
+        """
+        AI 玩家执行一次移动（如果轮到 AI 的话）。
+        返回与 step() 相同格式的 dict。
+        """
+        if self._ai_player is None or not self._ai_player.is_ready():
+            return {"state": self.state(), "reward": 0.0, "invalid": True, "error": "AI not ready"}
+
+        if self._game_over:
+            return {"state": self.state(), "reward": 0.0, "invalid": True, "error": "game over"}
+
+        # 检查是否轮到 AI
+        if self._core.current_player != self._ai_player.player_index:
+            return {"state": self.state(), "reward": 0.0, "invalid": True, "error": "not AI's turn"}
+
+        action = self._ai_player.select_action(self._core)
+        if action is None:
+            return {"state": self.state(), "reward": 0.0, "invalid": True, "error": "no legal action"}
+
+        return self.step(action)

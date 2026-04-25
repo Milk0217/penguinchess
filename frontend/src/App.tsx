@@ -219,6 +219,7 @@ const GLOBAL_THEMES: Record<GlobalTheme, {
   const [state, setState] = useState<GameState | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [opponent, setOpponent] = useState<string>("human");
 
   // 主题与布局
   const [currentThemeId, setCurrentThemeId] = useState("dark");
@@ -277,7 +278,7 @@ const GLOBAL_THEMES: Record<GlobalTheme, {
     setSelectedPieceId(null);
     setTargetIndices(new Set());
     try {
-      const res = await api.createGame({ seed, board_id: boardId ?? selectedBoardId });
+      const res = await api.createGame({ seed, board_id: boardId ?? selectedBoardId, opponent });
       setSessionId(res.state.session_id);
       setState(res.state);
 
@@ -304,7 +305,7 @@ const GLOBAL_THEMES: Record<GlobalTheme, {
     } finally {
       setLoading(false);
     }
-  }, [selectedBoardId, availableBoards]);
+  }, [selectedBoardId, availableBoards, opponent]);
 
   // 加载可用棋盘列表
   useEffect(() => {
@@ -374,8 +375,32 @@ const GLOBAL_THEMES: Record<GlobalTheme, {
       setState(res.state);
       setSelectedPieceId(null);
       setTargetIndices(new Set());
+
+      // AI 对手：如果轮到 AI 则自动触发 AI 移动
+      if (!res.state.game_over && opponent === "ai") {
+        await triggerAIMove(res.state);
+      }
     } catch (e: any) {
       setError(e.message || "动作执行失败");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  /** 触发 AI 移动（循环直到轮到人类或游戏结束） */
+  const triggerAIMove = async (currentState: GameState) => {
+    if (!sessionId) return;
+    let stateRef = currentState;
+    while (stateRef.current_player === 1 && !stateRef.game_over && stateRef.opponent_type === "ai") {
+      try {
+        const aiRes = await api.aiMove(sessionId);
+        stateRef = aiRes.state;
+        setState(aiRes.state);
+      } catch {
+        break;
+      }
+    }
+  };
     } finally {
       setLoading(false);
     }
@@ -505,6 +530,24 @@ const GLOBAL_THEMES: Record<GlobalTheme, {
           }}
         >
           {globalTheme === "dark" ? "☀️" : "🌙"}
+        </button>
+        {/* 对手选择 */}
+        <button
+          onClick={() => setOpponent(opponent === "human" ? "ai" : "human")}
+          title={opponent === "human" ? "切换到 AI 对战" : "切换到人类对战"}
+          style={{
+            background: "transparent",
+            border: "1px solid " + pageTheme.cardBorder,
+            borderRadius: "6px",
+            padding: "0.3rem 0.6rem",
+            cursor: "pointer",
+            fontSize: "0.85rem",
+            color: pageTheme.text,
+            lineHeight: 1,
+            fontWeight: 600,
+          }}
+        >
+          {opponent === "human" ? "👤 vs 👤" : "👤 vs 🤖"}
         </button>
       </div>
       <p style={{ color: pageTheme.textMuted, fontSize: "0.75rem", margin: "0 0 1rem", textAlign: "center" }}>

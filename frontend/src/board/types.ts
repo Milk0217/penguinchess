@@ -122,4 +122,5 @@ export interface GameState {
     hex: { q: number; r: number; s: number; state: string; points: number };
     phase_before: string;
   } | null;
+  opponent_type: string;
 }

@@ -106,7 +106,7 @@ def api_create_game():
     创建新游戏。
 
     Request body (optional):
-        { "seed": <int>, "board_id": <str> }
+        { "seed": <int>, "board_id": <str>, "opponent": "human"|"ai" }
 
     Response:
         { "state": <GameState> }
@@ -114,10 +114,11 @@ def api_create_game():
     data = request.get_json(silent=True) or {}
     seed = data.get("seed")
     board_id = data.get("board_id")
+    opponent = data.get("opponent", "human")
     if seed is not None:
         seed = int(seed)
 
-    session = create_session(seed=seed, board_id=board_id)
+    session = create_session(seed=seed, board_id=board_id, opponent=opponent)
     return jsonify({"state": session.state()})
 
 
@@ -163,6 +164,17 @@ def api_action(session_id: str):
             return jsonify({"error": "piece_id must be an integer"}), 400
 
     result = session.step(action, piece_id=piece_id)
+    return jsonify(result)
+
+
+@app.route("/api/game/<session_id>/ai_move", methods=["POST"])
+def api_ai_move(session_id: str):
+    """AI 执行一次移动（如果轮到 AI 的话）。"""
+    session = get_session(session_id)
+    if session is None:
+        return jsonify({"error": "session not found"}), 404
+
+    result = session.ai_move()
     return jsonify(result)
 
 

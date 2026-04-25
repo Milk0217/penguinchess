@@ -41,6 +41,7 @@ export interface GameState {
     phase_before: string;
   } | null;
   episode_steps: number;
+  opponent_type: string;   // "human" | "ai"
 }
 
 /** 棋盘元数据 */
@@ -79,8 +80,8 @@ async function request(path: string, options?: RequestInit): Promise<any> {
 export const api = {
   // === 游戏 API ===
 
-  /** 创建新游戏（可选指定棋盘 ID） */
-  createGame(opts?: { seed?: number; board_id?: string }): Promise<{ state: GameState }> {
+  /** 创建新游戏（可选指定棋盘 ID 和对手类型） */
+  createGame(opts?: { seed?: number; board_id?: string; opponent?: string }): Promise<{ state: GameState }> {
     return request("/game", {
       method: "POST",
       body: JSON.stringify(opts || {}),
@@ -100,6 +101,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     });
+  },
+
+  /** AI 执行一次移动 */
+  aiMove(sessionId: string): Promise<ApiResponse> {
+    return request(`/game/${sessionId}/ai_move`, { method: "POST" });
   },
 
   /** 重置游戏 */
