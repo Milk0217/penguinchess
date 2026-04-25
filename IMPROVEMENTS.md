@@ -1,20 +1,164 @@
 # 企鹅棋 — 改进建议文档
 
-> ⚠️ **注意**: 本文档部分内容已过时。请参考 [STATUS.md](STATUS.md) 获取最新项目状态。
-
-## 优先级总览
-
-| 优先级 | 方向 | 核心改进项 | 状态 |
-|--------|------|-----------|------|
-| **P0** | Gymnasium 环境 | Phase 1 全部内容 | ✅ 已完成 |
-| **P1** | RL 训练基础 | Phase 3 全部内容 | 🚧 部分完成 |
-| **P2** | Web + RL 整合 | 共享核心规则、RL vs 人类对战 | 🚧 部分完成 |
-| **P3** | Self-play | Phase 4 全部内容 | ⬜ 待开始 |
-| **P4** | 评估工具 | Phase 5 全部内容 | ⬜ 待开始 |
+> 本文档记录当前发现的 **Bug**、**代码质量问题**和**架构改进建议**。包含 P0-P4 优先级分类。
 
 ---
 
-## P0: Gymnasium 环境核心 ✅ 已完成
+## 🔴 P0 — 严重 Bug（必须立即修复）
+
+### C1. `env.py` 双重消除调用
+
+**位置:** `penguinchess/env.py:142-144`
+
+`env.step()` 在调用 `_game.step()` 后重复调用了 `_eliminate_disconnected_hexes()`。
+`core.step()` 内部已执行消除逻辑，导致每次移动步消除执行两次，可能造成状态损坏。
+
+**修复:** 删除 `env.py` 中 142-144 行。
+
+---
+
+### C2. `server/game.py` 日志中 `hex_value` 始终为 0
+
+**位置:** `server/game.py:138,155,171`
+
+Hex 重构后使用 `points` 而非 `value`，但日志代码使用了 `getattr(hex_obj, "value", 0)`，
+导致记录的分值始终为 0。
+
+**修复:** 替换为 `hex_obj.points`。
+
+---
+
+### C3. `reward.py` 总分常量 `TOTAL_VALUE = 100` 错误
+
+**位置:** `penguinchess/reward.py:14`
+
+`core.py:TOTAL_VALUE = 99`，但 `reward.py` 为 100，导致奖励计算偏小。
+
+**修复:** 改为 `TOTAL_VALUE = 99`。
+
+---
+
+### C4. 前端硬编码自定义棋盘 ID
+
+**位置:** `frontend/src/App.tsx:151,166`
+
+**影响:** 其他用户无此棋盘，首次加载游戏会失败。
+
+**修复:** 改为 `"default"`。
+
+---
+
+## 🟡 P1 — 逻辑 Bug
+
+### L1. 前端 `last_action.hex` 类型与后端不匹配
+
+- 前端类型: `state` + `points`
+- 后端返回: `q, r, s, value`（`value` 始终为 0）
+
+### L2. E2E 测试端口 5000，实际服务器在 8080
+
+### L3. `start_all.py` 使用 `bun`，且 README 指定 `npm`
+
+### L4. `api.ts` 缺少 `getBoard(boardId)` 方法
+
+后端有 `GET /api/boards/<id>` 端点，但前端 API 客户端未实现调用。
+
+### L5. 废弃调试脚本未更新（10+ 文件）
+
+Hex 重构后（`value` → `state`/`points`），以下脚本会报 `AttributeError`:
+
+| 文件 | 问题 |
+|------|------|
+| `test_corner_death.py` | 多处 `h.value` → `h.points`/`is_active()` |
+| `test_piece_death_debug.py` | 多处 `h.value` |
+| `test_piece_death2.py` | 多处 `h.value` |
+| `test_cascade.py` | `p.hex.qrs` 不存在 |
+| `examples/random_ai.py:148` | `h.value > 0` → `h.is_active()` |
+
+---
+
+## 🟢 P2 — 代码质量
+
+### Q1. 根目录脚本过多（10+ 个调试文件）
+
+建议: 删除或移至 `tests/`。
+
+### Q2. 重复的 `GameState` 类型
+
+`api.ts` 和 `types.ts` 各定义了一份，不同步。
+
+### Q3. `_check_game_over()` 死代码 (core.py:851)
+
+`has_active` 赋值但从未使用。
+
+### Q4. `env.py` 死代码
+
+`self._prev_scores` / `self._prev_pieces` 定义赋值但从未读取。
+
+### Q5. `tests/test_core.py:312` 无意义断言
+
+```python
+assert eliminated_count >= 0  # 永远为 True
+```
+
+---
+
+## 🔵 P3 — 架构改进
+
+### A1. 统一坐标系统
+
+两个坐标系统: 原始坐标 (`default.json`) vs 调整后坐标 (`create_board()`)。`json_board_to_coords()` 负责转换，但增加了复杂度。
+
+### A2. `__init__.py` 导出不完整
+
+当前只导出 `PenguinChessEnv`，建议补充 `PenguinChessCore` 和工具函数。
+
+### A3. 自定义 Space 类型兼容性
+
+`PenguinChessFlatObs` 继承 `gym.Space`，但部分 Gymnasium wrapper 可能不支持。
+
+---
+
+## ⚪ P4 — 功能待实现
+
+| 方向 | 内容 | 状态 |
+|------|------|------|
+| RL 训练 | PPO / SAC 训练脚本 | ⬜ 待实现 |
+| RL 训练 | Self-play 训练框架 | ⬜ 待实现 |
+| RL 训练 | AlphaZero 风格训练 | ⬜ 待实现 |
+| Web 对战 | 人类 vs AI 对战 | ⬜ 待实现 |
+| Rust 核心 | 游戏核心迁移到 Rust | ⬜ 待开始 |
+| 评估工具 | 训练可视化 / 对局回放 | ⬜ 待开始 |
+
+---
+
+## 已完成项
+
+### Phase 1: Gymnasium 环境核心 ✅
+
+- `penguinchess/core.py` — 游戏核心逻辑
+- `penguinchess/env.py` — Gymnasium 环境
+- `penguinchess/spaces.py` — Space 定义
+- `penguinchess/reward.py` — Reward 函数
+- `penguinchess/random_ai.py` — 随机 AI 基准
+- 91 个测试全部通过
+
+### Phase 2: Web 前后端分离 ✅
+
+- `server/app.py` — Flask HTTP 服务
+- `server/game.py` — Game 会话封装
+- `frontend/` — React + Vite 前端
+- 棋盘编辑器 + 布局/主题策略模式
+- `default.json` 棋盘作为默认地图
+
+### Bug 修复历史
+
+- 棋子归属判断 (`piece.id % 2`)
+- 坐标系统不一致（新增 `_q_raw` 字段）
+- flood_fill 起点包含被占据格子
+- 放置阶段严格交替规则
+- `_neighbors` 邻居计算（调整后坐标转换）
+- 棋子阵亡判断简化（邻居 active 检查）
 
 ### ✅ P0.1 Python 游戏核心模块
 
