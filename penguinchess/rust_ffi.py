@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 import os
-from ctypes import CDLL, POINTER, c_char, c_int32, c_int64, c_double, create_string_buffer, CFUNCTYPE, c_void_p, memmove
+from ctypes import CDLL, POINTER, c_char, c_char_p, c_float, c_int32, c_int64, c_double, create_string_buffer, CFUNCTYPE, c_void_p, memmove
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -15,12 +15,12 @@ def _find_dll() -> str:
     """定位已编译的 Rust cdylib 文件。"""
     root = Path(__file__).parent.parent / "game_engine"
     candidates = [
-        root / "target" / "debug" / "game_engine.dll",
         root / "target" / "release" / "game_engine.dll",
-        root / "target" / "debug" / "libgame_engine.so",
         root / "target" / "release" / "libgame_engine.so",
-        root / "target" / "debug" / "libgame_engine.dylib",
         root / "target" / "release" / "libgame_engine.dylib",
+        root / "target" / "debug" / "game_engine.dll",
+        root / "target" / "debug" / "libgame_engine.so",
+        root / "target" / "debug" / "libgame_engine.dylib",
     ]
     for p in candidates:
         if p.exists():
@@ -47,7 +47,7 @@ class RustEngine:
 
         self._lib.mcts_search_rust.argtypes = [
             POINTER(c_char), c_int32, c_double, c_int32,
-            CFUNCTYPE(c_int32, POINTER(c_char), POINTER(c_char), c_int32),
+            CFUNCTYPE(c_int32, POINTER(c_float), c_int32, POINTER(c_float), c_int32),
             POINTER(c_char), c_int32,
         ]
         self._lib.mcts_search_rust.restype = c_int32
@@ -103,7 +103,9 @@ class RustEngine:
 # Rust MCTS 搜索（通过 DLL + 回调调用神经网络）
 # =============================================================================
 
-EVAL_CB = CFUNCTYPE(c_int32, c_char_p, c_char_p, c_int32)
+# 新回调：接收 float 观测数组 (B×206)，返回 float 输出数组 (B×61)
+# 零拷贝：numpy as_array 包装指针，不复制数据
+EVAL_FN = CFUNCTYPE(c_int32, POINTER(c_float), c_int32, POINTER(c_float), c_int32)
 
 
 def mcts_search_rust(
@@ -116,9 +118,12 @@ def mcts_search_rust(
     """
     使用 Rust MCTS 进行搜索，通过回调调用 PyTorch 神经网络批量推理。
 
+    Rust 侧直接构建观测 float 张量 (B×206)，通过指针传给 Python。
+    零拷贝 numpy wrap，完全消除 JSON 序列化开销。
+
     Args:
-        state_json: Rust GameState 的 JSON 字符串
-        model: AlphaZeroNet 实例（需要 evaluate_batch 方法）
+        state_json: Rust GameState 的 JSON 字符串（仅初始状态）
+        model: AlphaZeroNet 实例（需要 evaluate_flat_batch 方法）
         num_simulations: MCTS 模拟次数
         c_puct: 探索常数
         batch_size: 批量推理大小
@@ -127,99 +132,146 @@ def mcts_search_rust(
         动作计数 dict: {action: visit_count}
     """
     import numpy as np
-    import torch
-    import ctypes
+    import numpy.ctypeslib as npct
 
     engine = get_engine()
     net = model
 
-    # 准备回调用缓冲区
-    cb_result_buf = create_string_buffer(65536)
-
-    @EVAL_CB
-    def evaluate_cb(states_json_ptr, res_buf, buf_size):
-        """Rust MCTS 调用的回调：批量评估状态。"""
+    @EVAL_FN
+    def evaluate_fn(obs_ptr, batch_size, output_ptr, output_capacity):
+        """零拷贝回调：obs_ptr → numpy → GPU inference → output_ptr"""
         nonlocal net
         try:
-            states_json_str = ctypes.cast(states_json_ptr, c_char_p).value.decode("utf-8")
-            states_data = json.loads(states_json_str)
+            B = batch_size
+            # Copy data from Rust shared memory → numpy (avoids PyTorch zero-copy issues)
+            obs_raw = npct.as_array(
+                ctypes.cast(obs_ptr, POINTER(c_float)),
+                shape=(B, 206),
+            ).copy()  # .copy() ensures no shared memory with Rust
 
-            # 构建批量观测（直接解析 JSON，无需 PenguinChessCore）
-            obs_list = []
-            for sd in states_data:
-                cells = sd["board"]["cells"]
-                # board: 60 cells × [q/8, r/8, value/3]
-                board_flat = []
-                for c in cells:
-                    coord = c["coord"]
-                    pts = c["points"] / 3.0 if c["state"] == "active" else 0.0
-                    board_flat.extend([coord["q"] / 8.0, coord["r"] / 8.0, pts])
-
-                # pieces: 6 pieces × [id/10, q/8, r/8, s/8]
-                pieces_flat = []
-                for p in sd["pieces"]:
-                    if p["alive"] and p["hex_idx"] is not None:
-                        hi = p["hex_idx"]
-                        cell = cells[hi]
-                        coord = cell["coord"]
-                        pieces_flat.extend([p["id"] / 10.0,
-                                            coord["q"] / 8.0,
-                                            coord["r"] / 8.0,
-                                            coord["s"] / 8.0])
-                    else:
-                        pieces_flat.extend([-1.0, 0.0, 0.0, 0.0])
-
-                # meta: [current_player, phase]
-                cp = float(sd.get("current_player", 0))
-                ph = 0.0 if sd.get("phase") == "placement" else 1.0
-                meta = [cp, ph]
-
-                obs = np.array(board_flat + pieces_flat + meta, dtype=np.float32)
-                obs_list.append(obs)
-
-            batch = np.array(obs_list, dtype=np.float32)  # (B, 206)
-
-            # 神经网络评估
             if net is not None and hasattr(net, 'evaluate_flat_batch'):
-                logits, values = net.evaluate_flat_batch(batch)
+                logits, values = net.evaluate_flat_batch(obs_raw)
             else:
-                # 无网络时使用均匀分布
-                B = len(states_data)
                 logits = np.zeros((B, 60), dtype=np.float64)
                 values = np.zeros(B, dtype=np.float64)
 
-            # 返回结果
-            results = []
-            for i in range(len(states_data)):
-                results.append({
-                    "logits": logits[i].tolist(),
-                    "value": float(values[i]),
-                })
-            result_str = json.dumps(results)
-            ctypes.memmove(res_buf, result_str.encode("utf-8"), min(len(result_str), buf_size - 1))
+            # Write output
+            out_arr = npct.as_array(
+                ctypes.cast(output_ptr, POINTER(c_float)),
+                shape=(output_capacity,),
+            )
+            for i in range(B):
+                out_arr[i * 61:(i + 1) * 61 - 1] = logits[i].astype(np.float32)
+                out_arr[(i + 1) * 61 - 1] = np.float32(values[i])
             return 0
-        except Exception as e:
-            result_str = json.dumps([])
-            ctypes.memmove(res_buf, result_str.encode("utf-8"), min(len(result_str), buf_size - 1))
+        except Exception:
             return -1
 
-    # 调用 Rust MCTS
-    result_buf = create_string_buffer(65536)
+    result_buf = create_string_buffer(1_048_576)
     try:
-        engine._lib.mcts_search_rust(
+        code = engine._lib.mcts_search_rust(
             state_json.encode("utf-8"),
             c_int32(num_simulations),
             c_double(c_puct),
             c_int32(batch_size),
-            evaluate_cb,
+            evaluate_fn,
             result_buf,
-            c_int32(65536),
+            c_int32(1_048_576),
         )
+        if code != 0:
+            raise RuntimeError(f"Rust MCTS returned error code: {code}")
     except Exception as e:
         raise RuntimeError(f"Rust MCTS failed: {e}")
 
-    result_str = result_buf.value.decode("utf-8")
-    return json.loads(result_str)  # {action: visit_count, ...}
+    raw = result_buf.value
+    if not raw:
+        return {}
+    result_str = raw.decode("utf-8")
+    return json.loads(result_str)
+
+
+# =============================================================================
+# Stateful Game API — 状态留在 Rust，避免 JSON 序列化全状态
+# =============================================================================
+
+class RustStatefulGame:
+    """Rust 有状态游戏实例。状态留在 Rust 内存中，Python 只传 handle 和 action。"""
+
+    def __init__(self, engine: RustEngine, seed: int = 42):
+        self._engine = engine
+        self._handle = engine._lib.game_stateful_new(c_int64(seed))
+        if self._handle < 0:
+            raise RuntimeError("Rust stateful game creation failed (slots full)")
+        self._buf_size = 65536  # 64KB — state JSON ~4KB, 安全余量
+        self._buf = create_string_buffer(self._buf_size)
+
+    @property
+    def handle(self) -> int:
+        return self._handle
+
+    def step(self, action: int) -> dict:
+        """执行动作，返回 {reward, terminated, legal_actions, scores, current_player, phase}。"""
+        result = self._engine._lib.game_stateful_step(
+            c_int32(self._handle), c_int32(action),
+            self._buf, self._buf_size,
+        )
+        if result != 0:
+            raise RuntimeError(f"Rust stateful step failed: {result}")
+        return json.loads(self._buf.value.decode("utf-8"))
+
+    def get_legal_actions(self) -> list[int]:
+        """获取合法动作。"""
+        result = self._engine._lib.game_stateful_get_legal(
+            c_int32(self._handle), self._buf, self._buf_size,
+        )
+        if result != 0:
+            raise RuntimeError(f"Rust get_legal failed: {result}")
+        return json.loads(self._buf.value.decode("utf-8"))["legal_actions"]
+
+    def to_json(self) -> str:
+        """序列化当前状态为 JSON（MCTS 使用）。"""
+        result = self._engine._lib.game_stateful_to_json(
+            c_int32(self._handle), self._buf, self._buf_size,
+        )
+        if result != 0:
+            raise RuntimeError(f"Rust to_json failed: {result}")
+        return self._buf.value.decode("utf-8")
+
+    def get_scores(self) -> list[int]:
+        """获取双方分数。"""
+        result = self._engine._lib.game_stateful_scores(
+            c_int32(self._handle), self._buf, self._buf_size,
+        )
+        if result != 0:
+            raise RuntimeError(f"Rust scores failed: {result}")
+        return json.loads(self._buf.value.decode("utf-8"))["scores"]
+
+    def get_obs(self) -> dict:
+        """获取观测（PPO Agent 使用）。返回 {"board": ..., "pieces": ..., "current_player": ..., "phase": ...}。"""
+        result = self._engine._lib.game_stateful_get_obs(
+            c_int32(self._handle), self._buf, self._buf_size,
+        )
+        if result != 0:
+            raise RuntimeError(f"Rust get_obs failed: {result}")
+        return json.loads(self._buf.value.decode("utf-8"))
+
+    def get_info(self) -> dict:
+        """获取当前状态信息（不执行动作）。返回 {legal_actions, scores, current_player, phase, terminated}。"""
+        result = self._engine._lib.game_stateful_get_info(
+            c_int32(self._handle), self._buf, self._buf_size,
+        )
+        if result != 0:
+            raise RuntimeError(f"Rust get_info failed: {result}")
+        return json.loads(self._buf.value.decode("utf-8"))
+
+    def free(self):
+        """释放 Rust 端槽位。"""
+        if self._handle >= 0:
+            self._engine._lib.game_stateful_free(c_int32(self._handle))
+            self._handle = -1
+
+    def __del__(self):
+        self.free()
 
 
 # 单例

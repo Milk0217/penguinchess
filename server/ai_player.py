@@ -18,11 +18,25 @@ MODELS_DIR = Path(__file__).parent.parent / "models"
 def _find_best_model() -> Optional[tuple[str, str]]:
     """
     在所有可用模型中找最强的。
-    比较 PPO gen_N 和 AlphaZero iter_N，取编号最大的。
+    优先使用 Model Registry 中的 ELO 评分，其次用 vs_random 胜率。
+    均无数据时回退到按 generation/iteration 编号取最大。
 
     Returns:
         (model_path, model_type) where model_type is "ppo" or "alphazero"
     """
+    # 1) 尝试通过 Model Registry 按 ELO 选择
+    try:
+        from penguinchess.model_registry import get_best_model
+        result = get_best_model(criteria="elo")
+        if result:
+            path, mtype = result
+            full_path = str(MODELS_DIR / path)
+            if os.path.exists(full_path):
+                return (full_path, mtype)
+    except Exception:
+        pass
+
+    # 2) 回退：按 generation/iteration 编号最大（兼容旧逻辑）
     best = None
     best_priority = -1
 

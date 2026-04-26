@@ -189,6 +189,33 @@ def api_reset(session_id: str):
 
 
 # =============================================================================
+# 模型查询 API
+# =============================================================================
+
+@app.route("/api/models", methods=["GET"])
+def api_list_models():
+    """获取所有可用模型及其评估数据。"""
+    try:
+        from penguinchess.model_registry import list_models
+        return jsonify(list_models())
+    except Exception as e:
+        return jsonify({"error": str(e), "models": []}), 500
+
+
+@app.route("/api/models/best", methods=["GET"])
+def api_get_best_model():
+    """获取当前最优模型信息（基于 ELO 评分）。"""
+    try:
+        from penguinchess.model_registry import get_best_model_info
+        info = get_best_model_info(criteria="elo")
+        if info is None:
+            return jsonify({"error": "no models found"}), 404
+        return jsonify(info)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# =============================================================================
 # 健康检查
 # =============================================================================
 

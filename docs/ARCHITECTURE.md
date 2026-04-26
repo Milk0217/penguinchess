@@ -42,7 +42,16 @@
 | `POST` | `/api/game` | 创建新游戏，返回初始状态 |
 | `GET` | `/api/game/<id>` | 获取指定游戏状态 |
 | `POST` | `/api/game/<id>/action` | 提交动作（放置/移动） |
+| `POST` | `/api/game/<id>/ai_move` | AI 自动执行一次移动 |
 | `POST` | `/api/game/<id>/reset` | 重开一局（相同会话） |
+| `GET` | `/api/health` | 健康检查 |
+
+#### 模型 API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/models` | 获取所有可用模型及评估数据（ELO/胜率） |
+| `GET` | `/api/models/best` | 获取当前最优模型信息（基于 ELO） |
 
 #### 棋盘 API
 
@@ -63,13 +72,24 @@ penguinchess/
 │   ├── app.py               # 路由、会话管理、静态托管
 │   └── game.py              # Game 会话封装
 │
+├── game_engine/              # Rust 游戏核心（cdylib）
+│   └── src/
+│       ├── board.rs          # 六边形棋盘
+│       ├── rules.rs          # 游戏规则引擎
+│       ├── ffi.rs            # C FFI 导出（有状态/无状态 API）
+│       ├── mcts_rs.rs        # Rust MCTS 搜索
+│       └── lib.rs
+│
 ├── penguinchess/            # Python 游戏核心
 │   ├── __init__.py
 │   ├── core.py              # PenguinChessCore（棋盘/棋子/规则）
 │   ├── env.py               # Gymnasium 环境（AI 训练接口）
 │   ├── reward.py            # 奖励函数
 │   ├── spaces.py            # Action / Observation Space
-│   └── random_ai.py         # 随机 AI 基准
+│   ├── random_ai.py         # 随机 AI 基准
+│   ├── model_registry.py    # Model Registry（ELO 持久化）
+│   ├── rust_ffi.py          # Rust ctypes FFI 桥接
+│   └── rust_core.py         # RustCore 包装（duck-type 兼容 core.py）
 │
 ├── statics/                 # 原始前端（Vanilla JS，已有）
 │   ├── main.js / board.js / piece.js / config.js
@@ -112,64 +132,117 @@ penguinchess/
 
 ---
 
-## 未来架构（Rust 后端）
+## Rust 游戏引擎（已实现）
+
+`game_engine/` 是一个 Rust cdylib 库，已编译为 `game_engine.dll`，通过 ctypes FFI 被 Python 调用。
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        前端 (React)                          │
-│              与 Python 后端共用同一套 React 前端               │
-└─────────────────────┬───────────────────────────────────────┘
-                      │ HTTP JSON API
-                      ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    后端 (Rust / Axum)                       │
-│                                                             │
-│  game_engine/         游戏核心（棋盘、棋子、规则）             │
-│    ├── board.rs       六边形棋盘数据结构与操作                │
-│    ├── piece.rs       棋子状态与移动逻辑                      │
-│    ├── rules.rs       游戏规则引擎                          │
-│    └── state.rs       游戏状态快照与历史记录                  │
-│                                                             │
-│  api/                 HTTP API 层                           │
-│    ├── routes.rs      路由定义（与 Python 版完全兼容）          │
-│    ├── session.rs     会话管理                              │
-│    └── middleware.rs  CORS、日志等中间件                     │
-│                                                             │
-│  ai/                  AI 推理接口层                          │
-│    ├── interface.rs   AI 决策抽象接口                       │
-│    └── python_ai.rs   Python AI 进程通信（保留）              │
-│                                                             │
-│  性能目标：单请求 < 1ms，支持 > 10000 并发连接                 │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                          Python 层                               │
+│                                                                  │
+│  penguinchess/                                                   │
+│    core.py        ← Python 游戏核心（仍可用，与 Rust 并行）       │
+│    rust_ffi.py    ← ctypes 直接调用 Rust DLL（快 11.5x）          │
+│    rust_core.py   ← RustCore 包装，duck-type 兼容 core.py        │
+│                                                                  │
+│  examples/                                                        │
+│    eval_elo.py    ← ELO 评估，支持 --rust-core / --incremental    │
+│    train_ppo.py   ← PPO 训练，训练后自动写 Model Registry         │
+│                                                                  │
+└───────────────────────┬──────────────────────────────────────────┘
+                        │ ctypes FFI (零拷贝、状态保持)
+                        ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                       Rust 层 (game_engine/)                     │
+│                                                                  │
+│  src/                                                             │
+│    board.rs        ← 六边形棋盘数据结构（Hex, Board, Piece）      │
+│    rules.rs        ← 完整游戏规则引擎（273 行）                    │
+│    ffi.rs          ← C FFI 导出函数：                             │
+│                      · game_stateful_new(seed) → handle          │
+│                      · game_stateful_step(handle, action) → JSON │
+│                      · game_stateful_get_legal(handle) → [int]   │
+│                      · game_stateful_get_obs(handle) → dict      │
+│                      · game_stateful_free(handle)                │
+│                      + 旧版 stateless API (game_new/step/eval)   │
+│    mcts_rs.rs      ← Rust MCTS 搜索（UCB/批量回调）               │
+│    lib.rs          ← 模块入口                                    │
+│    bin/cli.rs      ← 独立 CLI 二进制                              │
+│                                                                  │
+│  构建: cargo build --release → target/release/game_engine.dll    │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
-### 为什么要用 Rust
+### 性能基准（release 构建）
 
-| 维度 | Python | Rust |
-|------|--------|------|
-| 推理性能 | ~10-100μs/步 | ~0.1-1μs/步（100x 提升） |
-| 并发能力 | GIL 限制，多线程受限 | 零成本抽象，无 GIL |
-| 内存占用 | 数百 MB（解释器） | 数 MB（原生二进制） |
-| 冷启动 | 即时 | 即时（无 JVM/解释器） |
-| AI 训练 | 原生支持 NumPy/PyTorch | 通过 Python 进程通信 |
+使用 `--release` 优化编译后的基准测试结果（Intel CPU, 单线程）:
 
-Rust 将接管所有**游戏逻辑**和**高性能推理**部分。Python 专注于**AI 训练**和**策略研究**。
+| 测试项 | Python | Rust (release) | 加速比 |
+|--------|--------|---------------|--------|
+| `core.step()` 单步 | 0.159 ms | **0.014 ms** | **11.5x** |
+| 完整一局（随机走法） | 6.9 ms | **1.0 ms** | **6.9x** |
+| PPO 推理单次 | 0.201 ms | — | — |
+| ELO 评估 55对×50局 | ~19s* | **~3s*** | **~6.9x** |
 
-### Rust ↔ Python 通信设计
+> \* 仅含游戏模拟时间，模型推理时间另计。实际 ELO 评估受模型推理（~70%）和游戏模拟（~30%）共同影响。
 
-Rust 后端保留 Python AI 的集成方式：
+| 构建配置 | 单步耗时 | 对比 Python |
+|----------|---------|-------------|
+| Python core.step() | 0.159 ms | 1.0x |
+| Rust debug 构建 | 0.080 ms | **2.0x** |
+| Rust release 构建 | 0.014 ms | **11.5x** |
+
+### 有状态 FFI 设计（关键优化）
+
+旧版 `game_step()` 每次调用需要完整序列化 GameState（~8KB JSON）：
 
 ```
-┌─────────────────┐     IPC / Unix Socket     ┌─────────────────┐
-│  Rust 后端      │ ◄──────────────────────► │  Python 训练器   │
-│  (游戏逻辑)     │   发送棋盘状态            │  (PyTorch)       │
-│                 │   接收 AI 动作            │                  │
-│  ai/python_ai   │   JSON / protobuf       │  策略网络         │
-│  .rs             │                         │  蒙特卡洛树搜索   │
-└─────────────────┘                           └─────────────────┘
+Python 序列化 State → JSON → ctypes → Rust 反序列化 → step → 序列化 → JSON → 返回
 ```
 
-Python 训练环境（`penguinchess/env.py`）保持不变，Rust 后端通过子进程调用 Python AI 进行人机对战。
+新版有状态 API（`game_stateful_*`）将 GameState 保留在 Rust 内存中：
+
+```
+Python 传 (handle, action) → Rust 直接操作内存 → 返回小 JSON (~200B)
+```
+
+结果：单步耗时从 **2.018 ms**（旧版 FFI）降至 **0.014 ms**（有状态 release），**144x 改进**。
+
+### 增量 ELO 模式
+
+`--incremental` 跳过双方已有 ELO 的对局：
+
+```bash
+# 全量评估（首次）
+uv run python examples/eval_elo.py --episodes 50 --rust-core
+
+# 增量评估（训练新模型后）
+uv run python examples/eval_elo.py --episodes 50 --incremental --rust-core
+```
+
+训练 gen_N 时只需跑 N-1 对新局（~10s），而非 N×(N-1)/2 对（~60s）。
+
+### 组件与文件对应
+
+| 职责 | 文件 | 说明 |
+|------|------|------|
+| 游戏核心（Python 版） | `penguinchess/core.py` | 仍可用，与 Rust 并行维护 |
+| 游戏核心（Rust 版） | `game_engine/src/rules.rs` + `board.rs` | 编译为 DLL |
+| Rust FFI 桥接 | `penguinchess/rust_ffi.py` | ctypes 封装，含 `RustEngine` + `RustStatefulGame` |
+| RustCore 包装 | `penguinchess/rust_core.py` | duck-type 兼容 `PenguinChessCore` |
+| Rust MCTS 搜索 | `game_engine/src/mcts_rs.rs` | 通过回调调用 Python 神经网络 |
+| Model Registry | `penguinchess/model_registry.py` | JSON 持久化，ELO 排序 |
+| ELO 评估 | `examples/eval_elo.py` | 增量/全量，Python/Rust，PPO/AZ/MCTS |
+| PPO 训练（含 ELO） | `examples/train_ppo.py` | 训练后自动写入 Registry |
+
+### 构建 Rust
+
+```bash
+cd game_engine
+cargo build --release    # 优化构建，产出 target/release/game_engine.dll
+```
+
+`rust_ffi.py` 自动按 `release` → `debug` 顺序搜索 DLL。如果找不到，回退到 Python `PenguinChessCore`。
 
 ---
 
@@ -258,10 +331,9 @@ pytest tests/ -q
 
 | 层级 | 技术 |
 |------|------|
-| 游戏核心（当前） | Python 3.11 |
-| 游戏核心（未来） | Rust（待实现） |
-| HTTP 框架（当前） | Flask |
-| HTTP 框架（未来） | Axum / Actix-web |
+| 游戏核心（Python 版） | Python 3.11 (`penguinchess/core.py`) |
+| 游戏核心（Rust 加速） | Rust cdylib (`game_engine/`, `--release` 构建) |
+| HTTP 框架 | Flask（当前）/ Axum（计划中） |
 | 前端 | React 18 + TypeScript + Vite + Tailwind CSS v4 |
 | AI 训练 | Python Gymnasium + PyTorch + Stable-Baselines3 |
 | 测试 | pytest + Playwright |

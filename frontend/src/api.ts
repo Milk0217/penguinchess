@@ -44,6 +44,25 @@ export interface GameState {
   opponent_type: string;   // "human" | "ai"
 }
 
+/** 模型评估数据 */
+export interface ModelEval {
+  vs_random?: { win: number; lose: number; draw: number };
+  vs_prev?: { win: number; lose: number; draw: number; opponent?: string };
+  elo?: number;
+}
+
+/** 模型元数据 */
+export interface ModelInfo {
+  id: string;
+  type: string;          // "ppo" | "alphazero"
+  file: string;
+  generation?: number;
+  iteration?: number;
+  created_at: string;
+  evaluated_at?: string;
+  eval?: ModelEval;
+}
+
 /** 棋盘元数据 */
 export interface BoardInfo {
   id: string;
@@ -127,6 +146,20 @@ export const api = {
       body: JSON.stringify({ name, hexes }),
     });
   },
+
+  // === 模型 API ===
+
+  /** 获取所有可用模型及评估数据 */
+  getModels(): Promise<ModelInfo[]> {
+    return request("/models");
+  },
+
+  /** 获取当前最优模型信息（基于 ELO） */
+  getBestModel(): Promise<ModelInfo> {
+    return request("/models/best");
+  },
+
+  // === 棋盘 API ===
 
   /** 获取单个棋盘详情 */
   getBoard(boardId: string): Promise<{ id: string; name: string; hexes: Array<{ q: number; r: number; s: number }> }> {

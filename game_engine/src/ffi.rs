@@ -128,3 +128,206 @@ fn write_output(buffer: *mut c_char, size: i32, data: &str) {
 pub extern "C" fn api_version() -> i32 {
     1
 }
+
+// =============================================================================
+// Stateful Game API — 游戏状态留在 Rust 内存，避免 JSON 序列化整个状态
+// =============================================================================
+
+const MAX_GAMES: usize = 64;
+static mut GAMES: Vec<Option<GameState>> = Vec::new();
+
+/// 初始化状态槽（第一次使用时）
+fn ensure_slots() {
+    unsafe {
+        if GAMES.is_empty() {
+            GAMES.resize(MAX_GAMES, None);
+        }
+    }
+}
+
+/// 找空闲槽位，返回 handle
+fn alloc_slot(state: GameState) -> i32 {
+    ensure_slots();
+    unsafe {
+        for i in 0..MAX_GAMES {
+            if GAMES[i].is_none() {
+                GAMES[i] = Some(state);
+                return i as i32;
+            }
+        }
+    }
+    -1 // 满
+}
+
+/// Create a new stateful game. Returns handle (i32).
+#[no_mangle]
+pub unsafe extern "C" fn game_stateful_new(seed: i64) -> i32 {
+    let seq = generate_sequence(seed as u64);
+    let board = Board::new(&seq);
+    let state = GameState::new(board);
+    alloc_slot(state)
+}
+
+/// Step a stateful game by handle. Returns small JSON (no full state).
+#[no_mangle]
+pub unsafe extern "C" fn game_stateful_step(
+    handle: i32,
+    action: i32,
+    output_buffer: *mut c_char,
+    buffer_size: i32,
+) -> i32 {
+    let game = match GAMES.get_mut(handle as usize) {
+        Some(Some(g)) => g,
+        _ => return -1,
+    };
+    let (reward, terminated) = game.step(action as usize);
+    let legal = game.get_legal_actions();
+    let result = serde_json::json!({
+        "reward": reward,
+        "terminated": terminated,
+        "legal_actions": legal,
+        "scores": game.scores,
+        "current_player": game.current_player,
+        "phase": game.phase,
+    });
+    let output = serde_json::to_string(&result).unwrap_or_default();
+    write_output(output_buffer, buffer_size, &output);
+    0
+}
+
+/// Get legal actions for a stateful game (JSON array).
+#[no_mangle]
+pub unsafe extern "C" fn game_stateful_get_legal(
+    handle: i32,
+    output_buffer: *mut c_char,
+    buffer_size: i32,
+) -> i32 {
+    let game = match GAMES.get(handle as usize) {
+        Some(Some(g)) => g,
+        _ => return -1,
+    };
+    let legal = game.get_legal_actions();
+    let result = serde_json::json!({ "legal_actions": legal });
+    let output = serde_json::to_string(&result).unwrap_or_default();
+    write_output(output_buffer, buffer_size, &output);
+    0
+}
+
+/// Serialize a stateful game to JSON (for MCTS or inspection).
+#[no_mangle]
+pub unsafe extern "C" fn game_stateful_to_json(
+    handle: i32,
+    output_buffer: *mut c_char,
+    buffer_size: i32,
+) -> i32 {
+    let game = match GAMES.get(handle as usize) {
+        Some(Some(g)) => g,
+        _ => return -1,
+    };
+    let state_json = serde_json::to_string(game).unwrap_or_default();
+    write_output(output_buffer, buffer_size, &state_json);
+    0
+}
+
+/// Free a stateful game slot.
+#[no_mangle]
+pub unsafe extern "C" fn game_stateful_free(handle: i32) -> i32 {
+    unsafe {
+        if (handle as usize) < MAX_GAMES {
+            GAMES[handle as usize] = None;
+            0
+        } else {
+            -1
+        }
+    }
+}
+
+/// Get scores for a stateful game.
+#[no_mangle]
+pub unsafe extern "C" fn game_stateful_scores(
+    handle: i32,
+    output_buffer: *mut c_char,
+    buffer_size: i32,
+) -> i32 {
+    let game = match GAMES.get(handle as usize) {
+        Some(Some(g)) => g,
+        _ => return -1,
+    };
+    let result = serde_json::json!({ "scores": game.scores });
+    let output = serde_json::to_string(&result).unwrap_or_default();
+    write_output(output_buffer, buffer_size, &output);
+    0
+}
+
+/// Get current game info without stepping.
+#[no_mangle]
+pub unsafe extern "C" fn game_stateful_get_info(
+    handle: i32,
+    output_buffer: *mut c_char,
+    buffer_size: i32,
+) -> i32 {
+    let game = match GAMES.get(handle as usize) {
+        Some(Some(g)) => g,
+        _ => return -1,
+    };
+    let legal = game.get_legal_actions();
+    let result = serde_json::json!({
+        "legal_actions": legal,
+        "scores": game.scores,
+        "current_player": game.current_player,
+        "phase": game.phase,
+        "terminated": game.terminated,
+    });
+    let output = serde_json::to_string(&result).unwrap_or_default();
+    write_output(output_buffer, buffer_size, &output);
+    0
+}
+
+/// Get flat observation from stateful game (for PPO Agent).
+/// Returns JSON array of floats in the same format as PenguinChessCore.get_observation().
+#[no_mangle]
+pub unsafe extern "C" fn game_stateful_get_obs(
+    handle: i32,
+    output_buffer: *mut c_char,
+    buffer_size: i32,
+) -> i32 {
+    let game = match GAMES.get(handle as usize) {
+        Some(Some(g)) => g,
+        _ => return -1,
+    };
+    // board: 60 cells × [q/8, r/8, value/3 or 0]
+    let mut board: Vec<Vec<f64>> = Vec::with_capacity(60);
+    for cell in &game.board.cells {
+        let val = if cell.state == HexState::Active || cell.state == HexState::Occupied {
+            cell.points as f64 / 3.0
+        } else {
+            0.0
+        };
+        board.push(vec![cell.coord.q as f64 / 8.0, cell.coord.r as f64 / 8.0, val]);
+    }
+    // pieces: 6 pieces × [id/10, q/8, r/8, s/8]
+    let mut pieces: Vec<Vec<f64>> = Vec::with_capacity(6);
+    for piece in &game.pieces {
+        if piece.alive && piece.hex_idx.is_some() {
+            let idx = piece.hex_idx.unwrap();
+            let cell = &game.board.cells[idx];
+            pieces.push(vec![
+                piece.id as f64 / 10.0,
+                cell.coord.q as f64 / 8.0,
+                cell.coord.r as f64 / 8.0,
+                cell.coord.s as f64 / 8.0,
+            ]);
+        } else {
+            pieces.push(vec![-1.0, 0.0, 0.0, 0.0]);
+        }
+    }
+    let result = serde_json::json!({
+        "board": board,
+        "pieces": pieces,
+        "current_player": game.current_player as f64,
+        "phase": if matches!(game.phase, Phase::Placement) { 0.0 } else { 1.0 },
+    });
+    let output = serde_json::to_string(&result).unwrap_or_default();
+    write_output(output_buffer, buffer_size, &output);
+    0
+}

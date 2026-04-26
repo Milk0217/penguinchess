@@ -1,10 +1,11 @@
-/// Rust MCTS 搜索 — 路径回溯（无父指针），批量回调评估
+/// Rust MCTS 搜索 — 使用 float 观测数组替代 JSON，消除序列化开销
 use std::collections::HashMap;
 use std::os::raw::c_char;
 use crate::board::*;
 use crate::rules::*;
 
-type EvalCallback = extern "C" fn(*const c_char, *mut c_char, i32) -> i32;
+/// 新回调：接收 (obs_ptr, batch_size, output_ptr, output_capacity) — 纯 float，零拷贝
+type EvalFn = extern "C" fn(*const f32, i32, *mut f32, i32) -> i32;
 
 struct MCTSNode {
     visits: u32,
@@ -31,25 +32,96 @@ fn node_by_path<'a>(root: &'a mut MCTSNode, path: &[usize]) -> &'a mut MCTSNode 
     node
 }
 
+// =============================================================================
+// 编码观测：将 GameState 编码为 Flat float 数组 (206 dims)
+// =============================================================================
+
+fn encode_obs(state: &GameState, buf: &mut Vec<f32>) {
+    // board: 60 cells × [q/8, r/8, value/3]
+    for cell in &state.board.cells {
+        let pts = if cell.state == HexState::Active || cell.state == HexState::Occupied {
+            cell.points as f32 / 3.0
+        } else {
+            0.0
+        };
+        buf.push(cell.coord.q as f32 / 8.0);
+        buf.push(cell.coord.r as f32 / 8.0);
+        buf.push(pts);
+    }
+    // pieces: 6 pieces × [id/10, q/8, r/8, s/8]
+    for piece in &state.pieces {
+        if piece.alive && piece.hex_idx.is_some() {
+            let cell = &state.board.cells[piece.hex_idx.unwrap()];
+            buf.push(piece.id as f32 / 10.0);
+            buf.push(cell.coord.q as f32 / 8.0);
+            buf.push(cell.coord.r as f32 / 8.0);
+            buf.push(cell.coord.s as f32 / 8.0);
+        } else {
+            buf.extend_from_slice(&[-1.0, 0.0, 0.0, 0.0]);
+        }
+    }
+    // meta: [current_player, phase]
+    buf.push(state.current_player as f32);
+    buf.push(if matches!(state.phase, Phase::Placement) { 0.0 } else { 1.0 });
+}
+
+fn obs_dim() -> usize { 206 }
+fn out_dim() -> usize { 61 }  // 60 logits + 1 value
+
+// =============================================================================
+// Softmax + mask helper
+// =============================================================================
+
+fn masked_softmax(logits: &[f32], legal: &[usize]) -> Vec<f64> {
+    let mut masked = vec![-1e9_f64; 60];
+    for &a in legal {
+        masked[a] = logits[a] as f64;
+    }
+    let max_l = masked.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let exps: Vec<f64> = masked.iter().map(|x| (x - max_l).exp()).collect();
+    let sum: f64 = exps.iter().sum();
+    if sum > 1e-12 {
+        exps.iter().map(|x| x / sum).collect()
+    } else {
+        let mut v = vec![0.0; 60];
+        for &a in legal { v[a] = 1.0 / legal.len() as f64; }
+        v
+    }
+}
+
+// =============================================================================
+// 主搜���函数
+// =============================================================================
+
 #[no_mangle]
 pub unsafe extern "C" fn mcts_search_rust(
     state_json: *const c_char,
     num_simulations: i32,
     c_puct: f64,
     batch_size: i32,
-    eval_cb: Option<EvalCallback>,
+    eval_fn: Option<EvalFn>,
     output_buf: *mut c_char,
     output_size: i32,
 ) -> i32 {
-    let input = std::ffi::CStr::from_ptr(state_json).to_str().map_err(|_| -1).unwrap_or("");
-    let mut root_state: GameState = serde_json::from_str(input).map_err(|_| -1).unwrap_or_else(|_| std::process::exit(-1));
+    let input = match std::ffi::CStr::from_ptr(state_json).to_str() {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+    let mut root_state: GameState = match serde_json::from_str(input) {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
     root_state.board.rebuild_index_for_json();
 
     let mut root = MCTSNode::new(0.0);
     let bs = batch_size.max(1) as usize;
-    let mut pending_states: Vec<String> = vec![];
+    let mut pending_states: Vec<GameState> = vec![];
     let mut pending_legal: Vec<Vec<usize>> = vec![];
     let mut pending_paths: Vec<Vec<usize>> = vec![];
+
+    // Pre-allocate obs/output buffers (reused across flushes)
+    let mut obs_buf: Vec<f32> = Vec::with_capacity(bs * obs_dim());
+    let mut out_buf: Vec<f32> = Vec::with_capacity(bs * out_dim());
 
     for _ in 0..num_simulations.max(1) {
         let mut state = root_state.clone();
@@ -79,16 +151,18 @@ pub unsafe extern "C" fn mcts_search_rust(
         if terminated {
             backup(&mut root, &path, terminal_value(&state));
         } else if !legal.is_empty() {
-            pending_states.push(serde_json::to_string(&state).unwrap_or_default());
+            pending_states.push(state);
             pending_legal.push(legal);
             pending_paths.push(path);
             if pending_states.len() >= bs {
-                flush_batch(&mut root, &mut pending_states, &mut pending_legal, &mut pending_paths, eval_cb);
+                flush_batch_obs(&mut root, &mut pending_states, &mut pending_legal,
+                                &mut pending_paths, eval_fn, &mut obs_buf, &mut out_buf);
             }
         }
     }
     if !pending_states.is_empty() {
-        flush_batch(&mut root, &mut pending_states, &mut pending_legal, &mut pending_paths, eval_cb);
+        flush_batch_obs(&mut root, &mut pending_states, &mut pending_legal,
+                        &mut pending_paths, eval_fn, &mut obs_buf, &mut out_buf);
     }
 
     let mut out = serde_json::Map::new();
@@ -99,48 +173,64 @@ pub unsafe extern "C" fn mcts_search_rust(
     0
 }
 
+// =============================================================================
+// Batch flush with float obs array (zero-copy to Python/NumPy)
+// =============================================================================
+
+fn flush_batch_obs(
+    root: &mut MCTSNode,
+    states: &mut Vec<GameState>,
+    legal_list: &mut Vec<Vec<usize>>,
+    paths: &mut Vec<Vec<usize>>,
+    eval_fn: Option<EvalFn>,
+    obs_buf: &mut Vec<f32>,
+    out_buf: &mut Vec<f32>,
+) {
+    let n = states.len();
+    obs_buf.clear();
+    for state in states.iter() {
+        encode_obs(state, obs_buf);
+    }
+    debug_assert_eq!(obs_buf.len(), n * obs_dim());
+
+    if let Some(f) = eval_fn {
+        out_buf.clear();
+        out_buf.resize(n * out_dim(), 0.0f32);
+        unsafe { f(obs_buf.as_ptr(), n as i32, out_buf.as_mut_ptr(), out_buf.len() as i32); }
+
+        for (i, (path, legal)) in paths.iter().zip(legal_list.iter()).enumerate() {
+            let base = i * out_dim();
+            let logits = &out_buf[base..base + 60];
+            let value = out_buf[base + 60] as f64;
+            let policy = masked_softmax(logits, legal);
+            let node = node_by_path(root, path);
+            for &a in legal {
+                node.children.entry(a).or_insert(MCTSNode::new(policy[a]));
+            }
+            backup(root, path, value);
+        }
+    } else {
+        // Uniform: no neural network, directly backup with 0 value
+        for (path, legal) in paths.iter().zip(legal_list.iter()) {
+            let node = node_by_path(root, path);
+            let uniform = 1.0 / legal.len() as f64;
+            for &a in legal {
+                node.children.entry(a).or_insert(MCTSNode::new(uniform));
+            }
+            backup(root, path, 0.0);
+        }
+    }
+
+    states.clear();
+    legal_list.clear();
+    paths.clear();
+}
+
 fn backup(root: &mut MCTSNode, path: &[usize], mut value: f64) {
     for depth in (0..=path.len()).rev() {
         let n = node_by_path(root, &path[..depth]);
         n.visits += 1; n.total_value += value; value = -value;
     }
-}
-
-fn flush_batch(
-    root: &mut MCTSNode, states: &mut Vec<String>, legal_list: &mut Vec<Vec<usize>>,
-    paths: &mut Vec<Vec<usize>>, cb: Option<EvalCallback>,
-) {
-    let batch = format!("[{}]", states.join(","));
-    let mut buf = vec![0u8; 65536];
-    if let Some(eval_cb) = cb {
-        unsafe { eval_cb(batch.as_ptr() as *const c_char, buf.as_mut_ptr() as *mut c_char, 65536); }
-    }
-    let result_str = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr() as *const c_char).to_str().unwrap_or("[]") };
-    let results: Vec<serde_json::Value> = serde_json::from_str(result_str).unwrap_or_default();
-
-    for (i, (path, legal)) in paths.iter().zip(legal_list.iter()).enumerate() {
-        let value = if i < results.len() {
-            let logits: Vec<f64> = results[i]["logits"].as_array()
-                .map(|a| a.iter().map(|v| v.as_f64().unwrap_or(0.0)).collect())
-                .unwrap_or_else(|| vec![0.0; 60]);
-            let val = results[i]["value"].as_f64().unwrap_or(0.0);
-            let mut masked = vec![-1e9_f64; 60];
-            for &a in legal { masked[a] = logits[a]; }
-            let max_l = masked.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-            let exps: Vec<f64> = masked.iter().map(|x| (x - max_l).exp()).collect();
-            let sum: f64 = exps.iter().sum();
-            let policy: Vec<f64> = if sum > 1e-12 {
-                exps.iter().map(|x| x / sum).collect()
-            } else {
-                let mut v = vec![0.0; 60]; for &a in legal { v[a] = 1.0 / legal.len() as f64; } v
-            };
-            let n = node_by_path(root, path);
-            for &a in legal { n.children.entry(a).or_insert(MCTSNode::new(policy[a])); }
-            val
-        } else { 0.0 };
-        backup(root, path, value);
-    }
-    states.clear(); legal_list.clear(); paths.clear();
 }
 
 fn terminal_value(state: &GameState) -> f64 {

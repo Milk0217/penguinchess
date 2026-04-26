@@ -12,7 +12,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, type GameState, type HexData } from "./api";
+import { api, type GameState, type HexData, type ModelInfo } from "./api";
 import BoardContainer from "./board/BoardContainer";
 import { getLayout } from "./board/layouts";
 import { getTheme, getAllThemes } from "./board/themes";
@@ -229,6 +229,9 @@ const GLOBAL_THEMES: Record<GlobalTheme, {
   const debugMode = useDebugMode();
   const currentTheme = useMemo(() => getTheme(currentThemeId), [currentThemeId]);
 
+  // AI 模型信息
+  const [bestModelInfo, setBestModelInfo] = useState<ModelInfo | null>(null);
+
   // 自定义棋盘 layout 缓存（key: boardId）
   const [customLayouts, setCustomLayouts] = useState<Map<string, BoardLayout>>(new Map());
 
@@ -311,6 +314,26 @@ const GLOBAL_THEMES: Record<GlobalTheme, {
   useEffect(() => {
     api.getBoards().then(setAvailableBoards).catch(console.error);
   }, []);
+
+  // AI 模式：获取最优模型信息
+  useEffect(() => {
+    if (opponent === "ai") {
+      api.getBestModel()
+        .then(setBestModelInfo)
+        .catch(() => setBestModelInfo(null));
+    } else {
+      setBestModelInfo(null);
+    }
+  }, [opponent]);
+
+  // 每次创建新游戏时刷新模型信息（AI 模式）
+  useEffect(() => {
+    if (opponent === "ai" && sessionId) {
+      api.getBestModel()
+        .then(setBestModelInfo)
+        .catch(() => setBestModelInfo(null));
+    }
+  }, [sessionId, opponent]);
 
   useEffect(() => {
     initGame();
@@ -532,7 +555,7 @@ const GLOBAL_THEMES: Record<GlobalTheme, {
           onClick={() => setOpponent(opponent === "human" ? "ai" : "human")}
           title={opponent === "human" ? "切换到 AI 对战" : "切换到人类对战"}
           style={{
-            background: "transparent",
+            background: opponent === "ai" ? (globalTheme==="dark" ? "#1e3a5f" : "#dbeafe") : "transparent",
             border: "1px solid " + pageTheme.cardBorder,
             borderRadius: "6px",
             padding: "0.3rem 0.6rem",
@@ -545,6 +568,24 @@ const GLOBAL_THEMES: Record<GlobalTheme, {
         >
           {opponent === "human" ? "👤 vs 👤" : "👤 vs 🤖"}
         </button>
+        {/* AI 模型信息标签 */}
+        {opponent === "ai" && bestModelInfo && (
+          <span style={{
+            fontSize: "0.65rem",
+            color: pageTheme.textMuted,
+            background: pageTheme.cardBg,
+            border: "1px solid " + pageTheme.cardBorder,
+            borderRadius: "4px",
+            padding: "0.2rem 0.4rem",
+            whiteSpace: "nowrap",
+          }}>
+            🤖 {bestModelInfo.type === "ppo"
+              ? `PPO gen_${bestModelInfo.generation ?? "?"}`
+              : `AZ iter_${bestModelInfo.iteration ?? "?"}`
+            }
+            {bestModelInfo.eval?.elo != null && ` · ELO ${bestModelInfo.eval.elo}`}
+          </span>
+        )}
       </div>
       <p style={{ color: pageTheme.textMuted, fontSize: "0.75rem", margin: "0 0 1rem", textAlign: "center" }}>
         前后端分离架构 · 游戏逻辑在后端执行
@@ -642,6 +683,26 @@ const GLOBAL_THEMES: Record<GlobalTheme, {
           <span style={{ color: globalTheme==="dark" ? "#60a5fa" : "#3b82f6" }}>P1 棋子: {state.pieces.filter(p => p.owner === 0 && p.alive).length}/3</span>
           <span style={{ color: globalTheme==="dark" ? "#f87171" : "#ef4444" }}>P2 棋子: {state.pieces.filter(p => p.owner === 1 && p.alive).length}/3</span>
         </div>
+
+        {/* AI 模型信息（非调试模式也显示） */}
+        {opponent === "ai" && bestModelInfo && (
+          <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap", marginBottom: "0.25rem" }}>
+            <span>AI 模型: <strong style={{ color: pageTheme.accent }}>
+              {bestModelInfo.type === "ppo"
+                ? `PPO gen_${bestModelInfo.generation ?? "?"}`
+                : `AlphaZero iter_${bestModelInfo.iteration ?? "?"}`
+              }
+            </strong></span>
+            {bestModelInfo.eval?.elo != null && (
+              <span>ELO: <strong style={{ color: pageTheme.text }}>{bestModelInfo.eval.elo}</strong></span>
+            )}
+            {bestModelInfo.eval?.vs_random && (
+              <span>vs 随机: <strong style={{ color: pageTheme.text }}>
+                {((bestModelInfo.eval.vs_random.win) * 100).toFixed(0)}%
+              </strong></span>
+            )}
+          </div>
+        )}
 
         {/* 第三行：当前玩家 + 分数 */}
         <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap", marginBottom: state.phase === "movement" || selectedPieceId !== null ? "0.25rem" : "0" }}>
