@@ -124,6 +124,16 @@ def train_alphazero(
     print(f"设备: {device}")
 
     net = AlphaZeroNet().to(device)
+
+    # 加载已有模型（续训）
+    if args.resume:
+        path = args.resume
+        if os.path.exists(path):
+            state = torch.load(path, map_location=device, weights_only=True)
+            net.load_state_dict(state)
+            print(f"续训练模型: {path}")
+        else:
+            print(f"模型文件不存在: {path}")
     optimizer = optim.Adam(net.parameters(), lr=lr, weight_decay=l2_reg)
 
     data_buffer = []
@@ -209,6 +219,7 @@ if __name__ == "__main__":
     parser.add_argument("--simulations", type=int, default=50, help="MCTS 模拟次数（训练用 50，评估用 800）")
     parser.add_argument("--batch-size", type=int, default=256, help="训练批次大小")
     parser.add_argument("--lr", type=float, default=1e-3, help="学习率")
+    parser.add_argument("--resume", type=str, default=None, help="续训练模型路径")
     args = parser.parse_args()
 
     train_alphazero(
