@@ -143,7 +143,8 @@ class AlphaZeroNet(nn.Module):
         flat = np.concatenate([board, pieces, meta]).astype(np.float32)  # (206,)
 
         # 2. Run through network
-        x = torch.as_tensor(flat, dtype=torch.float32).unsqueeze(0)  # (1, 206)
+        device = next(self.parameters()).device
+        x = torch.as_tensor(flat, dtype=torch.float32).unsqueeze(0).to(device)  # (1, 206)
         logits, val_t = self.forward(x)
         logits_np = logits[0].cpu().numpy().astype(np.float64)
         value = float(val_t[0, 0].cpu().numpy())
@@ -166,6 +167,58 @@ class AlphaZeroNet(nn.Module):
             probs = probs / probs.sum()
 
         return probs, value
+
+    # ------------------------------------------------------------------
+    # Batch inference
+    # ------------------------------------------------------------------
+
+    @torch.no_grad()
+    def evaluate_batch(
+        self,
+        states: list,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Batch inference for MCTS — evaluate multiple states at once.
+
+        Parameters
+        ----------
+        states : list[PenguinChessCore]
+            List of game states to evaluate.  States are **not** modified.
+
+        Returns
+        -------
+        logits : np.ndarray, shape ``(batch, 60)``, dtype float32
+            Raw policy logits from the network (one per hex index).
+            The caller should mask illegal actions and apply softmax.
+        values : np.ndarray, shape ``(batch,)``, dtype float32
+            Scalar values in [-1, 1] from each state's **current-player**
+            perspective.
+        """
+        self.eval()
+        device = next(self.parameters()).device
+
+        # Build flat observations for all states
+        obs_list = []
+        for state in states:
+            obs = state.get_observation()
+            board = np.array(obs["board"], dtype=np.float32).flatten()      # (180,)
+            pieces = np.array(obs["pieces"], dtype=np.float32).flatten()    # (24,)
+            meta = np.array(
+                [float(obs["current_player"]), float(obs["phase"])],
+                dtype=np.float32,
+            )  # (2,)
+            obs_list.append(np.concatenate([board, pieces, meta]))          # (206,)
+
+        batch = np.array(obs_list, dtype=np.float32)                        # (B, 206)
+
+        # Forward pass (no_grad is applied by the decorator)
+        x = torch.from_numpy(batch).to(device)
+        logits, val_t = self.forward(x)
+
+        # Return as numpy arrays on CPU
+        logits_np = logits.cpu().numpy().astype(np.float32)                 # (B, 60)
+        values_np = val_t.cpu().numpy().flatten().astype(np.float32)        # (B,)
+        return logits_np, values_np
 
     # ------------------------------------------------------------------
     # Static helpers

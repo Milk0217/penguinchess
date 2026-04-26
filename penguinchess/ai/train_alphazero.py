@@ -26,7 +26,7 @@ import torch.optim as optim
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from penguinchess.core import PenguinChessCore
-from penguinchess.ai.mcts_core import mcts_search, select_action
+from penguinchess.ai.mcts_core import mcts_search, mcts_search_batched, select_action
 from penguinchess.ai.alphazero_net import AlphaZeroNet
 
 MODELS_DIR = Path(__file__).parent.parent.parent / "models"
@@ -59,10 +59,11 @@ def self_play_game(
         # 温度退火
         t = temperature if step < temp_threshold else 0.1
 
-        # MCTS 搜索
-        counts, root = mcts_search(
+        # MCTS 搜索（使用批处理推理优化）
+        counts, root = mcts_search_batched(
             core, model=None, num_simulations=num_simulations,
-            temperature=t, evaluate_fn=net.evaluate,
+            temperature=t, evaluate_fn=net.evaluate_batch,
+            batch_size=32,
         )
 
         # 策略目标 = MCTS 访问次数的分布

@@ -336,6 +336,313 @@ def mcts_search(
 
 
 # =============================================================================
+# Batch evaluation helper
+# =============================================================================
+
+
+def _evaluate_and_expand_batch(
+    pending: List[Tuple[MCTSNode, List[int]]],
+    batch_eval_fn: Callable,
+) -> None:
+    """
+    Internal helper for ``mcts_search_batched``.
+
+    Takes a list of ``(node, legal_actions)`` pairs collected during the
+    SELECT phase, evaluates all of their leaf states in a **single forward
+    pass**, then expands children and BACKUPs for each.
+
+    Parameters
+    ----------
+    pending : list of (MCTSNode, list[int])
+        Each entry is a leaf node whose ``.state`` will be evaluated, together
+        with its list of legal action indices.
+    batch_eval_fn : callable
+        A function ``(states) -> (logits, values)`` where
+        ``states`` is a list of ``PenguinChessCore`` objects.
+
+        ``logits`` : ndarray ``(B, 60)`` — raw policy logits.
+        ``values`` : ndarray ``(B,)``   — scalar values in ``[-1, 1]``.
+
+        Typically ``model.evaluate_batch``.
+    """
+    # Collect leaf states for batch evaluation
+    states = [node.state for node, _ in pending]
+
+    # Batch forward pass — returns raw logits + values
+    logits_batch, values_batch = batch_eval_fn(states)
+
+    B = len(pending)
+    assert logits_batch.shape == (B, 60), (
+        f"Expected logits shape ({B}, 60), got {logits_batch.shape}"
+    )
+    assert values_batch.shape == (B,), (
+        f"Expected values shape ({B},), got {values_batch.shape}"
+    )
+
+    # Expand every node and BACKUP
+    for (node, legal), logits, value in zip(pending, logits_batch, values_batch):
+        # --- mask illegal actions and softmax ---
+        mask = np.zeros(60, dtype=bool)
+        mask[legal] = True
+        masked_logits = np.where(mask, logits, -1e9)
+        policy = _softmax(masked_logits).astype(np.float32)
+
+        # Safety: if masking zeroed everything, fall back to uniform
+        if policy.sum() < 1e-8:
+            policy[:] = 0.0
+            if legal:
+                policy[legal] = 1.0 / len(legal)
+        elif abs(policy.sum() - 1.0) > 1e-6:
+            policy = policy / policy.sum()
+
+        # --- create children ---
+        leaf_snap = node.state.get_snapshot()
+        for a in legal:
+            if a not in node.children:
+                node.state.step(a)
+                child_core = copy.deepcopy(node.state)
+                node.state.restore_snapshot(leaf_snap)
+                node.children[a] = MCTSNode(
+                    state=child_core,
+                    parent=node,
+                    action=a,
+                    prior=float(policy[a]),
+                )
+
+        # --- BACKUP ---
+        n = node
+        v = value
+        while n is not None:
+            n.visits += 1
+            n.total_value += v
+            v = -v
+            n = n.parent
+
+
+# =============================================================================
+# Batched MCTS search
+# =============================================================================
+
+
+def mcts_search_batched(
+    root_state: PenguinChessCore,
+    model: Any = None,
+    num_simulations: int = 800,
+    c_puct: float = 1.4,
+    temperature: float = 1.0,
+    evaluate_fn: Optional[Callable] = None,
+    batch_size: int = 32,
+) -> Tuple[Dict[int, int], MCTSNode]:
+    """
+    MCTS search with **batched neural-network evaluation**.
+
+    Instead of calling ``evaluate_fn`` once per leaf (which incurs CPU↔GPU
+    transfer overhead), this version collects multiple leaf states and
+    evaluates them together in a single forward pass every ``batch_size``
+    simulations.
+
+    Parameters
+    ----------
+    root_state : PenguinChessCore
+        The starting game state.  **Not** modified.
+    model :
+        Either an ``AlphaZeroNet`` (or any object with ``.evaluate_batch()``),
+        or a callable that acts as ``batch_eval_fn`` — see below.
+    num_simulations : int
+        Total number of MCTS simulations to run (default 800).
+    c_puct : float
+        Exploration constant in the PUCT formula (default 1.4).
+    temperature : float
+        Temperature for the final action sampling (default 1.0).
+    evaluate_fn : callable or None
+        **Batch-capable** evaluate function with the signature:
+
+        ``evaluate_fn(states: list[PenguinChessCore]) -> (logits, values)``
+
+        where ``logits`` is ``ndarray (B, 60)`` and ``values`` is
+        ``ndarray (B,)``.  Takes priority over ``model``.
+
+        The passed function **must** support batch — it receives a list of
+        states, not a single state.  For single-state evaluation use
+        ``mcts_search`` instead.
+    batch_size : int
+        Maximum number of leaf states collected before a batch evaluation is
+        triggered (default 32).  Larger values give better GPU utilisation but
+        may slightly alter the search tree since backups are delayed.
+
+    Returns
+    -------
+    action_counts : dict[int, int]
+        ``{action: visit_count}`` at the root node.
+    root : MCTSNode
+        The root node (useful for debugging / inspection).
+    """
+    # ---- resolve batch_eval_fn ----
+    if evaluate_fn is not None:
+        batch_eval_fn = evaluate_fn
+    elif callable(model):
+        batch_eval_fn = model
+    elif model is not None and hasattr(model, "evaluate_batch"):
+        batch_eval_fn = model.evaluate_batch  # type: ignore[union-attr]
+    else:
+        # Nothing batch-capable → fall back to sequential MCTS
+        return mcts_search(
+            root_state,
+            model=model,
+            num_simulations=num_simulations,
+            c_puct=c_puct,
+            temperature=temperature,
+            evaluate_fn=evaluate_fn,
+        )
+
+    # Fast snapshot for simulation engine
+    root_snapshot = root_state.get_snapshot()
+    sim_state = copy.deepcopy(root_state)
+
+    root = MCTSNode(state=sim_state, parent=None, action=None, prior=0.0)
+    pending: List[Tuple[MCTSNode, List[int]]] = []
+
+    for _ in range(num_simulations):
+        node = root
+        sim_state.restore_snapshot(root_snapshot)
+
+        # ----- SELECT -----
+        while node.expanded():
+            action = max(
+                node.children, key=lambda a: node.children[a].ucb_score(c_puct)
+            )
+            child = node.children[action]
+            _, _, terminated, _ = sim_state.step(action)
+            node = child
+            if terminated:
+                break
+
+        # ----- Check termination / collect for batch -----
+        terminated = sim_state._terminated
+        legal = sim_state.get_legal_actions()
+
+        if terminated:
+            value = _terminal_value(sim_state)
+        elif not legal:
+            value = 0.0
+        else:
+            pending.append((node, legal))
+            value = None  # will be set during batch eval
+
+        if terminated or not legal:
+            # BACKUP immediately (cheap — no NN call needed)
+            while node is not None:
+                node.visits += 1
+                node.total_value += value
+                value = -value
+                node = node.parent
+
+        # Flush pending when batch is full
+        if len(pending) >= batch_size:
+            _evaluate_and_expand_batch(pending, batch_eval_fn)
+            pending.clear()
+
+    # ---- flush remaining pending nodes ----
+    if pending:
+        _evaluate_and_expand_batch(pending, batch_eval_fn)
+        pending.clear()
+
+    # ---- build result ----
+    action_counts = {}
+    for action, child in root.children.items():
+        action_counts[action] = child.visits
+    if not action_counts:
+        legal = root_state.get_legal_actions()
+        for a in legal:
+            action_counts[a] = 1
+    return action_counts, root
+
+
+# =============================================================================
+# Root-parallelised MCTS search
+# =============================================================================
+
+
+def mcts_search_parallel(
+    root_state: PenguinChessCore,
+    model: Any = None,
+    num_simulations: int = 800,
+    c_puct: float = 1.4,
+    temperature: float = 1.0,
+    evaluate_fn: Optional[Callable] = None,
+    num_workers: int = 4,
+    batch_size: int = 32,
+    use_batched: bool = True,
+) -> Tuple[Dict[int, int], None]:
+    """
+    Root-parallelised MCTS via **ensemble averaging**.
+
+    Runs ``num_workers`` independent MCTS searches (each with
+    ``num_simulations // num_workers`` simulations) and merges their root
+    visit counts.  Extremely effective because different random seeds explore
+    different parts of the tree.
+
+    Parameters
+    ----------
+    root_state : PenguinChessCore
+        Starting game state (not modified).
+    model :
+        Model or evaluate function passed to each worker.
+    num_simulations : int
+        Total simulations across all workers (default 800).
+    c_puct : float
+        Exploration constant.
+    temperature : float
+        Temperature for final action selection.
+    evaluate_fn : callable or None
+        Evaluate function (single-state; passed to workers).
+    num_workers : int
+        Number of independent searches to run (default 4).
+        Each worker gets ``num_simulations // num_workers`` simulations.
+    batch_size : int
+        Batch size for batched workers (default 32).
+    use_batched : bool
+        If ``True`` (default), uses ``mcts_search_batched`` for each worker.
+        If ``False``, uses the original ``mcts_search``.
+
+    Returns
+    -------
+    merged_counts : dict[int, int]
+        Merged visit counts from all workers.
+    root : None
+        ``None`` because there is no single root tree.
+    """
+    sims_per_worker = max(1, num_simulations // num_workers)
+
+    merged_counts: Dict[int, int] = {}
+
+    for w in range(num_workers):
+        if use_batched:
+            counts, _ = mcts_search_batched(
+                root_state,
+                model=model,
+                num_simulations=sims_per_worker,
+                c_puct=c_puct,
+                temperature=temperature,
+                evaluate_fn=evaluate_fn,
+                batch_size=batch_size,
+            )
+        else:
+            counts, _ = mcts_search(
+                root_state,
+                model=model,
+                num_simulations=sims_per_worker,
+                c_puct=c_puct,
+                temperature=temperature,
+                evaluate_fn=evaluate_fn,
+            )
+        for action, count in counts.items():
+            merged_counts[action] = merged_counts.get(action, 0) + count
+
+    return merged_counts, None
+
+
+# =============================================================================
 # Convenience: select action from visit counts
 # =============================================================================
 
