@@ -104,6 +104,19 @@ def _core_to_rust_json(core) -> str:
 
 
 # =============================================================================
+# 观测编码工具（无快照 → 存 flat obs，训练时零 CPU 解码）
+# =============================================================================
+
+def _encode_flat_obs(core) -> np.ndarray:
+    """将核心状态编码为 206-dim float32 数组。"""
+    obs = core.get_observation()
+    board = np.array(obs["board"], dtype=np.float32).flatten()
+    pieces = np.array(obs["pieces"], dtype=np.float32).flatten()
+    meta = np.array([float(obs["current_player"]), float(obs["phase"])], dtype=np.float32)
+    return np.concatenate([board, pieces, meta]).astype(np.float32)
+
+
+# =============================================================================
 # 自对弈数据收集
 # =============================================================================
 
@@ -144,7 +157,7 @@ def self_play_game(
                 model=net,
                 num_simulations=num_simulations,
                 c_puct=3.0,
-                batch_size=128,
+                batch_size=256,
             )
             counts = {int(k): v for k, v in raw_counts.items()}
         else:
@@ -166,7 +179,9 @@ def self_play_game(
                 policy[a] = 1.0 if c == best_cnt else 0.0
         policy /= policy.sum()
 
-        game_data.append((core.get_snapshot(), policy, core.current_player))
+        # 存 flat obs 替代 snapshot（训练时零 CPU 解码）
+        flat_obs = _encode_flat_obs(core)
+        game_data.append((flat_obs, policy, core.current_player))
 
         action = select_action(counts, temperature=t)
 
@@ -176,12 +191,12 @@ def self_play_game(
 
     winner = _get_winner(core)
     result = []
-    for snap, policy, cp in game_data:
+    for flat_obs, policy, cp in game_data:
         if winner == 2:
             value = 0.0
         else:
             value = 1.0 if cp == winner else -1.0
-        result.append((snap, policy, value))
+        result.append((flat_obs, policy, value))
 
     return result, winner
 
@@ -253,7 +268,7 @@ def _evaluate_models(
                     model=current_net,
                     num_simulations=num_simulations,
                     c_puct=3.0,
-                    batch_size=128,
+                    batch_size=256,
                 )
                 counts = {int(k): v for k, v in raw_counts.items()}
             else:
@@ -289,6 +304,94 @@ def _evaluate_models(
 
 
 # =============================================================================
+# 资源监控器
+# =============================================================================
+
+class ResourceMonitor:
+    """轻量级 CPU/GPU/RAM 监控，每 5 迭代刷新一次 nvidia-smi。"""
+
+    def __init__(self):
+        self._peak_gpu_util = 0
+        self._peak_gpu_mem = 0
+        self._peak_ram = 0
+        self._peak_cpu = 0
+        self._counter = 0
+        self._gpu_name = ""
+        self._gpu_total_mem = 0
+        try:
+            import torch
+            if torch.cuda.is_available():
+                self._gpu_name = torch.cuda.get_device_name(0)
+                self._gpu_total_mem = torch.cuda.get_device_properties(0).total_memory // (1024**2)
+        except Exception:
+            pass
+        # 首次调用采集基线
+        self._sample()
+
+    def _sample(self):
+        """采集当前资源数据。"""
+        import psutil, torch
+        # CPU
+        self._cpu = psutil.cpu_percent(interval=0)
+        # RAM
+        mem = psutil.virtual_memory()
+        self._ram_used = mem.used / (1024**3)
+        self._ram_total = mem.total / (1024**3)
+        self._ram_percent = mem.percent
+        self._peak_cpu = max(self._peak_cpu, self._cpu)
+        self._peak_ram = max(self._peak_ram, self._ram_used)
+        # GPU
+        if torch.cuda.is_available():
+            self._gpu_mem = torch.cuda.memory_allocated(0) // (1024**2)
+            self._peak_gpu_mem = max(self._peak_gpu_mem, self._gpu_mem)
+            # GPU 利用率每 5 次采一次（nvidia-smi 调用较慢）
+            if self._counter % 5 == 0:
+                try:
+                    import subprocess
+                    r = subprocess.run(
+                        ["nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"],
+                        capture_output=True, text=True, timeout=2,
+                    )
+                    self._gpu_util = int(r.stdout.strip())
+                    self._peak_gpu_util = max(self._peak_gpu_util, self._gpu_util)
+                except Exception:
+                    self._gpu_util = 0
+
+    def summary_line(self) -> str:
+        """单行资源摘要。"""
+        self._counter += 1
+        self._sample()
+        parts = []
+        if self._gpu_name:
+            parts.append(f"GPU {self._gpu_util}% {self._gpu_mem}/{self._gpu_total_mem}MB")
+        parts.append(f"CPU {self._cpu}% RAM {self._ram_used:.1f}GB")
+        return " | ".join(parts)
+
+    def header(self, config_str: str) -> str:
+        """起始总览。"""
+        lines = []
+        lines.append("=" * 65)
+        lines.append(" PenguinChess AlphaZero 训练")
+        lines.append("=" * 65)
+        if self._gpu_name:
+            lines.append(f" GPU:    {self._gpu_name}")
+        lines.extend(config_str.split("\n"))
+        lines.append("-" * 65)
+        return "\n".join(lines)
+
+    def footer(self, elapsed: float) -> str:
+        """结束时峰值总结。"""
+        lines = []
+        lines.append("=" * 65)
+        lines.append(f" 训练完成! 总耗时 {elapsed//60:.0f}m{elapsed%60:.0f}s")
+        if self._gpu_name:
+            lines.append(f" GPU 峰值: {self._peak_gpu_util}% | {self._peak_gpu_mem}/{self._gpu_total_mem} MB")
+        lines.append(f" CPU 峰值: {self._peak_cpu}% | RAM 峰值: {self._peak_ram:.1f}GB")
+        lines.append("=" * 65)
+        return "\n".join(lines)
+
+
+# =============================================================================
 # 训练循环
 # =============================================================================
 
@@ -307,21 +410,20 @@ def train_alphazero(
     """AlphaZero 自对弈训练主循环。"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     is_gpu = torch.cuda.is_available()
-    if is_gpu:
-        gpu_name = torch.cuda.get_device_name(0)
-        print(f"设备: {device} ({gpu_name})")
-    else:
-        print(f"设备: {device}")
 
-    # 预估每迭代时间（基于实际测速 ~110000 sim/s on GPU）
-    est_game_s = max(1, games_per_iter * num_simulations * 14 / 110000)
-    est_iter_s = est_game_s + 5
-    est_total_s = est_iter_s * num_iterations
-    print(f"配置: games={games_per_iter}, sims={num_simulations}, "
-          f"eval_sims={eval_simulations}, eval_interval={eval_interval}")
-    print(f"预估: 每迭代 ~{est_iter_s:.0f}s, 总计 ~{est_total_s//60:.0f}m{est_total_s%60:.0f}s")
-    print(f"      (自对弈 ~{est_game_s:.0f}s + 训练 ~5s) × {num_iterations} 迭代")
-    print()
+    # 初始化资源监控
+    monitor = ResourceMonitor()
+
+    # 配置摘要
+    config_lines = [
+        f" 网络:    AlphaZeroResNet",
+        f" 设备:    {str(device).upper()}",
+        f" 配置:    games={games_per_iter}, sims={num_simulations}",
+        f"          eval_sims={eval_simulations}, eval_interval={eval_interval}",
+        f"          batch_size={batch_size}, lr={lr}",
+    ]
+
+    print(monitor.header("\n".join(config_lines)))
 
     # 使用 ResNet 架构；续训时自动检测旧模型架构
     if resume and os.path.exists(resume):
@@ -329,11 +431,13 @@ def train_alphazero(
         NetClass = detect_net_arch(state)
         net = NetClass().to(device)
         net.load_state_dict(state)
-        print(f"续训练模型: {resume} ({NetClass.__name__})")
+        print(f" 续训: {resume} ({NetClass.__name__})")
     else:
         net = AlphaZeroResNet().to(device)
         if resume:
-            print(f"模型文件不存在: {resume}")
+            print(f" 模型不存在: {resume}")
+        else:
+            print(f" 新网络: AlphaZeroResNet ({sum(p.numel() for p in net.parameters()):,} 参数)")
 
     optimizer = optim.Adam(net.parameters(), lr=lr, weight_decay=l2_reg)
 
@@ -341,14 +445,25 @@ def train_alphazero(
     best_state = copy.deepcopy(net.state_dict())
     best_iter = 0
     best_win_rate = 0.0
-    print(f"初始 best = iter_{best_iter}（训练起点）")
+    print(f" 初始 best = iter_{best_iter}")
     _start_time = time.time()
 
+    # AMP (Automatic Mixed Precision)
+    use_amp = is_gpu
+    if use_amp:
+        scaler = torch.amp.GradScaler("cuda")
+        print(f" AMP:    fp16 mixed precision 启用")
+
+    # 表头
+    iter_avg_time = 0.0
+    print(f"\n{'迭代':>6}  │ 对弈   训练   总耗时   Loss     P-Loss   V-Loss   资源")
+    print("-" * 65)
+
     data_buffer = []
-    MAX_BUFFER = 100000  # 增大经验池支持更多数据
+    MAX_BUFFER = 100000
 
     for iteration in range(1, num_iterations + 1):
-        print(f"\n=== 迭代 {iteration}/{num_iterations} ===")
+        iter_start = time.time()
 
         # ----- 自对弈 -----
         t0 = time.time()
@@ -360,16 +475,14 @@ def train_alphazero(
             game_results.append(winner)
 
         t1 = time.time()
+        game_time = t1 - t0
         win_rate = game_results.count(0) / len(game_results)
         draw_rate = game_results.count(2) / len(game_results)
-        print(f"对弈: {games_per_iter}局 ({t1-t0:.0f}s)  P1胜: {win_rate:.0%}  平: {draw_rate:.0%}")
-        print(f"  平均步数: {sum(len(g)//3 for g in [iter_data])/len(game_results):.0f}")
 
         # 加入经验池
         data_buffer.extend(iter_data)
         if len(data_buffer) > MAX_BUFFER:
             data_buffer = data_buffer[-MAX_BUFFER:]
-        print(f"  经验池: {len(data_buffer)} 条")
 
         # ----- 训练 -----
         t2 = time.time()
@@ -381,53 +494,68 @@ def train_alphazero(
 
         for _ in range(num_batches):
             batch = np.random.choice(len(data_buffer), min(batch_size, len(data_buffer)), replace=False)
-            snapshots = [data_buffer[i][0] for i in batch]
-            policy_targets = [data_buffer[i][1] for i in batch]
-            value_targets = [data_buffer[i][2] for i in batch]
+            # flat obs already pre-encoded — zero CPU decode needed
+            obs_batch = np.array([data_buffer[i][0] for i in batch], dtype=np.float32)
+            policy_targets = np.array([data_buffer[i][1] for i in batch], dtype=np.float32)
+            value_targets = np.array([data_buffer[i][2] for i in batch], dtype=np.float32)
 
-            obs_batch = []
-            for snap in snapshots:
-                core = PenguinChessCore()
-                core.reset(seed=None)
-                core.restore_snapshot(snap)
-                obs = core.get_observation()
-                board = np.array(obs["board"], dtype=np.float32).flatten()
-                pieces = np.array(obs["pieces"], dtype=np.float32).flatten()
-                meta = np.array([float(obs["current_player"]), float(obs["phase"])], dtype=np.float32)
-                flat = np.concatenate([board, pieces, meta])
-                obs_batch.append(flat)
-
-            obs_tensor = torch.from_numpy(np.array(obs_batch, dtype=np.float32)).to(device)
-            policy_tensor = torch.from_numpy(np.array(policy_targets, dtype=np.float32)).to(device)
-            value_tensor = torch.from_numpy(np.array(value_targets, dtype=np.float32)).to(device)
+            obs_tensor = torch.from_numpy(obs_batch).to(device, non_blocking=True)
+            policy_tensor = torch.from_numpy(policy_targets).to(device, non_blocking=True)
+            value_tensor = torch.from_numpy(value_targets).to(device, non_blocking=True)
 
             optimizer.zero_grad()
-            policy_logits, values = net(obs_tensor)
-            policy_loss = F.cross_entropy(policy_logits, policy_tensor)
-            value_loss = F.mse_loss(values.squeeze(-1), value_tensor)
-            loss = policy_loss + value_loss
-            loss.backward()
-            optimizer.step()
+            if use_amp:
+                with torch.amp.autocast("cuda"):
+                    policy_logits, values = net(obs_tensor)
+                    policy_loss = F.cross_entropy(policy_logits, policy_tensor)
+                    value_loss = F.mse_loss(values.squeeze(-1), value_tensor)
+                    loss = policy_loss + value_loss
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                policy_logits, values = net(obs_tensor)
+                policy_loss = F.cross_entropy(policy_logits, policy_tensor)
+                value_loss = F.mse_loss(values.squeeze(-1), value_tensor)
+                loss = policy_loss + value_loss
+                loss.backward()
+                optimizer.step()
             total_loss += loss.item()
             total_policy_loss += policy_loss.item()
             total_value_loss += value_loss.item()
 
         t3 = time.time()
-        print(f"训练: {num_batches} batches ({t3-t2:.0f}s)  "
-              f"Loss={total_loss/num_batches:.4f}  "
-              f"P={total_policy_loss/num_batches:.4f}  "
-              f"V={total_value_loss/num_batches:.4f}")
+        train_time = t3 - t2
+        iter_elapsed = time.time() - iter_start
+        total_elapsed = time.time() - _start_time
+
+        # 更新 ETA
+        if iteration <= 3:
+            iter_avg_time = iter_elapsed
+        else:
+            iter_avg_time = iter_avg_time * 0.8 + iter_elapsed * 0.2
+        eta_remaining = (num_iterations - iteration) * iter_avg_time
+
+        avg_loss = total_loss / max(1, num_batches)
+        avg_p = total_policy_loss / max(1, num_batches)
+        avg_v = total_value_loss / max(1, num_batches)
+
+        # 单行迭代摘要
+        res_str = monitor.summary_line()
+        print(f"  {iteration:>3d}/{num_iterations:<3d}  │ "
+              f"{game_time:>4.0f}s {train_time:>4.0f}s "
+              f"{total_elapsed:>5.0f}s  "
+              f"{avg_loss:.4f} {avg_p:.4f} {avg_v:.4f}  │ {res_str}")
 
         # ----- 定期保存迭代模型 -----
         if iteration % 10 == 0:
             path = str(ALPHAZERO_DIR / f"alphazero_iter_{iteration}.pth")
             torch.save(net.state_dict(), path)
-            print(f"模型已保存: {path}")
 
         # ----- 评估 vs best_net -----
         if iteration % eval_interval == 0:
             t4 = time.time()
-            print(f"  评估: current vs best (iter_{best_iter}) "
+            print(f"  ├─ 评估 vs best(iter_{best_iter}) "
                   f"({eval_games}局, {eval_simulations} sims)...", end=" ", flush=True)
 
             # 构建 best_net 副本（CPU 评估）
@@ -471,16 +599,14 @@ def train_alphazero(
                 except Exception:
                     pass
             else:
-                print(f"  保持当前 best (iter_{best_iter}, 胜率 {best_win_rate:.1%})")
+                print(f"  保持当前 best (iter_{best_iter}, {best_win_rate:.1%})")
 
     # ----- 训练结束：保存最终模型 -----
     final_path = str(ALPHAZERO_DIR / "alphazero_final.pth")
     torch.save(net.state_dict(), final_path)
     _elapsed = time.time() - _start_time
-    print(f"\n训练结束! 最终 best = iter_{best_iter} (胜率 {best_win_rate:.1%})")
-    print(f"  总耗时: {_elapsed//60:.0f}m{_elapsed%60:.0f}s")
-    print(f"  每迭代平均: {_elapsed/num_iterations:.0f}s")
-    print(f"  best 模型: {ALPHAZERO_DIR / 'alphazero_best.pth'}")
+    print(f"\n{monitor.footer(_elapsed)}")
+    print(f"  best 模型: {ALPHAZERO_DIR / 'alphazero_best.pth'} (iter_{best_iter}, 胜率 {best_win_rate:.1%})")
     print(f"  最终模型: {final_path}")
 
 
