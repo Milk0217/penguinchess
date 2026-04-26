@@ -264,3 +264,144 @@ class AlphaZeroNet(nn.Module):
         """Load model weights from ``path``."""
         self.load_state_dict(torch.load(path, map_location="cpu"))
         self.eval()
+
+
+# =============================================================================
+# ResNet-style network (with residual connections)
+# =============================================================================
+
+class AlphaZeroResNet(nn.Module):
+    """
+    ResNet-style MLP with a residual skip connection around the middle layer.
+
+    Architecture:
+        Input(206) → FC(512) → BN → ReLU
+            → FC(512) → BN → ReLU → + identity (residual)
+            → FC(256) → BN → ReLU
+        ├── Policy head: FC(256 → 60) → logits
+        └── Value head:  FC(256 → 128) → ReLU → FC(128 → 1) → tanh
+
+    The residual connection improves gradient flow and allows training
+    deeper networks without vanishing/exploding gradients.
+    """
+
+    def __init__(self, obs_dim: int = 206, action_dim: int = 60):
+        super().__init__()
+        self.obs_dim = obs_dim
+        self.action_dim = action_dim
+
+        # ----- shared trunk with residual -----
+        self.fc1 = nn.Linear(obs_dim, 512)
+        self.bn1 = nn.BatchNorm1d(512)
+        self.fc2 = nn.Linear(512, 512)
+        self.bn2 = nn.BatchNorm1d(512)
+        self.fc3 = nn.Linear(512, 256)
+        self.bn3 = nn.BatchNorm1d(256)
+
+        # ----- policy head -----
+        self.policy_fc = nn.Linear(256, action_dim)
+
+        # ----- value head -----
+        self.value_fc1 = nn.Linear(256, 128)
+        self.value_fc2 = nn.Linear(128, 1)
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        # Shared trunk
+        x = F.relu(self.bn1(self.fc1(x)))       # (B, 512)
+        identity = x
+        x = F.relu(self.bn2(self.fc2(x)))       # (B, 512)
+        x = x + identity                         # residual connection
+        x = F.relu(self.bn3(self.fc3(x)))       # (B, 256)
+
+        # Policy head
+        policy_logits = self.policy_fc(x)        # (B, 60)
+
+        # Value head
+        v = F.relu(self.value_fc1(x))
+        value = torch.tanh(self.value_fc2(v))    # (B, 1)
+
+        return policy_logits, value
+
+    # ------------------------------------------------------------------
+    # Inference (identical to AlphaZeroNet)
+    # ------------------------------------------------------------------
+
+    @torch.no_grad()
+    def evaluate(self, state) -> tuple[np.ndarray, float]:
+        """Single-state evaluation. Same interface as AlphaZeroNet.evaluate."""
+        self.eval()
+        obs = state.get_observation()
+        board = np.array(obs["board"], dtype=np.float32).flatten()
+        pieces = np.array(obs["pieces"], dtype=np.float32).flatten()
+        meta = np.array([float(obs["current_player"]), float(obs["phase"])], dtype=np.float32)
+        flat = np.concatenate([board, pieces, meta]).astype(np.float32)
+        device = next(self.parameters()).device
+        x = torch.as_tensor(flat, dtype=torch.float32).unsqueeze(0).to(device)
+        logits, val_t = self.forward(x)
+        logits_np = logits[0].cpu().numpy().astype(np.float64)
+        value = float(val_t[0, 0].cpu().numpy())
+        legal = state.get_legal_actions()
+        mask = np.zeros(self.action_dim, dtype=bool)
+        mask[legal] = True
+        masked_logits = np.where(mask, logits_np, -1e9)
+        probs = self._stable_softmax(masked_logits).astype(np.float32)
+        if probs.sum() < 1e-8:
+            probs[:] = 0.0
+            if legal:
+                probs[legal] = 1.0 / len(legal)
+        elif abs(probs.sum() - 1.0) > 1e-6:
+            probs = probs / probs.sum()
+        return probs, value
+
+    @torch.no_grad()
+    def evaluate_batch(self, states: list) -> tuple[np.ndarray, np.ndarray]:
+        """Batch inference. Same interface as AlphaZeroNet.evaluate_batch."""
+        self.eval()
+        device = next(self.parameters()).device
+        obs_list = []
+        for state in states:
+            obs = state.get_observation()
+            board = np.array(obs["board"], dtype=np.float32).flatten()
+            pieces = np.array(obs["pieces"], dtype=np.float32).flatten()
+            meta = np.array([float(obs["current_player"]), float(obs["phase"])], dtype=np.float32)
+            obs_list.append(np.concatenate([board, pieces, meta]))
+        batch = np.array(obs_list, dtype=np.float32)
+        x = torch.from_numpy(batch).to(device)
+        logits, val_t = self.forward(x)
+        return logits.cpu().numpy().astype(np.float32), val_t.cpu().numpy().flatten().astype(np.float32)
+
+    @torch.no_grad()
+    def evaluate_flat_batch(self, batch: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Pre-built flat observation batch. Same interface as AlphaZeroNet.evaluate_flat_batch."""
+        self.eval()
+        device = next(self.parameters()).device
+        x = torch.from_numpy(batch).to(device)
+        logits, val_t = self.forward(x)
+        return logits.cpu().numpy().astype(np.float64), val_t.cpu().numpy().flatten().astype(np.float64)
+
+    @staticmethod
+    def _stable_softmax(x: np.ndarray) -> np.ndarray:
+        x_max = np.max(x)
+        e_x = np.exp(x - x_max)
+        return e_x / (e_x.sum() + 1e-30)
+
+    def save(self, path: str) -> None:
+        torch.save(self.state_dict(), path)
+
+    def load(self, path: str) -> None:
+        self.load_state_dict(torch.load(path, map_location="cpu"))
+        self.eval()
+
+
+# =============================================================================
+# Architecture detection helper
+# =============================================================================
+
+def detect_net_arch(state_dict) -> type:
+    """
+    Detect whether a state dict is from AlphaZeroNet or AlphaZeroResNet.
+    ResNet has `fc3.*` keys that AlphaZeroNet doesn't.
+    """
+    if any(k.startswith("fc3.") for k in state_dict.keys()):
+        return AlphaZeroResNet
+    return AlphaZeroNet

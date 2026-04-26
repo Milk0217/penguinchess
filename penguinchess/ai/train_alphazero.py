@@ -40,7 +40,7 @@ import torch.optim as optim
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from penguinchess.core import PenguinChessCore
 from penguinchess.ai.mcts_core import mcts_search, mcts_search_batched, select_action
-from penguinchess.ai.alphazero_net import AlphaZeroNet
+from penguinchess.ai.alphazero_net import AlphaZeroNet, AlphaZeroResNet, detect_net_arch
 
 MODELS_DIR = Path(__file__).parent.parent.parent / "models"
 ALPHAZERO_DIR = MODELS_DIR / "alphazero"
@@ -143,7 +143,7 @@ def self_play_game(
                 state_json,
                 model=net,
                 num_simulations=num_simulations,
-                c_puct=1.4,
+                c_puct=3.0,
                 batch_size=128,
             )
             counts = {int(k): v for k, v in raw_counts.items()}
@@ -252,7 +252,7 @@ def _evaluate_models(
                     state_json,
                     model=current_net,
                     num_simulations=num_simulations,
-                    c_puct=1.4,
+                    c_puct=3.0,
                     batch_size=128,
                 )
                 counts = {int(k): v for k, v in raw_counts.items()}
@@ -323,15 +323,16 @@ def train_alphazero(
     print(f"      (自对弈 ~{est_game_s:.0f}s + 训练 ~5s) × {num_iterations} 迭代")
     print()
 
-    net = AlphaZeroNet().to(device)
-
-    # 加载已有模型（续训）
-    if resume:
-        if os.path.exists(resume):
-            state = torch.load(resume, map_location=device, weights_only=True)
-            net.load_state_dict(state)
-            print(f"续训练模型: {resume}")
-        else:
+    # 使用 ResNet 架构；续训时自动检测旧模型架构
+    if resume and os.path.exists(resume):
+        state = torch.load(resume, map_location=device, weights_only=True)
+        NetClass = detect_net_arch(state)
+        net = NetClass().to(device)
+        net.load_state_dict(state)
+        print(f"续训练模型: {resume} ({NetClass.__name__})")
+    else:
+        net = AlphaZeroResNet().to(device)
+        if resume:
             print(f"模型文件不存在: {resume}")
 
     optimizer = optim.Adam(net.parameters(), lr=lr, weight_decay=l2_reg)
@@ -430,12 +431,16 @@ def train_alphazero(
                   f"({eval_games}局, {eval_simulations} sims)...", end=" ", flush=True)
 
             # 构建 best_net 副本（CPU 评估）
-            best_net = AlphaZeroNet().to("cpu")
+            # 自动检测 best_net 和 current_net 的架构
+            BestClass = detect_net_arch(best_state)
+            best_net = BestClass().to("cpu")
             best_net.load_state_dict(best_state)
             best_net.eval()
 
-            net_cpu = AlphaZeroNet().to("cpu")
-            net_cpu.load_state_dict(net.state_dict())
+            current_state = net.state_dict()
+            CurrClass = detect_net_arch(current_state)
+            net_cpu = CurrClass().to("cpu")
+            net_cpu.load_state_dict(current_state)
             net_cpu.eval()
 
             wr = _evaluate_models(net_cpu, best_net,
@@ -455,9 +460,11 @@ def train_alphazero(
                 # 注册到 Model Registry
                 try:
                     from penguinchess.model_registry import register_model, update_evaluation
-                    register_model("alphazero_best", "alphazero",
-                                   "alphazero/alphazero_best.pth", iteration=iteration)
-                    update_evaluation("alphazero_best", {
+                    prefix = "az_resnet" if isinstance(net, AlphaZeroResNet) else "alphazero"
+                    model_id = f"{prefix}_best"
+                    register_model(model_id, "alphazero",
+                                   f"{prefix}/{prefix}_best.pth", iteration=iteration)
+                    update_evaluation(model_id, {
                         "elo": round(1200 + (wr - 0.5) * 400, 1),
                         "vs_best_prev": {"win": wr, "lose": 1 - wr, "draw": 0.0},
                     })

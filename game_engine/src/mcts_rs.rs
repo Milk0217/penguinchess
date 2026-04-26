@@ -1,11 +1,15 @@
-/// Rust MCTS 搜索 — 使用 float 观测数组替代 JSON，消除序列化开销
+/// Rust MCTS 搜索 — 根节点 Dirichlet 噪声 + float 观测数组零拷贝
 use std::collections::HashMap;
 use std::os::raw::c_char;
+use rand::Rng;
+use rand_distr::{Dirichlet, Distribution};
 use crate::board::*;
 use crate::rules::*;
 
-/// 新回调：接收 (obs_ptr, batch_size, output_ptr, output_capacity) — 纯 float，零拷贝
 type EvalFn = extern "C" fn(*const f32, i32, *mut f32, i32) -> i32;
+
+const DIRICHLET_ALPHA: f64 = 0.15;
+const DIRICHLET_EPS: f64 = 0.25;
 
 struct MCTSNode {
     visits: u32,
@@ -69,6 +73,17 @@ fn obs_dim() -> usize { 206 }
 fn out_dim() -> usize { 61 }  // 60 logits + 1 value
 
 // =============================================================================
+// Dirichlet noise sampler
+// =============================================================================
+
+fn sample_dirichlet(alpha: f64, n: usize) -> Vec<f64> {
+    let alphas = vec![alpha; n];
+    let d = Dirichlet::new(&alphas).unwrap();
+    let mut rng = rand::thread_rng();
+    d.sample(&mut rng)
+}
+
+// =============================================================================
 // Softmax + mask helper
 // =============================================================================
 
@@ -115,11 +130,36 @@ pub unsafe extern "C" fn mcts_search_rust(
 
     let mut root = MCTSNode::new(0.0);
     let bs = batch_size.max(1) as usize;
+
+    // ----- Pre-expand root with Dirichlet noise -----
+    let mut root_obs = Vec::with_capacity(obs_dim());
+    encode_obs(&root_state, &mut root_obs);
+    let legal_root = root_state.get_legal_actions();
+
+    if legal_root.is_empty() {
+        write_output(output_buf, output_size, "{}");
+        return 0;
+    }
+
+    if let Some(f) = eval_fn {
+        let mut root_out = vec![0.0f32; out_dim()];
+        unsafe { f(root_obs.as_ptr(), 1, root_out.as_mut_ptr(), root_out.len() as i32); }
+        let policy = masked_softmax(&root_out[..60], &legal_root);
+        let noise = sample_dirichlet(DIRICHLET_ALPHA, 60);
+        for &a in &legal_root {
+            let noisy_prior = (1.0 - DIRICHLET_EPS) * policy[a] + DIRICHLET_EPS * noise[a];
+            root.children.insert(a, MCTSNode::new(noisy_prior));
+        }
+    } else {
+        let uniform = 1.0 / legal_root.len() as f64;
+        for &a in &legal_root {
+            root.children.insert(a, MCTSNode::new(uniform));
+        }
+    }
+
     let mut pending_states: Vec<GameState> = vec![];
     let mut pending_legal: Vec<Vec<usize>> = vec![];
     let mut pending_paths: Vec<Vec<usize>> = vec![];
-
-    // Pre-allocate obs/output buffers (reused across flushes)
     let mut obs_buf: Vec<f32> = Vec::with_capacity(bs * obs_dim());
     let mut out_buf: Vec<f32> = Vec::with_capacity(bs * out_dim());
 
@@ -136,9 +176,13 @@ pub unsafe extern "C" fn mcts_search_rust(
             };
             let best = {
                 let n = node_by_path(&mut root, &path);
-                n.children.iter().max_by(|a, b| {
-                    a.1.ucb(parent_visits, c_puct).partial_cmp(&b.1.ucb(parent_visits, c_puct)).unwrap()
-                }).map(|(a, _)| *a).unwrap()
+                // Random tiebreak: if multiple children have same UCB (e.g. all INF),
+                // pick one uniformly at random instead of always the first
+                let mut rng = rand::thread_rng();
+                n.children.iter()
+                    .map(|(a, child)| (a, child.ucb(parent_visits, c_puct) + rng.gen::<f64>() * 1e-12))
+                    .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+                    .map(|(a, _)| *a).unwrap()
             };
             state.step(best);
             path.push(best);

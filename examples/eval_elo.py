@@ -136,7 +136,7 @@ class AlphaZeroAgent(Agent):
 class MCTSAgent(Agent):
     """Rust MCTS Agent (uniform prior) — 使用 mcts_search_rust 进行树搜索。需要 --rust-core 支持。"""
 
-    def __init__(self, num_simulations: int = 800, c_puct: float = 1.4, batch_size: int = 32):
+    def __init__(self, num_simulations: int = 800, c_puct: float = 3.0, batch_size: int = 32):
         self._num_simulations = num_simulations
         self._c_puct = c_puct
         self._batch_size = batch_size
@@ -160,7 +160,7 @@ class MCTSAgent(Agent):
 class AlphaZeroMCTSAgent(Agent):
     """Rust MCTS + AlphaZeroNet — 神经网络引导 Rust MCTS 搜索。需要 --rust-core。"""
 
-    def __init__(self, net, num_simulations: int = 800, c_puct: float = 1.4, batch_size: int = 32):
+    def __init__(self, net, num_simulations: int = 800, c_puct: float = 3.0, batch_size: int = 32):
         self._net = net
         self._num_simulations = num_simulations
         self._c_puct = c_puct
@@ -320,9 +320,10 @@ def load_agent(info: dict, use_mcts=False, mcts_simulations=800, deterministic=T
     if info["type"] == "alphazero" and use_mcts:
         # AlphaZero + Rust MCTS: load neural net, guide Rust MCTS search
         import torch
-        from penguinchess.ai.alphazero_net import AlphaZeroNet
-        net = AlphaZeroNet()
+        from penguinchess.ai.alphazero_net import AlphaZeroNet, AlphaZeroResNet, detect_net_arch
         state = torch.load(info["path"], map_location="cpu", weights_only=True)
+        NetClass = detect_net_arch(state)
+        net = NetClass()
         net.load_state_dict(state)
         net.eval()
         return AlphaZeroMCTSAgent(net, num_simulations=mcts_simulations)
@@ -336,9 +337,10 @@ def load_agent(info: dict, use_mcts=False, mcts_simulations=800, deterministic=T
         return PPOAgent(model, deterministic=deterministic)
     else:
         import torch
-        from penguinchess.ai.alphazero_net import AlphaZeroNet
-        net = AlphaZeroNet()
+        from penguinchess.ai.alphazero_net import AlphaZeroNet, AlphaZeroResNet, detect_net_arch
         state = torch.load(info["path"], map_location="cpu", weights_only=True)
+        NetClass = detect_net_arch(state)
+        net = NetClass()
         net.load_state_dict(state)
         net.eval()
         return AlphaZeroAgent(net)
