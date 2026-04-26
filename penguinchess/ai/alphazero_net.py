@@ -221,6 +221,27 @@ class AlphaZeroNet(nn.Module):
         return logits_np, values_np
 
     # ------------------------------------------------------------------
+    # Flat batch inference (for Rust bridge)
+    # ------------------------------------------------------------------
+
+    @torch.no_grad()
+    def evaluate_flat_batch(
+        self,
+        batch: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Evaluate a pre-built batch of flat observations (B, 206).
+
+        Used by the Rust MCTS bridge where observations are built
+        from Rust-serialized GameState JSON.
+        """
+        self.eval()
+        device = next(self.parameters()).device
+        x = torch.from_numpy(batch).to(device)
+        logits, val_t = self.forward(x)
+        return logits.cpu().numpy().astype(np.float64), val_t.cpu().numpy().flatten().astype(np.float64)
+
+    # ------------------------------------------------------------------
     # Static helpers
     # ------------------------------------------------------------------
 
