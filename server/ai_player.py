@@ -1,5 +1,6 @@
 """
-AI 对战模块 — 加载训练好的 PPO 模型并执行决策。
+AI 对战模块 — 支持 PPO (Stable-Baselines3) 和 AlphaZero 两种模型。
+自动加载最强的可用模型。
 """
 from __future__ import annotations
 
@@ -8,66 +9,101 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
-from stable_baselines3 import PPO
 
 from penguinchess.core import PenguinChessCore
 
 MODELS_DIR = Path(__file__).parent.parent / "models"
 
 
-def _find_best_gen() -> Optional[Path]:
-    """找"最强"的 gen 模型（取最高 generation 编号）。"""
-    gens = sorted(MODELS_DIR.glob("ppo_penguinchess_gen_*.zip"))
-    if gens:
-        # 取最后一个（编号最大）
-        return gens[-1]
-    # 回退到 best 目录
-    best = MODELS_DIR / "best" / "best_model.zip"
-    if best.exists():
-        return best
-    return None
+def _find_best_model() -> Optional[tuple[str, str]]:
+    """
+    在所有可用模型中找最强的。
+    比较 PPO gen_N 和 AlphaZero iter_N，取编号最大的。
+
+    Returns:
+        (model_path, model_type) where model_type is "ppo" or "alphazero"
+    """
+    best = None
+    best_priority = -1
+
+    # PPO models: ppo_penguinchess_gen_N.zip
+    for p in sorted(MODELS_DIR.glob("ppo_penguinchess_gen_*.zip")):
+        try:
+            n = int(p.stem.split("_gen_")[1])
+            if n > best_priority:
+                best = (str(p), "ppo")
+                best_priority = n
+        except (IndexError, ValueError):
+            pass
+
+    # AlphaZero models: alphazero/alphazero_iter_N.pth
+    for p in sorted((MODELS_DIR / "alphazero").glob("alphazero_iter_*.pth")):
+        try:
+            n = int(p.stem.split("_iter_")[1])
+            if n > best_priority:
+                best = (str(p), "alphazero")
+                best_priority = n
+        except (IndexError, ValueError):
+            pass
+
+    # Fallback to best directory
+    if best is None:
+        best_zip = MODELS_DIR / "best" / "best_model.zip"
+        if best_zip.exists():
+            best = (str(best_zip), "ppo")
+
+    return best
 
 
 class AIPlayer:
-    """AI 玩家，加载 PPO 模型并做出决策。"""
+    """AI 玩家，支持 PPO 和 AlphaZero 两种模型。"""
 
     def __init__(self, player_index: int = 1, model_path: Optional[str] = None):
-        """
-        Args:
-            player_index: AI 控制的玩家索引（0=P1, 1=P2）
-            model_path: 模型文件路径，为 None 时自动寻找最佳模型
-        """
         self.player_index = player_index
-        self._model: Optional[PPO] = None
+        self._model = None
+        self._model_type: Optional[str] = None
 
         if model_path is None:
-            # 优先加载最强一代（ELO 最高的）
-            best_gen = _find_best_gen()
-            if best_gen:
-                model_path = str(best_gen)
-                print(f"[AI] Auto-selected best gen: {best_gen.name}")
-            else:
-                # 回退到 checkpoint
-                checkpoints = sorted(MODELS_DIR.glob("ppo_penguinchess_*.zip"))
-                if checkpoints:
-                    model_path = str(checkpoints[-1])
+            found = _find_best_model()
+            if found:
+                model_path, self._model_type = found
+                print(f"[AI] Auto-selected: {Path(model_path).name} ({self._model_type})")
+        else:
+            self._model_type = "alphazero" if model_path.endswith(".pth") else "ppo"
 
         if model_path and os.path.exists(model_path):
-            self._model = PPO.load(model_path)
-            print(f"[AI] Loaded model: {model_path}")
+            self._load(model_path)
         else:
-            print(f"[AI] No model found at {model_path}, AI disabled")
+            print(f"[AI] No model found, AI disabled")
+
+    def _load(self, path: str):
+        """加载模型（PPO 用 SB3，AlphaZero 用 PyTorch）。"""
+        if self._model_type == "ppo":
+            try:
+                from stable_baselines3 import PPO
+                self._model = PPO.load(path)
+                print(f"[AI] Loaded PPO model: {path}")
+            except Exception as e:
+                print(f"[AI] Failed to load PPO model: {e}")
+                self._model = None
+        elif self._model_type == "alphazero":
+            try:
+                import torch
+                from penguinchess.ai.alphazero_net import AlphaZeroNet
+                net = AlphaZeroNet()
+                state = torch.load(path, map_location="cpu", weights_only=True)
+                net.load_state_dict(state)
+                net.eval()
+                self._model = net
+                print(f"[AI] Loaded AlphaZero model: {path}")
+            except Exception as e:
+                print(f"[AI] Failed to load AlphaZero model: {e}")
+                self._model = None
 
     def is_ready(self) -> bool:
         return self._model is not None
 
     def select_action(self, core: PenguinChessCore) -> Optional[int]:
-        """
-        根据当前游戏状态选择一个合法动作。
-
-        Returns:
-            action (hex index) 或 None（无合法动作）
-        """
         if self._model is None:
             return None
 
@@ -75,28 +111,29 @@ class AIPlayer:
         if not legal:
             return None
 
-        # 构建观测
+        if self._model_type == "ppo":
+            return self._select_action_ppo(core, legal)
+        else:
+            return self._select_action_az(core, legal)
+
+    def _select_action_ppo(self, core: PenguinChessCore, legal: list) -> Optional[int]:
+        """PPO 推理：直接 predict 选动作。"""
         obs = core.get_observation()
-        flat_obs = _encode_flat_obs(obs)
-
-        # 模型推理
-        action_arr, _ = self._model.predict(flat_obs, deterministic=True)
+        flat = _encode_flat_obs(obs)
+        action_arr, _ = self._model.predict(flat, deterministic=True)
         action = int(action_arr.item()) if hasattr(action_arr, 'item') else int(action_arr)
+        return action if action in legal else int(np.random.choice(legal))
 
-        # 确保动作合法
-        if action in legal:
-            return action
-
-        # 非法动作时回退到随机选择
-        return int(np.random.choice(legal))
+    def _select_action_az(self, core: PenguinChessCore, legal: list) -> Optional[int]:
+        """AlphaZero 推理：用策略网络选概率最高的合法动作。"""
+        probs, value = self._model.evaluate(core)
+        action = int(legal[np.argmax(probs[legal])])
+        return action
 
 
 def _encode_flat_obs(obs: dict) -> np.ndarray:
-    """将观测字典编码为扁平向量（与训练时一致）。"""
-    board = obs["board"]
-    pieces = obs["pieces"]
-
-    board_flat = np.array(board, dtype=np.float32).flatten()
-    pieces_flat = np.array(pieces, dtype=np.float32).flatten()
+    """将观测字典编码为扁平向量。"""
+    board = np.array(obs["board"], dtype=np.float32).flatten()
+    pieces = np.array(obs["pieces"], dtype=np.float32).flatten()
     meta = np.array([float(obs["current_player"]), float(obs["phase"])], dtype=np.float32)
-    return np.concatenate([board_flat, pieces_flat, meta]).reshape(1, -1)
+    return np.concatenate([board, pieces, meta]).reshape(1, -1)

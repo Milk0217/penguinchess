@@ -424,7 +424,23 @@ cd frontend && bun run dev
 # 浏览器 → 点击 👤 vs 🤖 → 新游戏 → 对战
 ```
 
-前端 AI 自动加载最强一代模型（最新 `gen_N`）。
+前端 AI 自动加载最强一代模型（PPO 取最新 `gen_N`，AlphaZero 取最新 `iter_N`，比较两者编号选择更强的）。
+
+### 5.4 续训练
+
+PPO 续训练：
+```bash
+uv run python examples/train_ppo.py --resume models/ppo_penguinchess_gen_10.zip --timesteps 100000
+```
+
+AlphaZero 续训练：
+```bash
+uv run python penguinchess/ai/train_alphazero.py \
+    --resume models/alphazero/alphazero_iter_10.pth \
+    --iterations 30 --games 50 --simulations 200
+```
+
+两个训练脚本都支持 `--resume` 参数加载已有模型继续训练，保留已学到的策略参数。
 
 ### 5.2 Self-Play 训练
 
