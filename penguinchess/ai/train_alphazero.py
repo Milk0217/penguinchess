@@ -28,9 +28,10 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from penguinchess.core import PenguinChessCore
-from penguinchess.ai.mcts_core import mcts_search, mcts_search_batched, select_action
+from penguinchess.ai.mcts_core import select_action
 from penguinchess.ai.alphazero_net import AlphaZeroNet, AlphaZeroResNet, detect_net_arch
+from penguinchess.rust_core import RustCore
+from penguinchess.rust_ffi import get_engine, mcts_search_rust_handle
 from penguinchess._compat import ensure_utf8_stdout
 from penguinchess.training_status import update_status as _update_ts, clear_status as _clear_ts
 ensure_utf8_stdout()
@@ -40,60 +41,6 @@ ALPHAZERO_DIR = MODELS_DIR / "alphazero"
 ALPHAZERO_DIR.mkdir(exist_ok=True)
 DATA_DIR = MODELS_DIR / "alphazero_data"
 DATA_DIR.mkdir(exist_ok=True)
-
-
-# =============================================================================
-# Python → Rust JSON 状态转换（用于 Rust MCTS）
-# =============================================================================
-
-def _core_to_rust_json(core) -> str:
-    """
-    将 PenguinChessCore 状态转换为 Rust GameState JSON 字符串。
-    供 mcts_search_rust 使用。
-    """
-    import json
-
-    cells = []
-    for idx, h in enumerate(core.hexes):
-        state_map = {
-            "active": "active", "occupied": "occupied",
-            "used": "used", "eliminated": "eliminated",
-        }
-        pts = h.points if h.state in ("active", "occupied") else 0
-        cells.append({
-            "coord": {"q": h.q, "r": h.r, "s": h.s},
-            "state": state_map.get(h.state, "eliminated"),
-            "points": pts,
-        })
-
-    pieces = []
-    for p in core.pieces:
-        hex_idx = None
-        hex_val = 0
-        if p.hex:
-            hex_idx = core._hex_map.get((p.hex.q, p.hex.r, p.hex.s))
-            hex_val = p.hex.points
-        pieces.append({
-            "id": p.id,
-            "alive": p.alive,
-            "hex_idx": hex_idx,
-            "hex_value": hex_val,
-        })
-
-    phase_str = "placement" if core.phase == core.PHASE_PLACEMENT else "movement"
-
-    state = {
-        "board": {"cells": cells},
-        "pieces": pieces,
-        "scores": list(core.players_scores),
-        "current_player": core.current_player,
-        "phase": phase_str,
-        "terminated": core._terminated,
-        "episode_steps": core._episode_steps,
-        "placement_count": sum(1 for p in core.pieces if p.hex is not None),
-    }
-
-    return json.dumps(state)
 
 
 # =============================================================================
@@ -121,74 +68,42 @@ def self_play_game(
     parallel_workers: int = 1,
 ) -> list:
     """
-    使用神经网络 + MCTS 进行一次自对弈。
-    parallel_workers > 1 时启用根并行 MCTS（集成平均，提升探索质量）。
+    使用 RustCore + 句柄式 MCTS 进行一次自对弈。
+    全程无 JSON 序列化，Python 只做观测编码和策略构建。
     """
-    core = PenguinChessCore()
-    core.reset(seed=None)
-    game_data = []
+    from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
+    import random
 
-    # 检测 Rust MCTS 是否可用
-    _use_rust_mcts = False
-    try:
-        from penguinchess.rust_ffi import mcts_search_rust, get_engine
-        get_engine()
-        _use_rust_mcts = True
-    except Exception:
-        pass
+    engine = get_engine()
+    seed = random.randint(0, 2**31 - 1)
+    core = RustCore(engine=engine, seed=seed).reset(seed=seed)
+    game_data = []
 
     for step in range(500):
         t = temperature if step < temp_threshold else 0.1
 
-        if _use_rust_mcts:
-            # === Rust MCTS（根并行 + 线程级并行，JSON 只序列化一次）===
-            from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
+        n_workers = max(1, parallel_workers)
+        sims_per = max(1, num_simulations // n_workers)
+        bs = min(256, max(32, sims_per // 4))
+        all_counts = {}
 
-            n_workers = max(1, parallel_workers)
-            sims_per = max(1, num_simulations // n_workers)
-            bs = min(256, max(32, sims_per // 4))
+        def _run_worker(_handle, _net, _sims, _bs):
+            raw = mcts_search_rust_handle(
+                _handle, model=_net,
+                num_simulations=_sims,
+                c_puct=3.0, batch_size=_bs,
+            )
+            return raw
 
-            # 只序列化一次，所有 worker 共享同一份 JSON
-            state_json = _core_to_rust_json(core)
-            all_counts = {}
+        with ThreadPoolExecutor(max_workers=n_workers) as _pool:
+            _futs = {_pool.submit(_run_worker, core.handle, net, sims_per, bs): _ for _ in range(n_workers)}
+            for _f in _as_completed(_futs):
+                raw = _f.result()
+                for _k, _v in raw.items():
+                    key = int(_k)
+                    all_counts[key] = all_counts.get(key, 0) + _v
 
-            def _run_worker(_json, _net, _sims, _bs):
-                raw = mcts_search_rust(
-                    _json, model=_net,
-                    num_simulations=_sims,
-                    c_puct=3.0, batch_size=_bs,
-                )
-                return raw
-
-            with ThreadPoolExecutor(max_workers=n_workers) as _pool:
-                _futs = {_pool.submit(_run_worker, state_json, net, sims_per, bs): _ for _ in range(n_workers)}
-                for _f in _as_completed(_futs):
-                    raw = _f.result()
-                    for _k, _v in raw.items():
-                        key = int(_k)
-                        all_counts[key] = all_counts.get(key, 0) + _v
-
-            counts = all_counts
-        else:
-            # === Python MCTS（支持根并行）===
-            if parallel_workers > 1:
-                from penguinchess.ai.mcts_core import mcts_search_parallel
-                counts, _ = mcts_search_parallel(
-                    core, model=None,
-                    num_simulations=num_simulations,
-                    temperature=t,
-                    evaluate_fn=net.evaluate_batch,
-                    num_workers=parallel_workers,
-                    batch_size=128,
-                    training=True,
-                )
-            else:
-                counts, root = mcts_search_batched(
-                    core, model=None, num_simulations=num_simulations,
-                    temperature=t, evaluate_fn=net.evaluate_batch,
-                    batch_size=128,
-                    training=True,
-                )
+        counts = all_counts
 
         total = sum(counts.values())
         policy = np.zeros(60, dtype=np.float32)
@@ -201,13 +116,11 @@ def self_play_game(
                 policy[a] = 1.0 if c == best_cnt else 0.0
         policy /= policy.sum()
 
-        # 存 flat obs 替代 snapshot（训练时零 CPU 解码）
         flat_obs = _encode_flat_obs(core)
         game_data.append((flat_obs, policy, core.current_player))
 
         action = select_action(counts, temperature=t)
-
-        obs, reward, terminated, info = core.step(action)
+        _, _, terminated, _ = core.step(action)
         if terminated:
             break
 
@@ -220,10 +133,11 @@ def self_play_game(
             value = 1.0 if cp == winner else -1.0
         result.append((flat_obs, policy, value))
 
+    core.close()
     return result, winner
 
 
-def _get_winner(core: PenguinChessCore) -> int:
+def _get_winner(core) -> int:
     """0=P1, 1=P2, 2=Draw."""
     s0, s1 = core.players_scores
     if s0 > s1:
@@ -256,24 +170,15 @@ def _evaluate_models(
     net_a.eval()
     net_b.eval()
 
-    # Try to use Rust MCTS for speed; fall back to Python MCTS
-    _use_rust_mcts = False
-    try:
-        from penguinchess.rust_ffi import mcts_search_rust, get_engine
-        from penguinchess.rust_core import RustCore
-        _engine = get_engine()
-        _use_rust_mcts = True
-    except Exception:
-        pass
+    # 使用 RustCore + 句柄式 MCTS（无 JSON 序列化）
+    from penguinchess.rust_ffi import mcts_search_rust_handle, get_engine
+    from penguinchess.rust_core import RustCore
+    _engine = get_engine()
 
     a_wins = b_wins = draws = 0
 
     for ep in range(num_games):
-        if _use_rust_mcts:
-            core = RustCore(engine=_engine).reset(ep)
-        else:
-            core = PenguinChessCore(seed=ep)
-            core.reset()
+        core = RustCore(engine=_engine).reset(ep)
 
         terminated = False
         current_net = net_a  # P1 uses net_a
@@ -283,30 +188,24 @@ def _evaluate_models(
             if not legal:
                 break
 
-            if _use_rust_mcts:
-                # Rust MCTS (根并行集成平均)
-                n_workers = max(1, parallel_workers)
-                sims_per = max(1, num_simulations // n_workers)
-                all_c = {}
-                bs = min(256, max(32, sims_per // 4))
-                for w in range(n_workers):
-                    state_json = core.to_json()
-                    raw = mcts_search_rust(
-                        state_json, model=current_net,
-                        num_simulations=sims_per,
-                        c_puct=3.0, batch_size=bs,
-                    )
-                    for k, v in raw.items():
-                        key = int(k)
-                        all_c[key] = all_c.get(key, 0) + v
-                counts = all_c
-            else:
-                # Python MCTS (fallback)
-                counts, _ = mcts_search_batched(
-                    core, model=None, num_simulations=num_simulations,
-                    temperature=0.1, evaluate_fn=current_net.evaluate_batch,
-                    batch_size=32,
-                )
+            # Rust MCTS（句柄式，根并行，线程级并行）
+            n_workers = max(1, parallel_workers)
+            sims_per = max(1, num_simulations // n_workers)
+            all_c = {}
+            bs = min(256, max(32, sims_per // 4))
+            from concurrent.futures import ThreadPoolExecutor, as_completed as _ac2
+
+            def _eval_worker(_hdl, _net, _sims, _bs):
+                return mcts_search_rust_handle(_hdl, model=_net, num_simulations=_sims, c_puct=3.0, batch_size=_bs)
+
+            with ThreadPoolExecutor(max_workers=n_workers) as _pl2:
+                _fs2 = {_pl2.submit(_eval_worker, core.handle, current_net, sims_per, bs): _ for _ in range(n_workers)}
+                for _f2 in _ac2(_fs2):
+                    raw = _f2.result()
+                    for _k, _v in raw.items():
+                        key = int(_k)
+                        all_c[key] = all_c.get(key, 0) + _v
+            counts = all_c
 
             if not counts:
                 break
@@ -430,11 +329,12 @@ def train_alphazero(
     eval_simulations: int = 800,
     eval_interval: int = 10,
     eval_games: int = 200,
-    batch_size: int = 256,
+    batch_size: int = 512,
     lr: float = 1e-3,
     l2_reg: float = 1e-4,
     resume: str | None = None,
-    parallel_workers: int = 4,
+    parallel_workers: int = 8,
+    game_workers: int = 2,
     auto_eval: bool = False,
     auto_eval_episodes: int = 200,
 ):
@@ -450,7 +350,7 @@ def train_alphazero(
     config_lines = [
         f" 网络:    AlphaZeroResNet",
         f" 设备:    {str(device).upper()}",
-        f" 配置:    games={games_per_iter}, sims={num_simulations}×{parallel_workers}并行={total_sims}总",
+        f" 配置:    games={games_per_iter}×{game_workers}并行, sims={num_simulations}×{parallel_workers}={total_sims}总",
         f"          eval_sims={eval_simulations}, eval_interval={eval_interval}",
         f"          batch_size={batch_size}, lr={lr}",
     ]
@@ -509,17 +409,23 @@ def train_alphazero(
     for iteration in range(1, num_iterations + 1):
         iter_start = time.time()
 
-        # ----- 自对弈 -----
+        # ----- 自对弈（游戏级并行） -----
         t0 = time.time()
         iter_data = []
         game_results = []
-        for g in range(games_per_iter):
-            game_data, winner = self_play_game(
-                net, num_simulations=num_simulations,
-                parallel_workers=parallel_workers,
-            )
-            iter_data.extend(game_data)
-            game_results.append(winner)
+        from concurrent.futures import ThreadPoolExecutor, as_completed as _ac_games
+        with ThreadPoolExecutor(max_workers=game_workers) as _pool_games:
+            _futs_games = {
+                _pool_games.submit(
+                    self_play_game, net,
+                    num_simulations=num_simulations,
+                    parallel_workers=parallel_workers,
+                ): _ for _ in range(games_per_iter)
+            }
+            for _f_g in _ac_games(_futs_games):
+                game_data, winner = _f_g.result()
+                iter_data.extend(game_data)
+                game_results.append(winner)
 
         t1 = time.time()
         game_time = t1 - t0
@@ -749,10 +655,12 @@ if __name__ == "__main__":
                         help="评估间隔迭代数（默认 10）")
     parser.add_argument("--eval-games", type=int, default=200,
                         help="评估局数（默认 200）")
-    parser.add_argument("--batch-size", type=int, default=256, help="训练批次大小")
+    parser.add_argument("--batch-size", type=int, default=512, help="训练批次大小（默认 512）")
     parser.add_argument("--lr", type=float, default=1e-3, help="学习率")
-    parser.add_argument("--parallel-workers", type=int, default=4,
-                        help="根并行 MCTS workers（默认 4，每个 worker 获得 simulations/workers 次模拟）")
+    parser.add_argument("--parallel-workers", type=int, default=8,
+                        help="根并行 MCTS workers（默认 8，每个 worker 获得 simulations/workers 次模拟）")
+    parser.add_argument("--game-workers", type=int, default=2,
+                        help="并行对局 workers（默认 2）")
     parser.add_argument("--resume", type=str, default=None, help="续训练模型路径")
     parser.add_argument("--auto-eval", action="store_true",
                         help="训练完成后自动执行 ELO 评估")
@@ -771,6 +679,7 @@ if __name__ == "__main__":
         lr=args.lr,
         resume=args.resume,
         parallel_workers=args.parallel_workers,
+        game_workers=args.game_workers,
         auto_eval=args.auto_eval,
         auto_eval_episodes=args.auto_eval_episodes,
     )
