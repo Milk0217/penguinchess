@@ -79,50 +79,54 @@ def self_play_game(
     core = RustCore(engine=engine, seed=seed).reset(seed=seed)
     game_data = []
 
-    for step in range(500):
-        t = temperature if step < temp_threshold else 0.1
+    n_workers = max(1, parallel_workers)
+    sims_per = max(1, num_simulations // n_workers)
+    bs = min(256, max(32, sims_per // 4))
 
-        n_workers = max(1, parallel_workers)
-        sims_per = max(1, num_simulations // n_workers)
-        bs = min(256, max(32, sims_per // 4))
-        all_counts = {}
+    def _run_worker(_handle, _net, _sims, _bs):
+        raw = mcts_search_rust_handle(
+            _handle, model=_net,
+            num_simulations=_sims,
+            c_puct=3.0, batch_size=_bs,
+        )
+        return raw
 
-        def _run_worker(_handle, _net, _sims, _bs):
-            raw = mcts_search_rust_handle(
-                _handle, model=_net,
-                num_simulations=_sims,
-                c_puct=3.0, batch_size=_bs,
-            )
-            return raw
+    # MCTS 线程池复用（不每步新建）
+    mcts_pool = ThreadPoolExecutor(max_workers=n_workers)
+    try:
+        for step in range(500):
+            t = temperature if step < temp_threshold else 0.1
+            all_counts = {}
 
-        with ThreadPoolExecutor(max_workers=n_workers) as _pool:
-            _futs = {_pool.submit(_run_worker, core.handle, net, sims_per, bs): _ for _ in range(n_workers)}
+            _futs = {mcts_pool.submit(_run_worker, core.handle, net, sims_per, bs): _ for _ in range(n_workers)}
             for _f in _as_completed(_futs):
                 raw = _f.result()
                 for _k, _v in raw.items():
                     key = int(_k)
                     all_counts[key] = all_counts.get(key, 0) + _v
 
-        counts = all_counts
+            counts = all_counts
 
-        total = sum(counts.values())
-        policy = np.zeros(60, dtype=np.float32)
-        if t > 0:
-            for a, c in counts.items():
-                policy[a] = c ** (1.0 / t)
-        else:
-            best_cnt = max(counts.values())
-            for a, c in counts.items():
-                policy[a] = 1.0 if c == best_cnt else 0.0
-        policy /= policy.sum()
+            total = sum(counts.values())
+            policy = np.zeros(60, dtype=np.float32)
+            if t > 0:
+                for a, c in counts.items():
+                    policy[a] = c ** (1.0 / t)
+            else:
+                best_cnt = max(counts.values())
+                for a, c in counts.items():
+                    policy[a] = 1.0 if c == best_cnt else 0.0
+            policy /= policy.sum()
 
-        flat_obs = _encode_flat_obs(core)
-        game_data.append((flat_obs, policy, core.current_player))
+            flat_obs = _encode_flat_obs(core)
+            game_data.append((flat_obs, policy, core.current_player))
 
-        action = select_action(counts, temperature=t)
-        _, _, terminated, _ = core.step(action)
-        if terminated:
-            break
+            action = select_action(counts, temperature=t)
+            _, _, terminated, _ = core.step(action)
+            if terminated:
+                break
+    finally:
+        mcts_pool.shutdown()
 
     winner = _get_winner(core)
     result = []
@@ -171,11 +175,21 @@ def _evaluate_models(
     net_b.eval()
 
     # 使用 RustCore + 句柄式 MCTS（无 JSON 序列化）
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     from penguinchess.rust_ffi import mcts_search_rust_handle, get_engine
     from penguinchess.rust_core import RustCore
     _engine = get_engine()
 
     a_wins = b_wins = draws = 0
+
+    n_workers = max(1, parallel_workers)
+    sims_per = max(1, num_simulations // n_workers)
+    bs = min(256, max(32, sims_per // 4))
+
+    def _eval_worker(_hdl, _net, _sims, _bs):
+        return mcts_search_rust_handle(_hdl, model=_net, num_simulations=_sims, c_puct=3.0, batch_size=_bs)
+
+    eval_pool = ThreadPoolExecutor(max_workers=n_workers)
 
     for ep in range(num_games):
         core = RustCore(engine=_engine).reset(ep)
@@ -188,23 +202,14 @@ def _evaluate_models(
             if not legal:
                 break
 
-            # Rust MCTS（句柄式，根并行，线程级并行）
-            n_workers = max(1, parallel_workers)
-            sims_per = max(1, num_simulations // n_workers)
             all_c = {}
-            bs = min(256, max(32, sims_per // 4))
-            from concurrent.futures import ThreadPoolExecutor, as_completed as _ac2
 
-            def _eval_worker(_hdl, _net, _sims, _bs):
-                return mcts_search_rust_handle(_hdl, model=_net, num_simulations=_sims, c_puct=3.0, batch_size=_bs)
-
-            with ThreadPoolExecutor(max_workers=n_workers) as _pl2:
-                _fs2 = {_pl2.submit(_eval_worker, core.handle, current_net, sims_per, bs): _ for _ in range(n_workers)}
-                for _f2 in _ac2(_fs2):
-                    raw = _f2.result()
-                    for _k, _v in raw.items():
-                        key = int(_k)
-                        all_c[key] = all_c.get(key, 0) + _v
+            _fs2 = {eval_pool.submit(_eval_worker, core.handle, current_net, sims_per, bs): _ for _ in range(n_workers)}
+            for _f2 in as_completed(_fs2):
+                raw = _f2.result()
+                for _k, _v in raw.items():
+                    key = int(_k)
+                    all_c[key] = all_c.get(key, 0) + _v
             counts = all_c
 
             if not counts:
@@ -224,6 +229,7 @@ def _evaluate_models(
         else:
             draws += 1
 
+    eval_pool.shutdown()
     if hasattr(core, 'close'):
         core.close()
 
@@ -327,14 +333,14 @@ def train_alphazero(
     games_per_iter: int = 200,
     num_simulations: int = 200,
     eval_simulations: int = 800,
-    eval_interval: int = 10,
+    eval_interval: int = 1,
     eval_games: int = 200,
     batch_size: int = 512,
     lr: float = 1e-3,
     l2_reg: float = 1e-4,
     resume: str | None = None,
     parallel_workers: int = 8,
-    game_workers: int = 2,
+    game_workers: int = 4,
     auto_eval: bool = False,
     auto_eval_episodes: int = 200,
 ):
@@ -660,8 +666,8 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=1e-3, help="学习率")
     parser.add_argument("--parallel-workers", type=int, default=8,
                         help="根并行 MCTS workers（默认 8，每个 worker 获得 simulations/workers 次模拟）")
-    parser.add_argument("--game-workers", type=int, default=2,
-                        help="并行对局 workers（默认 2）")
+    parser.add_argument("--game-workers", type=int, default=4,
+                        help="并行对局 workers（默认 4）")
     parser.add_argument("--resume", type=str, default=None, help="续训练模型路径")
     parser.add_argument("--auto-eval", action="store_true",
                         help="训练完成后自动执行 ELO 评估")
