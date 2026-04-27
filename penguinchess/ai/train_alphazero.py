@@ -326,7 +326,7 @@ def _evaluate_models(
 # =============================================================================
 
 class ResourceMonitor:
-    """轻量级 CPU/GPU/RAM 监控，每 5 迭代刷新一次 nvidia-smi。"""
+    """进程级资源监控 —— 只统计当前训练进程的 CPU/RAM/GPU 消耗。"""
 
     def __init__(self):
         self._peak_gpu_util = 0
@@ -336,6 +336,10 @@ class ResourceMonitor:
         self._counter = 0
         self._gpu_name = ""
         self._gpu_total_mem = 0
+        self._proc = None
+        import psutil
+        self._proc = psutil.Process()
+        self._cpu_count = psutil.cpu_count()
         try:
             import torch
             if torch.cuda.is_available():
@@ -347,42 +351,37 @@ class ResourceMonitor:
         self._sample()
 
     def _sample(self):
-        """采集当前资源数据。"""
+        """采集当前进程的资源数据。"""
         import psutil, torch
-        # CPU
-        self._cpu = psutil.cpu_percent(interval=0)
-        # RAM
-        mem = psutil.virtual_memory()
-        self._ram_used = mem.used / (1024**3)
-        self._ram_total = mem.total / (1024**3)
-        self._ram_percent = mem.percent
+        # CPU —— 只统计本进程，归一化到全核百分比
+        try:
+            # cpu_percent() 返回的是跨所有核的累计值（如 4核满=400%）
+            # 归一化到 0~100% 范围
+            proc_cpu = self._proc.cpu_percent(interval=0)
+            self._cpu = proc_cpu / self._cpu_count if self._cpu_count > 0 else proc_cpu
+        except Exception:
+            self._cpu = 0.0
+        # RAM —— 只统计本进程的 RSS（物理内存）
+        try:
+            mem_info = self._proc.memory_info()
+            self._ram_used = mem_info.rss / (1024**3)
+        except Exception:
+            self._ram_used = 0.0
         self._peak_cpu = max(self._peak_cpu, self._cpu)
         self._peak_ram = max(self._peak_ram, self._ram_used)
-        # GPU
+        # GPU memory —— torch 统计的是本进程的显存，正确
         if torch.cuda.is_available():
             self._gpu_mem = torch.cuda.memory_allocated(0) // (1024**2)
             self._peak_gpu_mem = max(self._peak_gpu_mem, self._gpu_mem)
-            # GPU 利用率每 5 次采一次（nvidia-smi 调用较慢）
-            if self._counter % 5 == 0:
-                try:
-                    import subprocess
-                    r = subprocess.run(
-                        ["nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"],
-                        capture_output=True, text=True, timeout=2,
-                    )
-                    self._gpu_util = int(r.stdout.strip())
-                    self._peak_gpu_util = max(self._peak_gpu_util, self._gpu_util)
-                except Exception:
-                    self._gpu_util = 0
 
     def summary_line(self) -> str:
-        """单行资源摘要。"""
+        """单行资源摘要（仅本进程消耗）。"""
         self._counter += 1
         self._sample()
         parts = []
         if self._gpu_name:
-            parts.append(f"GPU {self._gpu_util}% {self._gpu_mem}/{self._gpu_total_mem}MB")
-        parts.append(f"CPU {self._cpu}% RAM {self._ram_used:.1f}GB")
+            parts.append(f"GPU {self._gpu_mem}/{self._gpu_total_mem}MB")
+        parts.append(f"CPU {self._cpu:.1f}% RAM {self._ram_used:.1f}GB")
         return " | ".join(parts)
 
     def header(self, config_str: str) -> str:
@@ -398,13 +397,13 @@ class ResourceMonitor:
         return "\n".join(lines)
 
     def footer(self, elapsed: float) -> str:
-        """结束时峰值总结。"""
+        """结束时峰值总结（仅本进程峰值）。"""
         lines = []
         lines.append("=" * 65)
         lines.append(f" 训练完成! 总耗时 {elapsed//60:.0f}m{elapsed%60:.0f}s")
         if self._gpu_name:
-            lines.append(f" GPU 峰值: {self._peak_gpu_util}% | {self._peak_gpu_mem}/{self._gpu_total_mem} MB")
-        lines.append(f" CPU 峰值: {self._peak_cpu}% | RAM 峰值: {self._peak_ram:.1f}GB")
+            lines.append(f" GPU 峰值: {self._peak_gpu_mem}/{self._gpu_total_mem} MB")
+        lines.append(f" CPU 峰值: {self._peak_cpu:.1f}% | RAM 峰值: {self._peak_ram:.1f}GB")
         lines.append("=" * 65)
         return "\n".join(lines)
 
