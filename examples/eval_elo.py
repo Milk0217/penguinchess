@@ -71,9 +71,10 @@ def _detect_az_arch(pth_path: str) -> str:
     """从文件名或 state_dict 检测 AZ 模型架构，返回 'resnet' / 'mlp' / 'legacy'。"""
     stem = Path(pth_path).stem
     parts = stem.split("_")
-    # 新命名: alphazero_resnet_iter_10, alphazero_mlp_best
-    if len(parts) >= 3 and parts[2] in ("resnet", "mlp"):
-        return parts[2]
+    # 新命名: alphazero_resnet_iter_10（parts[1]=arch）, alphazero_mlp_best
+    # 格式: ["alphazero", arch, ...]
+    if len(parts) >= 3 and parts[1] in ("resnet", "mlp"):
+        return parts[1]
     # 旧命名: alphazero_iter_10 → 加载 state_dict 检测
     try:
         import torch
@@ -105,10 +106,10 @@ def discover_models() -> list[dict]:
             parts = stem.split("_")
             arch = _detect_az_arch(str(p))
 
-            if len(parts) >= 4 and parts[2] in ("resnet", "mlp") and parts[3] == "iter":
-                # 新命名: alphazero_{arch}_iter_N.pth
+            # 新命名: alphazero_{arch}_iter_N.pth → parts = ["alphazero", arch, "iter", N]
+            if len(parts) >= 4 and parts[1] in ("resnet", "mlp") and parts[2] == "iter":
                 try:
-                    n = int(parts[4])
+                    n = int(parts[3])
                 except (IndexError, ValueError):
                     continue
                 mid = f"az_{arch}_iter_{n}"
@@ -117,8 +118,19 @@ def discover_models() -> list[dict]:
                     "file": f"alphazero/{stem}.pth",
                     "gen": None, "iter": n, "path": str(p),
                 })
+            # 新命名: alphazero_{arch}_best.pth / alphazero_{arch}_final.pth
+            elif len(parts) >= 3 and parts[1] in ("resnet", "mlp") and parts[2] in ("best", "final"):
+                suffix = parts[2]  # "best" or "final"
+                mid = f"az_{arch}_{suffix}"
+                if not any(m["id"] == mid for m in models):
+                    models.append({
+                        "id": mid, "type": "alphazero", "arch": arch,
+                        "file": f"alphazero/{stem}.pth",
+                        "gen": None, "iter": 999 if suffix == "best" else None,
+                        "path": str(p),
+                    })
+            # 旧命名: alphazero_iter_N.pth → parts = ["alphazero", "iter", N]
             elif len(parts) >= 3 and parts[1] == "iter":
-                # 旧命名: alphazero_iter_N.pth
                 try:
                     n = int(parts[2])
                 except (IndexError, ValueError):
@@ -128,12 +140,11 @@ def discover_models() -> list[dict]:
                     "file": f"alphazero/{stem}.pth",
                     "gen": None, "iter": n, "path": str(p),
                 })
-            elif stem in ("alphazero_best", "alphazero_mlp_best", "alphazero_resnet_best"):
-                arch_tag = parts[2] if len(parts) >= 3 and parts[2] in ("mlp", "resnet") else arch
-                mid = f"az_{arch_tag}_best" if arch_tag not in ("old", "legacy") else "az_best"
-                if not any(m["id"] == mid for m in models):
+            # 旧命名: alphazero_best.pth
+            elif stem == "alphazero_best":
+                if not any(m["id"] == "az_best" for m in models):
                     models.append({
-                        "id": mid, "type": "alphazero", "arch": arch,
+                        "id": "az_best", "type": "alphazero", "arch": arch,
                         "file": f"alphazero/{stem}.pth",
                         "gen": None, "iter": 999,
                         "path": str(p),

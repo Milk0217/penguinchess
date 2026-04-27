@@ -8,14 +8,44 @@
       "created_at": "2026-04-26T07:12:06Z",
       "generation": 1,
       "eval": {
-        "elo": 1210.1,
+        "elo": 1230.5,
         "vs_random": {
-          "win": 0.51,
-          "lose": 0.475,
-          "draw": 0.015
+          "win": 0.57,
+          "lose": 0.4,
+          "draw": 0.03
         }
       },
-      "evaluated_at": "2026-04-26T13:24:11Z"
+      "evaluated_at": "2026-04-27T07:06:50Z",
+      "elo_history": [
+        {
+          "elo": 1214.6,
+          "timestamp": "2026-04-27T07:04:24Z"
+        },
+        {
+          "elo": 1214.6,
+          "timestamp": "2026-04-27T07:04:29Z"
+        },
+        {
+          "elo": 1222.8,
+          "timestamp": "2026-04-27T07:06:35Z"
+        },
+        {
+          "elo": 1221.2,
+          "timestamp": "2026-04-27T07:06:39Z"
+        },
+        {
+          "elo": 1224.7,
+          "timestamp": "2026-04-27T07:06:44Z"
+        },
+        {
+          "elo": 1230.5,
+          "timestamp": "2026-04-27T07:06:48Z"
+        },
+        {
+          "elo": 1230.5,
+          "timestamp": "2026-04-27T07:06:50Z"
+        }
+      ]
     },
     {
       "id": "ppo_gen_10",
@@ -253,21 +283,29 @@
       "created_at": "2026-04-27T07:02:10Z",
       "iteration": 10,
       "arch": "resnet",
-      "eval": {
-        "elo": 1200.0,
-        "vs_random": {
-          "win": 0.0,
-          "lose": 0.0,
-          "draw": 0.0
-        }
-      },
-      "evaluated_at": "2026-04-27T07:02:29Z",
       "elo_history": [
         {
           "elo": 1200.0,
           "timestamp": "2026-04-27T07:02:29Z"
+        },
+        {
+          "elo": 1201.6,
+          "timestamp": "2026-04-27T07:06:39Z"
+        },
+        {
+          "elo": 1201.6,
+          "timestamp": "2026-04-27T07:06:56Z"
         }
-      ]
+      ],
+      "eval": {
+        "elo": 1201.6,
+        "vs_random": {
+          "win": 0.47,
+          "lose": 0.5,
+          "draw": 0.03
+        }
+      },
+      "evaluated_at": "2026-04-27T07:06:56Z"
     },
     {
       "id": "az_resnet_iter_20",
@@ -276,21 +314,29 @@
       "created_at": "2026-04-27T07:02:10Z",
       "iteration": 20,
       "arch": "resnet",
-      "eval": {
-        "elo": 1200.0,
-        "vs_random": {
-          "win": 0.0,
-          "lose": 0.0,
-          "draw": 0.0
-        }
-      },
-      "evaluated_at": "2026-04-27T07:02:29Z",
       "elo_history": [
         {
           "elo": 1200.0,
           "timestamp": "2026-04-27T07:02:29Z"
+        },
+        {
+          "elo": 1196.5,
+          "timestamp": "2026-04-27T07:06:44Z"
+        },
+        {
+          "elo": 1196.5,
+          "timestamp": "2026-04-27T07:06:59Z"
         }
-      ]
+      ],
+      "eval": {
+        "elo": 1196.5,
+        "vs_random": {
+          "win": 0.36,
+          "lose": 0.63,
+          "draw": 0.01
+        }
+      },
+      "evaluated_at": "2026-04-27T07:06:59Z"
     },
     {
       "id": "az_resnet_iter_30",
@@ -299,21 +345,29 @@
       "created_at": "2026-04-27T07:02:10Z",
       "iteration": 30,
       "arch": "resnet",
-      "eval": {
-        "elo": 1200.0,
-        "vs_random": {
-          "win": 0.0,
-          "lose": 0.0,
-          "draw": 0.0
-        }
-      },
-      "evaluated_at": "2026-04-27T07:02:29Z",
       "elo_history": [
         {
           "elo": 1200.0,
           "timestamp": "2026-04-27T07:02:29Z"
+        },
+        {
+          "elo": 1194.2,
+          "timestamp": "2026-04-27T07:06:48Z"
+        },
+        {
+          "elo": 1194.2,
+          "timestamp": "2026-04-27T07:07:02Z"
         }
-      ]
+      ],
+      "eval": {
+        "elo": 1194.2,
+        "vs_random": {
+          "win": 0.285,
+          "lose": 0.705,
+          "draw": 0.01
+        }
+      },
+      "evaluated_at": "2026-04-27T07:07:02Z"
     },
     {
       "id": "az_resnet_final",
@@ -322,19 +376,54 @@
       "created_at": "2026-04-27T07:02:10Z",
       "iteration": 30,
       "arch": "resnet",
-      "eval": {
-        "elo": 1200.0,
-        "vs_random": {
-          "win": 0.0,
-          "lose": 0.0,
-          "draw": 0.0
-        }
-      },
-      "evaluated_at": "2026-04-27T07:02:29Z",
       "elo_history": [
         {
           "elo": 1200.0,
           "timestamp": "2026-04-27T07:02:29Z"
+        },
+        {
+          "elo": 1191.8,
+          "timestamp": "2026-04-27T07:06:35Z"
+        },
+        {
+          "elo": 1191.8,
+          "timestamp": "2026-04-27T07:06:53Z"
+        }
+      ],
+      "eval": {
+        "elo": 1191.8,
+        "vs_random": {
+          "win": 0.27,
+          "lose": 0.725,
+          "draw": 0.005
+        }
+      },
+      "evaluated_at": "2026-04-27T07:06:53Z"
+    },
+    {
+      "id": "az_mlp_best",
+      "type": "alphazero",
+      "file": "alphazero/alphazero_best.pth",
+      "created_at": "2026-04-27T07:04:20Z",
+      "iteration": 999,
+      "arch": "mlp",
+      "eval": {
+        "elo": 1195.5,
+        "vs_random": {
+          "win": 0.364,
+          "lose": 0.61,
+          "draw": 0.026
+        }
+      },
+      "evaluated_at": "2026-04-27T07:04:35Z",
+      "elo_history": [
+        {
+          "elo": 1195.5,
+          "timestamp": "2026-04-27T07:04:24Z"
+        },
+        {
+          "elo": 1195.5,
+          "timestamp": "2026-04-27T07:04:35Z"
         }
       ]
     }
