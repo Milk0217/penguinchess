@@ -6,6 +6,7 @@ use rand_distr::{Dirichlet, Distribution};
 use crate::board::*;
 use crate::rules::*;
 
+
 pub type EvalFn = extern "C" fn(*const f32, i32, *mut f32, i32) -> i32;
 
 const DIRICHLET_ALPHA: f64 = 0.15;
@@ -348,10 +349,13 @@ pub fn mcts_search_parallel_core(
 
     let sims_per = std::cmp::max(1, num_simulations / num_workers as i32);
 
+    // Clone the shared state ONCE before spawning threads (avoids concurrent reads of static mut GAMES)
+    let base_state = state.clone();
+
     std::thread::scope(|s| {
         let mut handles = Vec::with_capacity(num_workers);
         for _ in 0..num_workers {
-            let state_clone = state.clone();
+            let state_clone = base_state.clone();
             handles.push(s.spawn(move || {
                 mcts_search_core(&state_clone, sims_per, c_puct, batch_size, eval_fn)
             }));

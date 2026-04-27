@@ -157,8 +157,8 @@ def _evaluate_models(
     net_a.eval()
     net_b.eval()
 
-    # 使用 RustCore + 内建并行 MCTS
-    from penguinchess.rust_ffi import mcts_search_rust_handle_parallel, get_engine
+    # 使用 RustCore + 内建并行 MCTS（ORT 优先）
+    from penguinchess.rust_ffi import mcts_search_rust_handle_parallel, mcts_search_rust_handle_parallel_ort, mcts_search_rust_handle_ort, get_engine
     from penguinchess.rust_core import RustCore
     _engine = get_engine()
 
