@@ -95,7 +95,7 @@ penguinchess/
 │   ├── rust_bridge.py       # Rust 统一桥接层
 │   └── ai/                  # AI 算法模块
 │       ├── __init__.py
-│       ├── alphazero_net.py # AlphaZero 神经网络
+│       ├── alphazero_net.py # AlphaZero 神经网络（可配置 ResNet 架构）
 │       ├── mcts_core.py     # MCTS 搜索核心
 │       └── train_alphazero.py # AlphaZero 训练脚本
 │
@@ -258,6 +258,32 @@ uv run python examples/eval_elo.py --episodes 50 --incremental --rust-core
 | AlphaZero 神经网络 | `penguinchess/ai/alphazero_net.py` | ResNet 策略-价值网络 |
 | MCTS 核心（Python） | `penguinchess/ai/mcts_core.py` | Python MCTS 搜索节点 |
 
+### AlphaZero 神经网络架构
+
+`penguinchess/ai/alphazero_net.py` 提供可配置的 ResNet 策略-价值网络，支持从 550K 到 581M 参数的多档选择：
+
+| 类 | 参数量 | GPU 显存 | hidden_dim | 残差块数 | 推理耗时(batch=128) | 适用场景 |
+|----|--------|----------|-----------|---------|--------------------|---------|
+| `AlphaZeroResNet` | 550K | ~25MB | 512 | 1 | 0.6ms | 快速迭代验证 |
+| `AlphaZeroResNetLarge` | 3.0M | ~74MB | 1024 | 1 | 0.7ms | 日常训练（默认） |
+| `AlphaZeroResNetXL` | 581M | ~3GB | 8192 | 4 | 20.5ms | 极大规模训练（每迭代~4.5h） |
+| `AlphaZeroResNetConfigurable` | 自定义 | 自定义 | 任意 | 任意 | 依赖配置 | 自定义研究 |
+
+**架构说明**:
+- 共享主干 → fc_in → N 个残差块（BN+ReLU+Linear+BN） → fc_out → 策略头 + 价值头
+- `detect_net_arch()` 根据 `state_dict` 自动检测架构，续训无缝兼容
+- 训练使用 **AMP**（`torch.amp`），网络参数以 fp16 存储减少显存
+
+#### 训练模式显存估算
+
+训练模式下总显存 ≈ `参数量 × (2+4+8) bytes`（weights_fp16 + grads_fp32 + adam_fp32）+ activations：
+
+| 参数量 | 推理显存 | 训练显存（AMP） |
+|--------|---------|----------------|
+| 550K | ~25MB | ~50MB |
+| 3M | ~74MB | ~160MB |
+| 581M | ~3GB | ~8GB（接近 RTX 4060 上限） |
+
 ### 构建 Rust
 
 ```bash
@@ -278,7 +304,8 @@ cargo build --release    # 优化构建，产出 target/release/game_engine.dll
 ✅ 阶段 2: Rust 游戏核心 (FFI cdylib)     → 已完成，快 11.5x
 ✅ 阶段 3: MCTS + AlphaZero 训练管道      → 已完成（Rust MCTS 搜索 + Python 神经网络）
 ✅ 阶段 4: PPO + AlphaZero 双线路训练     → 已完成
-⬜ 阶段 5: Rust ONNX 原生推理 (net_infer) → 预留，待实施
+✅ 阶段 5: 可配置 ResNet 架构             → 已完成（3 档 + 自定义）
+⬜ 阶段 6: Rust ONNX 原生推理 (net_infer) → 预留，待 ort crate API 稳定
 ```
 
 ### Python AI 层（长期保留）

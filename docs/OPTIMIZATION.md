@@ -188,7 +188,35 @@ print(f"get_legal_actions: {time.perf_counter() - start:.3f}s")
 
 ---
 
-## 七、变更记录
+## 七、GPU 显存优化
+
+### 7.1 问题
+
+`train_alphazero.py` 在 RTX 4060（8GB）上训练旧版 `AlphaZeroResNet`（550K 参数）时，GPU 显存仅占用 **29MB**，远端未充分利用。
+
+### 7.2 方案
+
+重构网络架构为可配置 ResNet：
+1. `AlphaZeroResNet`：550K 参数，~25MB 显存（兼容旧模型）
+2. `AlphaZeroResNetLarge`：3M 参数，~74MB 显存（默认训练选项）
+3. `AlphaZeroResNetXL`：581M 参数，~3GB 推理 / ~8GB 训练显存（最大）
+4. `AlphaZeroResNetConfigurable`：自定义 `hidden_dim` 和 `num_blocks`
+
+### 7.3 收益
+
+| 模型 | 推理显存 | 参数量 | 迭代耗时 |
+|------|---------|--------|---------|
+| `AlphaZeroResNet` | ~25MB | 550K | ~48s |
+| `AlphaZeroResNetLarge` | ~74MB | 3M | ~51s |
+| `AlphaZeroResNetXL` | ~3GB | 581M | ~4.5h |
+
+Large 模型仅增加 ~6% 迭代时间，显存翻倍。XL 模型虽达到 ~3GB 显存但训练耗时长，适合长时间的离线训练。
+
+### 7.4 数据精度
+
+训练使用 `torch.amp.autocast`（fp16 mixed precision），参数以 fp16 存储，梯度以 fp32 累积。激活值在 CUDA 上以 fp16 计算，减少显存占用和带宽。
+
+## 八、变更记录
 
 | 日期 | 变更内容 | 状态 |
 |------|----------|------|
@@ -197,3 +225,4 @@ print(f"get_legal_actions: {time.perf_counter() - start:.3f}s")
 | 2026-04-25 | 预计算邻居关系 | ✅ 已完成 |
 | 2026-04-25 | 添加 `__slots__` | ⬜ 待实施 |
 | 2026-04-27 | 文档同步更新 | ✅ |
+| 2026-04-28 | GPU 显存优化：可配置 ResNet 网络 | ✅ |

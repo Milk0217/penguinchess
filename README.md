@@ -154,7 +154,11 @@ penguinchess/
 │   ├── rust_core.py          # RustCore 包装（duck-type 兼容 core.py）
 │   ├── rust_bridge.py        # Rust 统一桥接层
 │   └── ai/                   # AI 算法模块
-│       ├── alphazero_net.py   # AlphaZero 神经网络
+│       ├── alphazero_net.py   # AlphaZero 神经网络（可配置 ResNet）
+│       │   ├── AlphaZeroResNet         # 550K 参数，~25MB GPU
+│       │   ├── AlphaZeroResNetLarge    # 3M 参数，~74MB GPU
+│       │   ├── AlphaZeroResNetXL       # 581M 参数，~3GB GPU
+│       │   └── AlphaZeroResNetConfigurable # 自定义 hidden_dim + num_blocks
 │       ├── mcts_core.py       # MCTS 搜索核心
 │       └── train_alphazero.py # AlphaZero 训练脚本
 │
