@@ -376,7 +376,7 @@ def train_alphazero(
     # Learning rate scheduling
     lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='max', factor=0.5, patience=3,
-        threshold=0.02, min_lr=1e-5, verbose=True,
+        threshold=0.02, min_lr=1e-5,
     )
 
     # best_net 跟踪
@@ -589,10 +589,11 @@ def train_alphazero(
                     register_model(model_id, "alphazero",
                                    rel_path, iteration=iteration,
                                    arch=net.arch_name)
-                    update_evaluation(model_id, {
-                        "elo": round(1200 + (wr - 0.5) * 400, 1),
-                        "vs_best_prev": {"win": wr, "lose": 1 - wr, "draw": 0.0},
-                    })
+                    # auto_eval 会自动计算真实 ELO，训练中不写近似 ELO
+                    eval_data = {"vs_best_prev": {"win": wr, "lose": 1 - wr, "draw": 0.0}}
+                    if not auto_eval:
+                        eval_data["elo"] = round(1200 + (wr - 0.5) * 400, 1)
+                    update_evaluation(model_id, eval_data)
                 except Exception:
                     pass
             else:
