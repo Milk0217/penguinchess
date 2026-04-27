@@ -119,15 +119,43 @@ assert eliminated_count >= 0  # 永远为 True
 
 ---
 
+## 🟠 AZ — AlphaZero 训练问题
+
+### AZ1. MLP 架构表达能力不足
+
+**位置**: `penguinchess/ai/alphazero_net.py`
+
+**问题**: MLP (206→512→256) 无法有效学习棋盘空间结构。ResNet (AlphaZeroResNet) 已实现但旧模型 (az_iter_10) 使用旧 MLP。
+
+**修复**: 使用 `AlphaZeroResNet` 重新训练（需 `--resume` 续训时自动切换）。
+
+### AZ2. GPU 利用率仅 40-50%
+
+**位置**: `penguinchess/ai/train_alphazero.py` 自对弈循环
+
+**问题**: MCTS 模拟在 Rust 端运行，GPU 仅在 callback 时使用。400 sims × 100 games 中 GPU 前向传播仅占 ~2s/迭代（总时间 23s）。
+
+**方向**: 增加 batch_size (当前 256)、根并行 MCTS。
+
+### AZ3. best_net 评估使用 MCTS + 网络（非纯网络强度）
+
+**位置**: `penguinchess/ai/train_alphazero.py` → `_evaluate_models()`
+
+**问题**: 评估时双方都用 MCTS(800 sims) + 网络，MCTS 会平滑网络差异。纯网络强度指标缺失。
+
+**建议**: 增加纯网络（无 MCTS）ELO 评估。
+
+---
+
 ## ⚪ P4 — 功能待实现
 
 | 方向 | 内容 | 状态 |
 |------|------|------|
-| RL 训练 | PPO / SAC 训练脚本 | ⬜ 待实现 |
-| RL 训练 | Self-play 训练框架 | ⬜ 待实现 |
-| RL 训练 | AlphaZero 风格训练 | ⬜ 待实现 |
-| Web 对战 | 人类 vs AI 对战 | ⬜ 待实现 |
-| Rust 核心 | 游戏核心迁移到 Rust | ⬜ 待开始 |
+| AI 训练 | 根并行 MCTS (已实现未启用) | 🔶 待启用 |
+| AI 训练 | Candle Rust 端推理（net_infer.rs 预留） | ⬜ 待实现 |
+| AI 训练 | 分布式自对弈（多 GPU 生成数据） | ⬜ 待开始 |
+| Web 对战 | 人类 vs AI 对战 | 🤖 后端已就绪 |
+| Rust 核心 | HTTP API 迁移到 Rust (Axum) | ⬜ 待开始 |
 | 评估工具 | 训练可视化 / 对局回放 | ⬜ 待开始 |
 
 ---
@@ -268,23 +296,23 @@ Web UI 已支持选择对手类型，但 RL 智能体对战功能待训练脚本
 
 ---
 
-## P3: Self-play 训练框架 ⬜ 待开始
+## P3: Self-play 训练框架 ✅ 已完成
 
-### P3.1 Self-Play 主循环
+### P3.1 Self-Play + ELO 系统
 
-**文件**: `examples/selfplay.py`（待实现）
+**文件**:
+- `penguinchess/ai/train_alphazero.py` — AlphaZero 自对弈训练
+- `penguinchess/ai/alphazero_net.py` — AlphaZero 网络（MLP + ResNet）
+- `penguinchess/ai/mcts_core.py` — Python MCTS 批处理 + 根并行
+- `examples/eval_elo.py` — ELO 评估系统（增量、并行、多模型）
 
-- 维护策略种群（population）
-- 每轮：当前策略 self-play → 数据收集 → 策略更新 → 评估
-- ELO 评分跟踪
+### P3.2 Rust MCTS + 优化
 
-### P3.2 AlphaZero 风格训练
-
-**文件**: `examples/train_alphazero.py`（待实现）
-
-- MCTS 树搜索
-- 神经网络策略/价值评估
-- 自对弈数据收集
+- Rust MCTS 搜索（`mcts_rs.rs`）— JSON 零拷贝，22x 加速
+- Dirichlet 噪声 + 随机 UCB 平局打断
+- GPU AMP 混合精度 + 非阻塞 CUDA 传输
+- flat obs 存储消除 CPU 解码瓶颈
+- ResourceMonitor GPU/CPU/RAM 监控
 
 ---
 

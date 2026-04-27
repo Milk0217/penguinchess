@@ -143,11 +143,15 @@ Flask 后端会输出详细的游戏状态日志：
 │   └── selfplay.py               # ★ Self-play 训练（待实现）
 │   └── evaluate.py               # ★ 评估工具（待实现）
 │
-└── game_engine/                    # ★ Rust 游戏核心（待实现）
-    ├── board.rs
-    ├── piece.rs
-    ├── rules.rs
-    └── state.rs
+├── game_engine/                    # ✅ Rust 游戏核心（已实现）
+│   ├── Cargo.toml
+│   └── src/
+│       ├── board.rs                # 棋盘数据结构
+│       ├── rules.rs                # 游戏规则引擎
+│       ├── ffi.rs                  # C FFI 导出
+│       ├── mcts_rs.rs              # Rust MCTS 搜索
+│       ├── net_infer.rs            # ONNX 推理（预留）
+│       └── lib.rs                  # 模块入口
 ```
 
 ---
