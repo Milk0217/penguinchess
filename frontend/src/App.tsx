@@ -18,6 +18,7 @@ import { getLayout } from "./board/layouts";
 import { getTheme, getAllThemes } from "./board/themes";
 import type { BoardLayout, HexCoord, LayoutConfig, PixelCoord, Bounds } from "./board/types";
 import BoardEditor from "./editor/BoardEditor";
+import TrainingDashboard from "./training/TrainingDashboard";
 
 const PLAYER_NAMES = ["Player 1 (P1)", "Player 2 (P2)"];
 
@@ -231,6 +232,9 @@ const GLOBAL_THEMES: Record<GlobalTheme, {
 
   // AI 模型信息
   const [bestModelInfo, setBestModelInfo] = useState<ModelInfo | null>(null);
+  const [rankings, setRankings] = useState<ModelInfo[] | null>(null);
+  const [showRankings, setShowRankings] = useState(false);
+  const [showTraining, setShowTraining] = useState(false);
 
   // 自定义棋盘 layout 缓存（key: boardId）
   const [customLayouts, setCustomLayouts] = useState<Map<string, BoardLayout>>(new Map());
@@ -579,10 +583,15 @@ const GLOBAL_THEMES: Record<GlobalTheme, {
             padding: "0.2rem 0.4rem",
             whiteSpace: "nowrap",
           }}>
-            🤖 {bestModelInfo.type === "ppo"
-              ? `PPO gen_${bestModelInfo.generation ?? "?"}`
-              : `AZ iter_${bestModelInfo.iteration ?? "?"}`
-            }
+            🤖 {(() => {
+              const m = bestModelInfo;
+              if (m.type === "ppo") return `PPO gen_${m.generation ?? "?"}`;
+              let arch = "";
+              const parts = m.id.split("_");
+              if (parts.includes("resnet")) arch = " ResNet";
+              else if (parts.includes("mlp")) arch = " MLP";
+              return `AZ${arch} iter_${m.iteration ?? "?"}`;
+            })()}
             {bestModelInfo.eval?.elo != null && ` · ELO ${bestModelInfo.eval.elo}`}
           </span>
         )}
@@ -688,10 +697,16 @@ const GLOBAL_THEMES: Record<GlobalTheme, {
         {opponent === "ai" && bestModelInfo && (
           <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap", marginBottom: "0.25rem" }}>
             <span>AI 模型: <strong style={{ color: pageTheme.accent }}>
-              {bestModelInfo.type === "ppo"
-                ? `PPO gen_${bestModelInfo.generation ?? "?"}`
-                : `AlphaZero iter_${bestModelInfo.iteration ?? "?"}`
-              }
+              {(() => {
+                const m = bestModelInfo;
+                if (m.type === "ppo") return `PPO gen_${m.generation ?? "?"}`;
+                // 从ID提取架构
+                let arch = "";
+                const parts = m.id.split("_");
+                if (parts.includes("resnet")) arch = "ResNet";
+                else if (parts.includes("mlp")) arch = "MLP";
+                return `AlphaZero${arch ? " "+arch : ""} iter_${m.iteration ?? "?"}`;
+              })()}
             </strong></span>
             {bestModelInfo.eval?.elo != null && (
               <span>ELO: <strong style={{ color: pageTheme.text }}>{bestModelInfo.eval.elo}</strong></span>
@@ -817,13 +832,17 @@ const GLOBAL_THEMES: Record<GlobalTheme, {
         </table>
       </div>
 
-      {/* 状态提示 */}
+      {/* Training Dashboard */}
+      {showTraining && <TrainingDashboard />}
+
+      {!showTraining && (
+      /* 状态提示 */
       <div className={`status-bar ${isGameOver ? "game-over" : ""}`}>
         {loading ? "处理中..." : statusText}
       </div>
+      )}
 
-      {/* 棋盘 */}
-      {currentLayout && (
+      {!showTraining && currentLayout && (
         <BoardContainer
           state={state}
           layout={currentLayout}
@@ -835,7 +854,7 @@ const GLOBAL_THEMES: Record<GlobalTheme, {
       )}
 
       {/* 操作提示 */}
-      {!isGameOver && (
+      {!showTraining && !isGameOver && (
         <div style={{ color: pageTheme.textMuted, fontSize: "0.8rem", marginTop: "0.75rem", textAlign: "center" }}>
           {state.phase === "placement"
             ? "点击空白格子放置棋子（双方轮流各放 3 个）"
@@ -863,6 +882,33 @@ const GLOBAL_THEMES: Record<GlobalTheme, {
           style={{ background: "#8b5cf6", color: "white", border: "none", padding: "8px 16px", borderRadius: "6px", fontSize: "14px", cursor: "pointer", fontWeight: 600 }}
         >
           棋盘编辑器
+        </button>
+        <button
+          className="btn btn-secondary"
+          onClick={() => {
+            api.getModels().then(setRankings).catch(() => setRankings([]));
+            setShowRankings(true);
+          }}
+          style={{ background: "#f59e0b", color: "white", border: "none", padding: "8px 16px", borderRadius: "6px", fontSize: "14px", cursor: "pointer", fontWeight: 600 }}
+        >
+          🏆 排行榜
+        </button>
+        <button
+          className="btn btn-secondary"
+          onClick={() => setShowTraining((v) => !v)}
+          style={{
+            background: showTraining ? "#0ea5e9" : "#0891b2",
+            color: "white",
+            border: "none",
+            padding: "8px 16px",
+            borderRadius: "6px",
+            fontSize: "14px",
+            cursor: "pointer",
+            fontWeight: 600,
+            boxShadow: showTraining ? "0 0 12px rgba(14,165,233,0.4)" : "none",
+          }}
+        >
+          🧠 Training
         </button>
         <button className="btn btn-primary" onClick={() => initGame()} disabled={loading}
           style={{ background: pageTheme.accent, color: "white", border: "none", padding: "8px 16px", borderRadius: "6px", fontSize: "14px", cursor: loading ? "not-allowed" : "pointer", fontWeight: 600, opacity: loading ? 0.6 : 1 }}>
@@ -918,6 +964,105 @@ const GLOBAL_THEMES: Record<GlobalTheme, {
           ))}
         </select>
       </div>
+
+      {/* 排行榜弹窗 */}
+      {showRankings && (
+        <div
+          onClick={() => setShowRankings(false)}
+          style={{
+            position: "fixed", inset: 0, zIndex: 1000,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            background: "rgba(0,0,0,0.6)",
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: pageTheme.cardBg,
+              border: "1px solid " + pageTheme.cardBorder,
+              borderRadius: "12px",
+              padding: "1.5rem",
+              maxWidth: "520px", width: "90%",
+              maxHeight: "80vh", overflow: "auto",
+              fontFamily: "monospace",
+              fontSize: "0.8rem",
+              color: pageTheme.text,
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
+              <h2 style={{ margin: 0, fontSize: "1.1rem" }}>🏆 AI 模型排行榜</h2>
+              <button onClick={() => setShowRankings(false)}
+                style={{ background: "transparent", border: "none", color: pageTheme.textMuted, fontSize: "1.3rem", cursor: "pointer", padding: "0 4px" }}>
+                ✕
+              </button>
+            </div>
+            {rankings === null ? (
+              <div style={{ color: pageTheme.textMuted }}>加载中...</div>
+            ) : rankings.length === 0 ? (
+              <div style={{ color: pageTheme.textMuted }}>暂无模型数据</div>
+            ) : (
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr style={{ borderBottom: "1px solid " + pageTheme.cardBorder, color: pageTheme.textMuted }}>
+                    <th style={{ padding: "6px 8px", textAlign: "center" }}>#</th>
+                    <th style={{ padding: "6px 8px", textAlign: "left" }}>模型</th>
+                    <th style={{ padding: "6px 8px", textAlign: "center" }}>类型</th>
+                    <th style={{ padding: "6px 8px", textAlign: "center" }}>ELO</th>
+                    <th style={{ padding: "6px 8px", textAlign: "center" }}>vs随机</th>
+                  </tr>
+                </thead>
+                <tbody>
+                    {rankings.sort((a, b) => (b.eval?.elo ?? 0) - (a.eval?.elo ?? 0)).map((m, i) => {
+                        const isBest = i === 0;
+                        const az = m.type === "alphazero";
+                        const vsr = m.eval?.vs_random;
+                        const winRate = vsr ? (vsr.win * 100).toFixed(0) : "—";
+                        // 从模型ID中提取架构信息：az_resnet_best, az_mlp_iter_10, az_iter_10(旧版)
+                        let archLabel = "";
+                        if (az && m.id.startsWith("az_")) {
+                          const parts = m.id.split("_");
+                          if (parts.includes("resnet")) archLabel = "ResNet";
+                          else if (parts.includes("mlp")) archLabel = "MLP";
+                        }
+                        const modelLabel = az
+                          ? `AZ${archLabel ? "-" + archLabel : ""}_${m.iteration ?? "?"}`
+                          : `PPO_gen_${m.generation ?? "?"}`;
+                        const typeLabel = az
+                          ? `AZ${archLabel ? " " + archLabel : ""}`
+                          : "PPO";
+                        return (
+                          <tr key={m.id} style={{
+                            borderBottom: "1px solid " + pageTheme.cardBorder,
+                            background: isBest ? (globalTheme==="dark" ? "#1e3a5f" : "#dbeafe") : "transparent",
+                            fontWeight: isBest ? 700 : 400,
+                          }}>
+                            <td style={{ padding: "6px 8px", textAlign: "center", color: isBest ? pageTheme.accent : pageTheme.textMuted }}>
+                              {isBest ? "👑" : i + 1}
+                            </td>
+                            <td style={{ padding: "6px 8px", textAlign: "left" }}>
+                              {modelLabel}
+                            </td>
+                            <td style={{ padding: "6px 8px", textAlign: "center", color: az ? "#a855f7" : "#3b82f6" }}>
+                              {typeLabel}
+                            </td>
+                        <td style={{ padding: "6px 8px", textAlign: "center", color: isBest ? pageTheme.accent : pageTheme.text }}>
+                          {m.eval?.elo?.toFixed(0) ?? "—"}
+                        </td>
+                        <td style={{ padding: "6px 8px", textAlign: "center", color: pageTheme.textMuted }}>
+                          {winRate}%
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+            <div style={{ marginTop: "0.75rem", color: pageTheme.textMuted, fontSize: "0.7rem", textAlign: "center" }}>
+              数据来自后端 Model Registry · 点击任意处关闭
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 错误提示 */}
       {error && state && (
