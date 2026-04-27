@@ -594,11 +594,19 @@ def train_alphazero(
             win_rate=win_rate,
         )
 
-        # ----- 定期保存迭代模型 -----
+        # ----- 定期保存迭代模型并注册到 Registry -----
         if iteration % 10 == 0:
-            arch_tag = net.arch_name  # "mlp" 或 "resnet"
-            path = str(ALPHAZERO_DIR / f"alphazero_{arch_tag}_iter_{iteration}.pth")
-            torch.save(net.state_dict(), path)
+            arch_tag = net.arch_name
+            iter_path = str(ALPHAZERO_DIR / f"alphazero_{arch_tag}_iter_{iteration}.pth")
+            torch.save(net.state_dict(), iter_path)
+            # 注册迭代模型（无论胜率是否 > 55%，都让玩家能看到）
+            try:
+                from penguinchess.model_registry import register_model as _reg_iter
+                iter_id = f"az_{arch_tag}_iter_{iteration}"
+                iter_rel = f"alphazero/alphazero_{arch_tag}_iter_{iteration}.pth"
+                _reg_iter(iter_id, "alphazero", iter_rel, iteration=iteration, arch=arch_tag)
+            except Exception:
+                pass
 
         # ----- 评估 vs best_net -----
         if iteration % eval_interval == 0:
@@ -656,10 +664,20 @@ def train_alphazero(
             else:
                 print(f"  保持当前 best (iter_{best_iter}, {best_win_rate:.1%})")
 
-    # ----- 训练结束：保存最终模型 -----
+    # ----- 训练结束：保存最终模型并注册 -----
     arch_tag = net.arch_name
     final_path = str(ALPHAZERO_DIR / f"alphazero_{arch_tag}_final.pth")
     torch.save(net.state_dict(), final_path)
+    # 注册最终模型
+    try:
+        from penguinchess.model_registry import register_model as _reg_final
+        final_id = f"az_{arch_tag}_final"
+        final_rel = f"alphazero/alphazero_{arch_tag}_final.pth"
+        _reg_final(final_id, "alphazero", final_rel, iteration=num_iterations, arch=arch_tag)
+    except Exception:
+        pass
+    # 清理训练状态
+    _clear_ts()
     _elapsed = time.time() - _start_time
     print(f"\n{monitor.footer(_elapsed)}")
     print(f"  best 模型: {ALPHAZERO_DIR / f'alphazero_{arch_tag}_best.pth'} (iter_{best_iter}, {arch_tag})")

@@ -245,6 +245,98 @@
         }
       },
       "evaluated_at": "2026-04-26T15:11:25Z"
+    },
+    {
+      "id": "az_resnet_iter_10",
+      "type": "alphazero",
+      "file": "alphazero/alphazero_resnet_iter_10.pth",
+      "created_at": "2026-04-27T07:02:10Z",
+      "iteration": 10,
+      "arch": "resnet",
+      "eval": {
+        "elo": 1200.0,
+        "vs_random": {
+          "win": 0.0,
+          "lose": 0.0,
+          "draw": 0.0
+        }
+      },
+      "evaluated_at": "2026-04-27T07:02:29Z",
+      "elo_history": [
+        {
+          "elo": 1200.0,
+          "timestamp": "2026-04-27T07:02:29Z"
+        }
+      ]
+    },
+    {
+      "id": "az_resnet_iter_20",
+      "type": "alphazero",
+      "file": "alphazero/alphazero_resnet_iter_20.pth",
+      "created_at": "2026-04-27T07:02:10Z",
+      "iteration": 20,
+      "arch": "resnet",
+      "eval": {
+        "elo": 1200.0,
+        "vs_random": {
+          "win": 0.0,
+          "lose": 0.0,
+          "draw": 0.0
+        }
+      },
+      "evaluated_at": "2026-04-27T07:02:29Z",
+      "elo_history": [
+        {
+          "elo": 1200.0,
+          "timestamp": "2026-04-27T07:02:29Z"
+        }
+      ]
+    },
+    {
+      "id": "az_resnet_iter_30",
+      "type": "alphazero",
+      "file": "alphazero/alphazero_resnet_iter_30.pth",
+      "created_at": "2026-04-27T07:02:10Z",
+      "iteration": 30,
+      "arch": "resnet",
+      "eval": {
+        "elo": 1200.0,
+        "vs_random": {
+          "win": 0.0,
+          "lose": 0.0,
+          "draw": 0.0
+        }
+      },
+      "evaluated_at": "2026-04-27T07:02:29Z",
+      "elo_history": [
+        {
+          "elo": 1200.0,
+          "timestamp": "2026-04-27T07:02:29Z"
+        }
+      ]
+    },
+    {
+      "id": "az_resnet_final",
+      "type": "alphazero",
+      "file": "alphazero/alphazero_resnet_final.pth",
+      "created_at": "2026-04-27T07:02:10Z",
+      "iteration": 30,
+      "arch": "resnet",
+      "eval": {
+        "elo": 1200.0,
+        "vs_random": {
+          "win": 0.0,
+          "lose": 0.0,
+          "draw": 0.0
+        }
+      },
+      "evaluated_at": "2026-04-27T07:02:29Z",
+      "elo_history": [
+        {
+          "elo": 1200.0,
+          "timestamp": "2026-04-27T07:02:29Z"
+        }
+      ]
     }
   ]
 }
