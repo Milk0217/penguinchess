@@ -1,4 +1,4 @@
-/// Rust MCTS 搜索 — 根节点 Dirichlet 噪声 + float 观测数组零拷贝
+/// Rust MCTS 搜索 — 支持 Python 回调和 ONNX 两种 eval 模式
 use std::collections::HashMap;
 use std::os::raw::c_char;
 use rand::Rng;
@@ -108,8 +108,8 @@ fn masked_softmax(logits: &[f32], legal: &[usize]) -> Vec<f64> {
 // 主搜���函数
 // =============================================================================
 
-#[no_mangle]
-pub unsafe extern "C" fn mcts_search_rust(
+/// Internal MCTS search.
+unsafe fn mcts_search_internal(
     state_json: *const c_char,
     num_simulations: i32,
     c_puct: f64,
@@ -217,6 +217,23 @@ pub unsafe extern "C" fn mcts_search_rust(
     0
 }
 
+/// Exported: MCTS with Python eval callback.
+#[no_mangle]
+pub unsafe extern "C" fn mcts_search_rust(
+    state_json: *const c_char,
+    num_simulations: i32,
+    c_puct: f64,
+    batch_size: i32,
+    eval_fn: Option<EvalFn>,
+    output_buf: *mut c_char,
+    output_size: i32,
+) -> i32 {
+    mcts_search_internal(state_json, num_simulations, c_puct, batch_size,
+                         eval_fn, output_buf, output_size)
+}
+
+// =============================================================================
+// Batch flush
 // =============================================================================
 // Batch flush with float obs array (zero-copy to Python/NumPy)
 // =============================================================================
@@ -241,29 +258,26 @@ fn flush_batch_obs(
         out_buf.clear();
         out_buf.resize(n * out_dim(), 0.0f32);
         unsafe { f(obs_buf.as_ptr(), n as i32, out_buf.as_mut_ptr(), out_buf.len() as i32); }
-
-        for (i, (path, legal)) in paths.iter().zip(legal_list.iter()).enumerate() {
-            let base = i * out_dim();
-            let logits = &out_buf[base..base + 60];
-            let value = out_buf[base + 60] as f64;
-            let policy = masked_softmax(logits, legal);
-            let node = node_by_path(root, path);
-            for &a in legal {
-                node.children.entry(a).or_insert(MCTSNode::new(policy[a]));
-            }
-            backup(root, path, value);
-        }
     } else {
-        // Uniform: no neural network, directly backup with 0 value
-        for (path, legal) in paths.iter().zip(legal_list.iter()) {
-            let node = node_by_path(root, path);
-            let uniform = 1.0 / legal.len() as f64;
-            for &a in legal {
-                node.children.entry(a).or_insert(MCTSNode::new(uniform));
-            }
-            backup(root, path, 0.0);
-        }
+        // Uniform: fill out_buf with zeros (value=0 → uniform backup)
+        out_buf.clear();
+        out_buf.resize(n * out_dim(), 0.0f32);
     }
+
+    for (i, (path, legal)) in paths.iter().zip(legal_list.iter()).enumerate() {
+        let base = i * out_dim();
+        let logits = &out_buf[base..base + 60];
+        let value = out_buf[base + 60] as f64;
+        let policy = masked_softmax(logits, legal);
+        let node = node_by_path(root, path);
+        for &a in legal {
+            node.children.entry(a).or_insert(MCTSNode::new(policy[a]));
+        }
+        backup(root, path, value);
+    }
+    // NOTE: Uniform case (eval_fn=None and use_onnx=false) falls through here
+    // with out_buf all zeros → masked_softmax produces uniform policy, backup uses 0 value
+    // This matches the old behavior.
 
     states.clear();
     legal_list.clear();

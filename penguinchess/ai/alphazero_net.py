@@ -387,6 +387,25 @@ class AlphaZeroResNet(nn.Module):
         self.load_state_dict(torch.load(path, map_location="cpu"))
         self.eval()
 
+    def export_onnx(self, path: str, obs_dim: int = 206):
+        """Export to ONNX for Rust-side inference (tract)."""
+        self.eval()
+        device = next(self.parameters()).device
+        dummy = torch.randn(1, obs_dim, device=device)
+        torch.onnx.export(
+            self,
+            dummy,
+            path,
+            input_names=["obs"],
+            output_names=["policy_logits", "value"],
+            dynamic_axes={
+                "obs": {0: "batch"},
+                "policy_logits": {0: "batch"},
+                "value": {0: "batch"},
+            },
+            opset_version=19,
+        )
+
 
 # =============================================================================
 # Architecture detection helper
