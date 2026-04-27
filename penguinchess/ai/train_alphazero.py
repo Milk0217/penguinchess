@@ -426,6 +426,8 @@ def train_alphazero(
     l2_reg: float = 1e-4,
     resume: str | None = None,
     parallel_workers: int = 4,
+    auto_eval: bool = False,
+    auto_eval_episodes: int = 200,
 ):
     """AlphaZero 自对弈训练主循环。"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -700,6 +702,26 @@ def train_alphazero(
     print(f"  best 模型: {ALPHAZERO_DIR / f'alphazero_{arch_tag}_best.pth'} (iter_{best_iter}, {arch_tag})")
     print(f"  最终模型: {final_path}")
 
+    # ----- 自动 ELO 评估 -----
+    if auto_eval:
+        print(f"\n  ├─ 自动 ELO 评估 ({auto_eval_episodes} 局/对, 增量模式)...")
+        _update_ts(is_training=True, current_phase="elo_eval", progress=0.9)
+        try:
+            from examples.eval_elo import main as _eval_main
+            import sys as _sys
+            _old_argv = _sys.argv
+            try:
+                _sys.argv = [
+                    "eval_elo.py", "--incremental",
+                    "--episodes", str(auto_eval_episodes),
+                    "--vs-episodes", str(auto_eval_episodes),
+                ]
+                _eval_main()
+            finally:
+                _sys.argv = _old_argv
+        except Exception as _e:
+            print(f"  [WARN] 自动 ELO 评估失败: {_e}")
+
     # TensorBoard 关闭
     tb_writer.close()
     _clear_ts()
@@ -723,6 +745,10 @@ if __name__ == "__main__":
     parser.add_argument("--parallel-workers", type=int, default=4,
                         help="根并行 MCTS workers（默认 4，每个 worker 获得 simulations/workers 次模拟）")
     parser.add_argument("--resume", type=str, default=None, help="续训练模型路径")
+    parser.add_argument("--auto-eval", action="store_true",
+                        help="训练完成后自动执行 ELO 评估")
+    parser.add_argument("--auto-eval-episodes", type=int, default=200,
+                        help="自动 ELO 评估每对局数（默认 200）")
     args = parser.parse_args()
 
     train_alphazero(
@@ -736,4 +762,6 @@ if __name__ == "__main__":
         lr=args.lr,
         resume=args.resume,
         parallel_workers=args.parallel_workers,
+        auto_eval=args.auto_eval,
+        auto_eval_episodes=args.auto_eval_episodes,
     )
