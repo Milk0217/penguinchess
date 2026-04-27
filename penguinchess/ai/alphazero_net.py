@@ -52,6 +52,9 @@ class AlphaZeroNet(nn.Module):
         └── Value head: FC(256 → 128) → ReLU → FC(128 → 1) → tanh
     """
 
+    # 架构标记，用于文件名区分和历史记录
+    arch_name = "mlp"
+
     def __init__(self, obs_dim: int = 206, action_dim: int = 60):
         super().__init__()
         self.obs_dim = obs_dim
@@ -279,6 +282,9 @@ class AlphaZeroResNet(nn.Module):
     The residual connection improves gradient flow and allows training
     deeper networks without vanishing/exploding gradients.
     """
+
+    # 架构标记，用于文件名区分
+    arch_name = "resnet"
 
     def __init__(self, obs_dim: int = 206, action_dim: int = 60):
         super().__init__()

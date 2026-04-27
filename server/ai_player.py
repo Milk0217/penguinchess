@@ -103,13 +103,14 @@ class AIPlayer:
         elif self._model_type == "alphazero":
             try:
                 import torch
-                from penguinchess.ai.alphazero_net import AlphaZeroNet
-                net = AlphaZeroNet()
+                from penguinchess.ai.alphazero_net import detect_net_arch
                 state = torch.load(path, map_location="cpu", weights_only=True)
+                NetClass = detect_net_arch(state)
+                net = NetClass()
                 net.load_state_dict(state)
                 net.eval()
                 self._model = net
-                print(f"[AI] Loaded AlphaZero model: {path}")
+                print(f"[AI] Loaded AlphaZero model: {path} ({NetClass.__name__})")
             except Exception as e:
                 print(f"[AI] Failed to load AlphaZero model: {e}")
                 self._model = None

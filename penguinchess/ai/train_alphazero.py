@@ -12,7 +12,7 @@ AlphaZero 自对弈训练 — 使用 MCTS + 神经网络进行自我对弈学习
 运行方式:
     uv run python penguinchess/ai/train_alphazero.py                        # 默认训练
     uv run python penguinchess/ai/train_alphazero.py --iterations 20        # 20 迭代
-    uv run python penguinchess/ai/train_alphazero.py --resume models/alphazero/alphazero_iter_10.pth
+    uv run python penguinchess/ai/train_alphazero.py --resume models/alphazero/alphazero_resnet_iter_10.pth
 """
 
 import os
@@ -597,7 +597,8 @@ def train_alphazero(
 
         # ----- 定期保存迭代模型 -----
         if iteration % 10 == 0:
-            path = str(ALPHAZERO_DIR / f"alphazero_iter_{iteration}.pth")
+            arch_tag = net.arch_name  # "mlp" 或 "resnet"
+            path = str(ALPHAZERO_DIR / f"alphazero_{arch_tag}_iter_{iteration}.pth")
             torch.save(net.state_dict(), path)
 
         # ----- 评估 vs best_net -----
@@ -634,17 +635,18 @@ def train_alphazero(
                 best_state = copy.deepcopy(net.state_dict())
                 best_iter = iteration
                 best_win_rate = wr
-                best_path = str(ALPHAZERO_DIR / "alphazero_best.pth")
+                arch_tag = net.arch_name  # "mlp" 或 "resnet"
+                best_path = str(ALPHAZERO_DIR / f"alphazero_{arch_tag}_best.pth")
                 torch.save(best_state, best_path)
-                print(f"  [BEST] 新 best! iter_{iteration} 胜率 {wr:.1%}")
+                print(f"  [BEST] 新 best! iter_{iteration} 胜率 {wr:.1%} ({arch_tag})")
 
                 # 注册到 Model Registry
                 try:
                     from penguinchess.model_registry import register_model, update_evaluation
-                    prefix = "az_resnet" if isinstance(net, AlphaZeroResNet) else "alphazero"
-                    model_id = f"{prefix}_best"
+                    model_id = f"az_{arch_tag}_best"
+                    rel_path = f"alphazero/alphazero_{arch_tag}_best.pth"
                     register_model(model_id, "alphazero",
-                                   f"{prefix}/{prefix}_best.pth", iteration=iteration)
+                                   rel_path, iteration=iteration)
                     update_evaluation(model_id, {
                         "elo": round(1200 + (wr - 0.5) * 400, 1),
                         "vs_best_prev": {"win": wr, "lose": 1 - wr, "draw": 0.0},
@@ -655,11 +657,12 @@ def train_alphazero(
                 print(f"  保持当前 best (iter_{best_iter}, {best_win_rate:.1%})")
 
     # ----- 训练结束：保存最终模型 -----
-    final_path = str(ALPHAZERO_DIR / "alphazero_final.pth")
+    arch_tag = net.arch_name
+    final_path = str(ALPHAZERO_DIR / f"alphazero_{arch_tag}_final.pth")
     torch.save(net.state_dict(), final_path)
     _elapsed = time.time() - _start_time
     print(f"\n{monitor.footer(_elapsed)}")
-    print(f"  best 模型: {ALPHAZERO_DIR / 'alphazero_best.pth'} (iter_{best_iter}, 胜率 {best_win_rate:.1%})")
+    print(f"  best 模型: {ALPHAZERO_DIR / f'alphazero_{arch_tag}_best.pth'} (iter_{best_iter}, {arch_tag})")
     print(f"  最终模型: {final_path}")
 
     # TensorBoard 关闭
