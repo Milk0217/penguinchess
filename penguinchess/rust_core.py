@@ -98,6 +98,13 @@ class RustCore:
         """序列化为 Rust GameState JSON（供 MCTS 搜索使用）。"""
         return self._game.to_json()
 
+    @property
+    def handle(self) -> int:
+        """获取底层 Rust stateful game 的句柄，用于 handle-based MCTS。"""
+        if self._game is None:
+            raise RuntimeError("Game not initialized. Call reset() first.")
+        return self._game.handle
+
     def close(self):
         if self._game is not None:
             self._game.free()

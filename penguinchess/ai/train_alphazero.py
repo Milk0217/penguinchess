@@ -1,15 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# 设置 Windows 控制台 UTF-8 编码，避免中文乱码
-import sys
-if sys.platform == "win32":
-    try:
-        import ctypes
-        kernel32 = ctypes.windll.kernel32
-        kernel32.SetConsoleOutputCP(65001)
-        kernel32.SetConsoleCP(65001)
-    except Exception:
-        pass
 """
 AlphaZero 自对弈训练 — 使用 MCTS + 神经网络进行自我对弈学习。
 
@@ -41,6 +31,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from penguinchess.core import PenguinChessCore
 from penguinchess.ai.mcts_core import mcts_search, mcts_search_batched, select_action
 from penguinchess.ai.alphazero_net import AlphaZeroNet, AlphaZeroResNet, detect_net_arch
+from penguinchess._compat import ensure_utf8_stdout
+from penguinchess.training_status import update_status as _update_ts, clear_status as _clear_ts
+ensure_utf8_stdout()
 
 MODELS_DIR = Path(__file__).parent.parent.parent / "models"
 ALPHAZERO_DIR = MODELS_DIR / "alphazero"
@@ -481,6 +474,12 @@ def train_alphazero(
         scaler = torch.amp.GradScaler("cuda")
         print(f" AMP:    fp16 mixed precision 启用")
 
+    # TensorBoard 日志
+    from torch.utils.tensorboard import SummaryWriter
+    tb_log_dir = str(Path(__file__).parent.parent.parent / "models" / "logs" / "alphazero")
+    tb_writer = SummaryWriter(log_dir=tb_log_dir)
+    print(f" TensorBoard: {tb_log_dir}")
+
     # 表头
     iter_avg_time = 0.0
     print(f"\n{'迭代':>6}  │ 对弈   训练   总耗时   Loss     P-Loss   V-Loss   资源")
@@ -577,6 +576,25 @@ def train_alphazero(
               f"{total_elapsed:>5.0f}s  "
               f"{avg_loss:.4f} {avg_p:.4f} {avg_v:.4f}  │ {res_str}")
 
+        # TensorBoard 日志
+        tb_writer.add_scalar("loss/total", avg_loss, iteration)
+        tb_writer.add_scalar("loss/policy", avg_p, iteration)
+        tb_writer.add_scalar("loss/value", avg_v, iteration)
+        tb_writer.add_scalar("performance/game_time", game_time, iteration)
+        tb_writer.add_scalar("performance/train_time", train_time, iteration)
+        tb_writer.add_scalar("performance/win_rate", win_rate, iteration)
+        tb_writer.add_scalar("performance/draw_rate", draw_rate, iteration)
+
+        # 更新训练状态（供前端仪表盘使用）
+        _update_ts(
+            is_training=True,
+            current_phase="alphazero",
+            iteration=iteration,
+            total_iterations=num_iterations,
+            avg_loss=avg_loss,
+            win_rate=win_rate,
+        )
+
         # ----- 定期保存迭代模型 -----
         if iteration % 10 == 0:
             path = str(ALPHAZERO_DIR / f"alphazero_iter_{iteration}.pth")
@@ -607,6 +625,10 @@ def train_alphazero(
                                   parallel_workers=parallel_workers)
             t5 = time.time()
             print(f"胜率: {wr:.1%} ({t5-t4:.0f}s)")
+
+            # TensorBoard 记录评估结果
+            tb_writer.add_scalar("eval/win_rate_vs_best", wr, iteration)
+            tb_writer.add_scalar("eval/eval_time", t5 - t4, iteration)
 
             if wr > 0.55:
                 best_state = copy.deepcopy(net.state_dict())
@@ -639,6 +661,10 @@ def train_alphazero(
     print(f"\n{monitor.footer(_elapsed)}")
     print(f"  best 模型: {ALPHAZERO_DIR / 'alphazero_best.pth'} (iter_{best_iter}, 胜率 {best_win_rate:.1%})")
     print(f"  最终模型: {final_path}")
+
+    # TensorBoard 关闭
+    tb_writer.close()
+    _clear_ts()
 
 
 if __name__ == "__main__":

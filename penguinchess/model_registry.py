@@ -96,6 +96,8 @@ def register_model(
 def update_evaluation(
     model_id: str,
     eval_data: dict[str, Any],
+    *,
+    append_history: bool = True,
 ) -> Optional[dict[str, Any]]:
     """
     更新模型的评估结果。
@@ -105,6 +107,9 @@ def update_evaluation(
         "vs_prev": {"win": 0.55, "lose": 0.30, "draw": 0.15, "opponent": "ppo_gen_4"},
         "elo": 1248,
     }
+
+    当 append_history=True 且 eval_data 包含 "elo" 字段时，
+    自动将 ELO 快照追加到该模型的 elo_history 数组中，用于追踪 ELO 变化趋势。
     返回更新后的 entry，若模型不存在则返回 None。
     """
     registry = get_registry()
@@ -112,6 +117,20 @@ def update_evaluation(
         if m.get("id") == model_id:
             m["eval"] = eval_data
             m["evaluated_at"] = _now_iso()
+
+            # ELO 历史追踪
+            if append_history:
+                elo = eval_data.get("elo")
+                if elo is not None:
+                    history = m.setdefault("elo_history", [])
+                    history.append({
+                        "elo": round(float(elo), 1),
+                        "timestamp": _now_iso(),
+                    })
+                    # 保留最近 100 条记录，防止无限增长
+                    if len(history) > 100:
+                        m["elo_history"] = history[-100:]
+
             save_registry(registry)
             return m
     return None

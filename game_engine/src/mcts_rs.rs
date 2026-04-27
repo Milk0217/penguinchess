@@ -6,7 +6,7 @@ use rand_distr::{Dirichlet, Distribution};
 use crate::board::*;
 use crate::rules::*;
 
-type EvalFn = extern "C" fn(*const f32, i32, *mut f32, i32) -> i32;
+pub type EvalFn = extern "C" fn(*const f32, i32, *mut f32, i32) -> i32;
 
 const DIRICHLET_ALPHA: f64 = 0.15;
 const DIRICHLET_EPS: f64 = 0.25;
@@ -105,40 +105,26 @@ fn masked_softmax(logits: &[f32], legal: &[usize]) -> Vec<f64> {
 }
 
 // =============================================================================
-// 主搜���函数
+// 主搜索函数 (Core: 接受 &GameState, 返回 visit count JSON)
 // =============================================================================
 
-/// Internal MCTS search.
-unsafe fn mcts_search_internal(
-    state_json: *const c_char,
+fn mcts_search_core(
+    state: &GameState,
     num_simulations: i32,
     c_puct: f64,
     batch_size: i32,
     eval_fn: Option<EvalFn>,
-    output_buf: *mut c_char,
-    output_size: i32,
-) -> i32 {
-    let input = match std::ffi::CStr::from_ptr(state_json).to_str() {
-        Ok(s) => s,
-        Err(_) => return -1,
-    };
-    let mut root_state: GameState = match serde_json::from_str(input) {
-        Ok(s) => s,
-        Err(_) => return -1,
-    };
-    root_state.board.rebuild_index_for_json();
-
+) -> String {
     let mut root = MCTSNode::new(0.0);
     let bs = batch_size.max(1) as usize;
 
     // ----- Pre-expand root with Dirichlet noise -----
     let mut root_obs = Vec::with_capacity(obs_dim());
-    encode_obs(&root_state, &mut root_obs);
-    let legal_root = root_state.get_legal_actions();
+    encode_obs(state, &mut root_obs);
+    let legal_root = state.get_legal_actions();
 
     if legal_root.is_empty() {
-        write_output(output_buf, output_size, "{}");
-        return 0;
+        return "{}".to_string();
     }
 
     if let Some(f) = eval_fn {
@@ -164,7 +150,7 @@ unsafe fn mcts_search_internal(
     let mut out_buf: Vec<f32> = Vec::with_capacity(bs * out_dim());
 
     for _ in 0..num_simulations.max(1) {
-        let mut state = root_state.clone();
+        let mut state_clone = state.clone();
         let mut path: Vec<usize> = vec![];
 
         // SELECT
@@ -176,26 +162,24 @@ unsafe fn mcts_search_internal(
             };
             let best = {
                 let n = node_by_path(&mut root, &path);
-                // Random tiebreak: if multiple children have same UCB (e.g. all INF),
-                // pick one uniformly at random instead of always the first
                 let mut rng = rand::thread_rng();
                 n.children.iter()
                     .map(|(a, child)| (a, child.ucb(parent_visits, c_puct) + rng.gen::<f64>() * 1e-12))
                     .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
                     .map(|(a, _)| *a).unwrap()
             };
-            state.step(best);
+            state_clone.step(best);
             path.push(best);
-            if state.terminated { break; }
+            if state_clone.terminated { break; }
         }
 
-        let terminated = state.terminated;
-        let legal = state.get_legal_actions();
+        let terminated = state_clone.terminated;
+        let legal = state_clone.get_legal_actions();
 
         if terminated {
-            backup(&mut root, &path, terminal_value(&state));
+            backup(&mut root, &path, terminal_value(&state_clone));
         } else if !legal.is_empty() {
-            pending_states.push(state);
+            pending_states.push(state_clone);
             pending_legal.push(legal);
             pending_paths.push(path);
             if pending_states.len() >= bs {
@@ -213,11 +197,34 @@ unsafe fn mcts_search_internal(
     for (a, c) in &root.children {
         out.insert(a.to_string(), serde_json::Value::Number(serde_json::Number::from(c.visits)));
     }
-    write_output(output_buf, output_size, &serde_json::to_string(&out).unwrap_or_default());
+    serde_json::to_string(&out).unwrap_or_default()
+}
+
+/// JSON entry point: deserialize state from JSON, run search, write output.
+unsafe fn mcts_search_internal(
+    state_json: *const c_char,
+    num_simulations: i32,
+    c_puct: f64,
+    batch_size: i32,
+    eval_fn: Option<EvalFn>,
+    output_buf: *mut c_char,
+    output_size: i32,
+) -> i32 {
+    let input = match std::ffi::CStr::from_ptr(state_json).to_str() {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+    let mut state: GameState = match serde_json::from_str(input) {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+    state.board.rebuild_index_for_json();
+    let result = mcts_search_core(&state, num_simulations, c_puct, batch_size, eval_fn);
+    write_output(output_buf, output_size, &result);
     0
 }
 
-/// Exported: MCTS with Python eval callback.
+/// Exported: MCTS with Python eval callback (JSON input).
 #[no_mangle]
 pub unsafe extern "C" fn mcts_search_rust(
     state_json: *const c_char,
@@ -230,6 +237,19 @@ pub unsafe extern "C" fn mcts_search_rust(
 ) -> i32 {
     mcts_search_internal(state_json, num_simulations, c_puct, batch_size,
                          eval_fn, output_buf, output_size)
+}
+
+/// Handle-based MCTS search: read state from GAMES[handle], run search.
+/// This skips the JSON serialization/deserialization roundtrip.
+/// Defined here and re-exported by ffi.rs.
+pub unsafe fn mcts_search_on_handle(
+    state: &GameState,
+    num_simulations: i32,
+    c_puct: f64,
+    batch_size: i32,
+    eval_fn: Option<EvalFn>,
+) -> String {
+    mcts_search_core(state, num_simulations, c_puct, batch_size, eval_fn)
 }
 
 // =============================================================================

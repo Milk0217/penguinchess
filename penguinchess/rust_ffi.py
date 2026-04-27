@@ -52,6 +52,14 @@ class RustEngine:
         ]
         self._lib.mcts_search_rust.restype = c_int32
 
+        # Handle-based MCTS: takes handle i32 instead of JSON string
+        self._lib.mcts_search_rust_handle.argtypes = [
+            c_int32, c_int32, c_double, c_int32,
+            CFUNCTYPE(c_int32, POINTER(c_float), c_int32, POINTER(c_float), c_int32),
+            POINTER(c_char), c_int32,
+        ]
+        self._lib.mcts_search_rust_handle.restype = c_int32
+
         self._lib.api_version.restype = c_int32
 
         self._buf_size = 65536  # 64KB buffer
@@ -182,6 +190,83 @@ def mcts_search_rust(
             raise RuntimeError(f"Rust MCTS returned error code: {code}")
     except Exception as e:
         raise RuntimeError(f"Rust MCTS failed: {e}")
+
+    raw = result_buf.value
+    if not raw:
+        return {}
+    result_str = raw.decode("utf-8")
+    return json.loads(result_str)
+
+
+def mcts_search_rust_handle(
+    handle: int,
+    model: Any = None,
+    num_simulations: int = 800,
+    c_puct: float = 1.4,
+    batch_size: int = 32,
+) -> dict:
+    """
+    使用 Rust MCTS 进行搜索（基于句柄，绕过 JSON 序列化）。
+    与 mcts_search_rust 相同，但接受 stateful game handle 而非 JSON 字符串。
+
+    Args:
+        handle: RustStatefulGame 的句柄
+        model: AlphaZeroNet 实例（需要 evaluate_flat_batch 方法）
+        num_simulations: MCTS 模拟次数
+        c_puct: 探索常数
+        batch_size: 批量推理大小
+
+    Returns:
+        动作计数 dict: {action: visit_count}
+    """
+    import numpy as np
+    import numpy.ctypeslib as npct
+
+    engine = get_engine()
+    net = model
+
+    @EVAL_FN
+    def evaluate_fn(obs_ptr, batch_size, output_ptr, output_capacity):
+        nonlocal net
+        try:
+            B = batch_size
+            obs_raw = npct.as_array(
+                ctypes.cast(obs_ptr, POINTER(c_float)),
+                shape=(B, 206),
+            ).copy()
+
+            if net is not None and hasattr(net, 'evaluate_flat_batch'):
+                logits, values = net.evaluate_flat_batch(obs_raw)
+            else:
+                logits = np.zeros((B, 60), dtype=np.float64)
+                values = np.zeros(B, dtype=np.float64)
+
+            out_arr = npct.as_array(
+                ctypes.cast(output_ptr, POINTER(c_float)),
+                shape=(output_capacity,),
+            )
+            for i in range(B):
+                out_arr[i * 61:(i + 1) * 61 - 1] = logits[i].astype(np.float32)
+                out_arr[(i + 1) * 61 - 1] = np.float32(values[i])
+            return 0
+        except Exception:
+            return -1
+
+    result_buf = create_string_buffer(1_048_576)
+    try:
+        code = engine._lib.mcts_search_rust_handle(
+            c_int32(handle),
+            c_int32(num_simulations),
+            c_double(c_puct),
+            c_int32(batch_size),
+            evaluate_fn,
+            result_buf,
+            c_int32(1_048_576),
+        )
+        if code != 0:
+            raise RuntimeError(f"Rust MCTS handle returned error code: {code}")
+    except Exception as e:
+        raise RuntimeError(f"Rust MCTS handle failed: {e}")
 
     raw = result_buf.value
     if not raw:

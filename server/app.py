@@ -216,6 +216,30 @@ def api_get_best_model():
 
 
 # =============================================================================
+# 训练进度 API
+# =============================================================================
+
+@app.route("/api/training/status", methods=["GET"])
+def api_training_status():
+    """获取当前训练进度（用于前端仪表盘）。"""
+    try:
+        from penguinchess.training_status import get_status
+        return jsonify(get_status())
+    except Exception as e:
+        return jsonify({"is_training": False, "error": str(e)})
+
+
+@app.route("/api/training/metrics", methods=["GET"])
+def api_training_metrics():
+    """获取训练历史指标（ELO 趋势、胜率等）。"""
+    try:
+        from penguinchess.training_status import get_training_metrics
+        return jsonify(get_training_metrics())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# =============================================================================
 # 健康检查
 # =============================================================================
 
