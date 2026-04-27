@@ -60,6 +60,14 @@ class RustEngine:
         ]
         self._lib.mcts_search_rust_handle.restype = c_int32
 
+        # Handle-based Parallel MCTS (internal thread parallelism)
+        self._lib.mcts_search_rust_handle_parallel.argtypes = [
+            c_int32, c_int32, c_double, c_int32, c_int32,
+            CFUNCTYPE(c_int32, POINTER(c_float), c_int32, POINTER(c_float), c_int32),
+            POINTER(c_char), c_int32,
+        ]
+        self._lib.mcts_search_rust_handle_parallel.restype = c_int32
+
         self._lib.api_version.restype = c_int32
 
         self._buf_size = 65536  # 64KB buffer
@@ -267,6 +275,84 @@ def mcts_search_rust_handle(
             raise RuntimeError(f"Rust MCTS handle returned error code: {code}")
     except Exception as e:
         raise RuntimeError(f"Rust MCTS handle failed: {e}")
+
+    raw = result_buf.value
+    if not raw:
+        return {}
+    result_str = raw.decode("utf-8")
+    return json.loads(result_str)
+
+
+def mcts_search_rust_handle_parallel(
+    handle: int,
+    model: Any = None,
+    num_simulations: int = 400,
+    c_puct: float = 3.0,
+    batch_size: int = 32,
+    num_workers: int = 4,
+) -> dict:
+    """
+    Parallel MCTS search using Rust-internal thread parallelism.
+    Single FFI call replaces N independent serial MCTS calls with ThreadPoolExecutor.
+    All threads run inside Rust via std::thread::scope, each cloning the GameState.
+
+    Args:
+        handle: RustStatefulGame handle
+        model: AlphaZeroNet instance (needs evaluate_flat_batch method)
+        num_simulations: Total MCTS simulations across all workers
+        c_puct: Exploration constant
+        batch_size: NN eval batch size per worker
+        num_workers: Threads to spawn inside Rust
+
+    Returns:
+        {action: visit_count}
+    """
+    engine = get_engine()
+    net = model
+
+    @EVAL_FN
+    def evaluate_fn(obs_ptr, batch_size, output_ptr, output_capacity):
+        nonlocal net
+        try:
+            B = batch_size
+            obs_raw = npct.as_array(
+                ctypes.cast(obs_ptr, POINTER(c_float)),
+                shape=(B, 206),
+            ).copy()
+
+            if net is not None and hasattr(net, "evaluate_flat_batch"):
+                logits, values = net.evaluate_flat_batch(obs_raw)
+            else:
+                logits = np.zeros((B, 60), dtype=np.float64)
+                values = np.zeros(B, dtype=np.float64)
+
+            out_arr = npct.as_array(
+                ctypes.cast(output_ptr, POINTER(c_float)),
+                shape=(output_capacity,),
+            )
+            for i in range(B):
+                out_arr[i * 61:(i + 1) * 61 - 1] = logits[i].astype(np.float32)
+                out_arr[(i + 1) * 61 - 1] = np.float32(values[i])
+            return 0
+        except Exception:
+            return -1
+
+    result_buf = create_string_buffer(1_048_576)
+    try:
+        code = engine._lib.mcts_search_rust_handle_parallel(
+            c_int32(handle),
+            c_int32(num_simulations),
+            c_double(c_puct),
+            c_int32(batch_size),
+            c_int32(num_workers),
+            evaluate_fn,
+            result_buf,
+            c_int32(1_048_576),
+        )
+        if code != 0:
+            raise RuntimeError(f"Rust MCTS parallel returned error code: {code}")
+    except Exception as e:
+        raise RuntimeError(f"Rust MCTS parallel failed: {e}")
 
     raw = result_buf.value
     if not raw:
