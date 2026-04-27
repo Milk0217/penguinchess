@@ -586,11 +586,9 @@ const GLOBAL_THEMES: Record<GlobalTheme, {
             🤖 {(() => {
               const m = bestModelInfo;
               if (m.type === "ppo") return `PPO gen_${m.generation ?? "?"}`;
-              let arch = "";
-              const parts = m.id.split("_");
-              if (parts.includes("resnet")) arch = " ResNet";
-              else if (parts.includes("mlp")) arch = " MLP";
-              return `AZ${arch} iter_${m.iteration ?? "?"}`;
+              const archLabel =
+                m.arch === "resnet" ? " ResNet" : m.arch === "mlp" ? " MLP" : "";
+              return `AZ${archLabel} iter_${m.iteration ?? "?"}`;
             })()}
             {bestModelInfo.eval?.elo != null && ` · ELO ${bestModelInfo.eval.elo}`}
           </span>
@@ -700,12 +698,9 @@ const GLOBAL_THEMES: Record<GlobalTheme, {
               {(() => {
                 const m = bestModelInfo;
                 if (m.type === "ppo") return `PPO gen_${m.generation ?? "?"}`;
-                // 从ID提取架构
-                let arch = "";
-                const parts = m.id.split("_");
-                if (parts.includes("resnet")) arch = "ResNet";
-                else if (parts.includes("mlp")) arch = "MLP";
-                return `AlphaZero${arch ? " "+arch : ""} iter_${m.iteration ?? "?"}`;
+                const archLabel =
+                  m.arch === "resnet" ? " ResNet" : m.arch === "mlp" ? " MLP" : "";
+                return `AlphaZero${archLabel} iter_${m.iteration ?? "?"}`;
               })()}
             </strong></span>
             {bestModelInfo.eval?.elo != null && (
@@ -1012,18 +1007,16 @@ const GLOBAL_THEMES: Record<GlobalTheme, {
                   </tr>
                 </thead>
                 <tbody>
+                    // 将后端 arch 字段映射为显示标签
+                    const archToLabel = (a?: string) =>
+                      a === "resnet" ? "ResNet" : a === "mlp" ? "MLP" : "";
+
                     {rankings.sort((a, b) => (b.eval?.elo ?? 0) - (a.eval?.elo ?? 0)).map((m, i) => {
                         const isBest = i === 0;
                         const az = m.type === "alphazero";
                         const vsr = m.eval?.vs_random;
                         const winRate = vsr ? (vsr.win * 100).toFixed(0) : "—";
-                        // 从模型ID中提取架构信息：az_resnet_best, az_mlp_iter_10, az_iter_10(旧版)
-                        let archLabel = "";
-                        if (az && m.id.startsWith("az_")) {
-                          const parts = m.id.split("_");
-                          if (parts.includes("resnet")) archLabel = "ResNet";
-                          else if (parts.includes("mlp")) archLabel = "MLP";
-                        }
+                        const archLabel = archToLabel(m.arch);
                         const modelLabel = az
                           ? `AZ${archLabel ? "-" + archLabel : ""}_${m.iteration ?? "?"}`
                           : `PPO_gen_${m.generation ?? "?"}`;

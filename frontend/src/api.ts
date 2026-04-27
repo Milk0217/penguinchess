@@ -55,6 +55,7 @@ export interface ModelEval {
 export interface ModelInfo {
   id: string;
   type: string;          // "ppo" | "alphazero"
+  arch?: string;         // "mlp" | "resnet" (仅 alphazero)
   file: string;
   generation?: number;
   iteration?: number;
@@ -170,4 +171,47 @@ export const api = {
   deleteBoard(boardId: string): Promise<void> {
     return request(`/boards/${boardId}`, { method: "DELETE" });
   },
+
+  // === Training API ===
+
+  /** 获取当前训练进度 */
+  getTrainingStatus(): Promise<TrainingStatus> {
+    return request("/training/status");
+  },
+
+  /** 获取训练历史指标（ELO 趋势、胜率等） */
+  getTrainingMetrics(): Promise<TrainingMetrics> {
+    return request("/training/metrics");
+  },
 };
+
+/** 训练状态 */
+export interface TrainingStatus {
+  is_training: boolean;
+  current_phase?: string;
+  iteration?: number;
+  total_iterations?: number;
+  avg_loss?: number;
+  win_rate?: number;
+  last_updated?: string;
+  [key: string]: unknown;
+}
+
+/** 训练指标（聚合自 Model Registry） */
+export interface TrainingMetrics {
+  ppo: {
+    generations: number[];
+    elos: (number | null)[];
+    win_rates: (number | null)[];
+  };
+  alphazero: {
+    generations: number[];
+    elos: (number | null)[];
+    win_rates: (number | null)[];
+  };
+  models: {
+    id: string;
+    type: string;
+    elo: number | null;
+  }[];
+}

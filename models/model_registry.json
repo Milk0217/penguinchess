@@ -1,0 +1,250 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "id": "ppo_gen_1",
+      "type": "ppo",
+      "file": "ppo_penguinchess_gen_1.zip",
+      "created_at": "2026-04-26T07:12:06Z",
+      "generation": 1,
+      "eval": {
+        "elo": 1210.1,
+        "vs_random": {
+          "win": 0.51,
+          "lose": 0.475,
+          "draw": 0.015
+        }
+      },
+      "evaluated_at": "2026-04-26T13:24:11Z"
+    },
+    {
+      "id": "ppo_gen_10",
+      "type": "ppo",
+      "file": "ppo_penguinchess_gen_10.zip",
+      "created_at": "2026-04-26T07:12:06Z",
+      "generation": 10,
+      "eval": {
+        "elo": 1210.2,
+        "vs_random": {
+          "win": 0.515,
+          "lose": 0.465,
+          "draw": 0.02
+        }
+      },
+      "evaluated_at": "2026-04-26T13:24:13Z"
+    },
+    {
+      "id": "ppo_gen_2",
+      "type": "ppo",
+      "file": "ppo_penguinchess_gen_2.zip",
+      "created_at": "2026-04-26T07:12:06Z",
+      "generation": 2,
+      "eval": {
+        "elo": 1214.3,
+        "vs_random": {
+          "win": 0.575,
+          "lose": 0.41,
+          "draw": 0.015
+        }
+      },
+      "evaluated_at": "2026-04-26T13:24:15Z"
+    },
+    {
+      "id": "ppo_gen_3",
+      "type": "ppo",
+      "file": "ppo_penguinchess_gen_3.zip",
+      "created_at": "2026-04-26T07:12:06Z",
+      "generation": 3,
+      "eval": {
+        "elo": 1211.4,
+        "vs_random": {
+          "win": 0.52,
+          "lose": 0.455,
+          "draw": 0.025
+        }
+      },
+      "evaluated_at": "2026-04-26T13:24:17Z"
+    },
+    {
+      "id": "ppo_gen_4",
+      "type": "ppo",
+      "file": "ppo_penguinchess_gen_4.zip",
+      "created_at": "2026-04-26T07:12:06Z",
+      "generation": 4,
+      "eval": {
+        "elo": 1208.2,
+        "vs_random": {
+          "win": 0.485,
+          "lose": 0.48,
+          "draw": 0.035
+        }
+      },
+      "evaluated_at": "2026-04-26T13:24:19Z"
+    },
+    {
+      "id": "ppo_gen_5",
+      "type": "ppo",
+      "file": "ppo_penguinchess_gen_5.zip",
+      "created_at": "2026-04-26T07:12:06Z",
+      "generation": 5,
+      "eval": {
+        "elo": 1216.1,
+        "vs_random": {
+          "win": 0.47,
+          "lose": 0.5,
+          "draw": 0.03
+        }
+      },
+      "evaluated_at": "2026-04-26T13:24:21Z"
+    },
+    {
+      "id": "ppo_gen_6",
+      "type": "ppo",
+      "file": "ppo_penguinchess_gen_6.zip",
+      "created_at": "2026-04-26T07:12:06Z",
+      "generation": 6,
+      "eval": {
+        "elo": 1217.2,
+        "vs_random": {
+          "win": 0.57,
+          "lose": 0.405,
+          "draw": 0.025
+        }
+      },
+      "evaluated_at": "2026-04-26T13:24:23Z"
+    },
+    {
+      "id": "ppo_gen_7",
+      "type": "ppo",
+      "file": "ppo_penguinchess_gen_7.zip",
+      "created_at": "2026-04-26T07:12:06Z",
+      "generation": 7,
+      "eval": {
+        "elo": 1215.3,
+        "vs_random": {
+          "win": 0.575,
+          "lose": 0.385,
+          "draw": 0.04
+        }
+      },
+      "evaluated_at": "2026-04-26T13:24:25Z"
+    },
+    {
+      "id": "ppo_gen_8",
+      "type": "ppo",
+      "file": "ppo_penguinchess_gen_8.zip",
+      "created_at": "2026-04-26T07:12:06Z",
+      "generation": 8,
+      "eval": {
+        "elo": 1210.0,
+        "vs_random": {
+          "win": 0.46,
+          "lose": 0.49,
+          "draw": 0.05
+        }
+      },
+      "evaluated_at": "2026-04-26T13:24:27Z"
+    },
+    {
+      "id": "ppo_gen_9",
+      "type": "ppo",
+      "file": "ppo_penguinchess_gen_9.zip",
+      "created_at": "2026-04-26T07:12:06Z",
+      "generation": 9,
+      "eval": {
+        "elo": 1212.6,
+        "vs_random": {
+          "win": 0.485,
+          "lose": 0.495,
+          "draw": 0.02
+        }
+      },
+      "evaluated_at": "2026-04-26T13:24:29Z"
+    },
+    {
+      "id": "az_iter_10",
+      "type": "alphazero",
+      "arch": "mlp",
+      "file": "alphazero/alphazero_iter_10.pth",
+      "created_at": "2026-04-26T07:12:06Z",
+      "iteration": 10,
+      "eval": {
+        "elo": 1173.8,
+        "vs_random": {
+          "win": 0.46,
+          "lose": 0.525,
+          "draw": 0.015
+        }
+      },
+      "evaluated_at": "2026-04-26T13:24:32Z"
+    },
+    {
+      "id": "az_best",
+      "type": "alphazero",
+      "arch": "mlp",
+      "file": "alphazero/alphazero_best.pth",
+      "created_at": "2026-04-26T07:12:06Z",
+      "iteration": 999,
+      "eval": {
+        "elo": 1177.2,
+        "vs_random": {
+          "win": 0.395,
+          "lose": 0.57,
+          "draw": 0.035
+        }
+      },
+      "evaluated_at": "2026-04-26T13:24:40Z"
+    },
+    {
+      "id": "az_iter_20",
+      "type": "alphazero",
+      "arch": "mlp",
+      "file": "alphazero/alphazero_iter_20.pth",
+      "created_at": "2026-04-26T13:23:18Z",
+      "iteration": 20,
+      "eval": {
+        "elo": 1164.5,
+        "vs_random": {
+          "win": 0.405,
+          "lose": 0.565,
+          "draw": 0.03
+        }
+      },
+      "evaluated_at": "2026-04-26T13:24:34Z"
+    },
+    {
+      "id": "az_iter_30",
+      "type": "alphazero",
+      "arch": "mlp",
+      "file": "alphazero/alphazero_iter_30.pth",
+      "created_at": "2026-04-26T13:23:18Z",
+      "iteration": 30,
+      "eval": {
+        "elo": 1159.1,
+        "vs_random": {
+          "win": 0.33,
+          "lose": 0.665,
+          "draw": 0.005
+        }
+      },
+      "evaluated_at": "2026-04-26T13:24:37Z"
+    },
+    {
+      "id": "alphazero_best",
+      "type": "alphazero",
+      "arch": "mlp",
+      "file": "alphazero/alphazero_best.pth",
+      "created_at": "2026-04-26T15:02:21Z",
+      "iteration": 30,
+      "eval": {
+        "elo": 1240.0,
+        "vs_best_prev": {
+          "win": 0.6,
+          "lose": 0.4,
+          "draw": 0.0
+        }
+      },
+      "evaluated_at": "2026-04-26T15:11:25Z"
+    }
+  ]
+}

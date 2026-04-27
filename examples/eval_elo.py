@@ -67,6 +67,24 @@ from penguinchess.eval_utils import (
 # 模型发现与加载
 # =============================================================================
 
+def _detect_az_arch(pth_path: str) -> str:
+    """从文件名或 state_dict 检测 AZ 模型架构，返回 'resnet' / 'mlp' / 'legacy'。"""
+    stem = Path(pth_path).stem
+    parts = stem.split("_")
+    # 新命名: alphazero_resnet_iter_10, alphazero_mlp_best
+    if len(parts) >= 3 and parts[2] in ("resnet", "mlp"):
+        return parts[2]
+    # 旧命名: alphazero_iter_10 → 加载 state_dict 检测
+    try:
+        import torch
+        from penguinchess.ai.alphazero_net import detect_net_arch
+        state = torch.load(pth_path, map_location="cpu", weights_only=True)
+        cls = detect_net_arch(state)
+        return "resnet" if cls.__name__ == "AlphaZeroResNet" else "mlp"
+    except Exception:
+        return "legacy"
+
+
 def discover_models() -> list[dict]:
     models = []
     for p in sorted(MODELS_DIR.glob("ppo_penguinchess_gen_*.zip")):
@@ -81,22 +99,21 @@ def discover_models() -> list[dict]:
         })
     az_dir = MODELS_DIR / "alphazero"
     if az_dir.exists():
-        # 扫描架构感知的文件名: alphazero_{arch}_iter_N.pth
-        # 也兼容旧命名: alphazero_iter_N.pth
+        # 扫描所有 AZ 模型文件（新命名 + 旧命名）
         for p in sorted(az_dir.glob("alphazero_*.pth")):
-            stem = p.stem  # e.g. "alphazero_resnet_iter_10" or "alphazero_iter_10"
+            stem = p.stem
             parts = stem.split("_")
+            arch = _detect_az_arch(str(p))
 
-            # 检测架构: resnet / mlp / 旧版无标记
             if len(parts) >= 4 and parts[2] in ("resnet", "mlp") and parts[3] == "iter":
-                arch = parts[2]
+                # 新命名: alphazero_{arch}_iter_N.pth
                 try:
                     n = int(parts[4])
                 except (IndexError, ValueError):
                     continue
                 mid = f"az_{arch}_iter_{n}"
                 models.append({
-                    "id": mid, "type": "alphazero",
+                    "id": mid, "type": "alphazero", "arch": arch,
                     "file": f"alphazero/{stem}.pth",
                     "gen": None, "iter": n, "path": str(p),
                 })
@@ -107,16 +124,16 @@ def discover_models() -> list[dict]:
                 except (IndexError, ValueError):
                     continue
                 models.append({
-                    "id": f"az_iter_{n}", "type": "alphazero",
+                    "id": f"az_iter_{n}", "type": "alphazero", "arch": arch,
                     "file": f"alphazero/{stem}.pth",
                     "gen": None, "iter": n, "path": str(p),
                 })
             elif stem in ("alphazero_best", "alphazero_mlp_best", "alphazero_resnet_best"):
-                arch_tag = parts[2] if len(parts) >= 3 and parts[2] in ("mlp", "resnet") else "old"
-                mid = f"az_{arch_tag}_best" if arch_tag != "old" else "az_best"
+                arch_tag = parts[2] if len(parts) >= 3 and parts[2] in ("mlp", "resnet") else arch
+                mid = f"az_{arch_tag}_best" if arch_tag not in ("old", "legacy") else "az_best"
                 if not any(m["id"] == mid for m in models):
                     models.append({
-                        "id": mid, "type": "alphazero",
+                        "id": mid, "type": "alphazero", "arch": arch,
                         "file": f"alphazero/{stem}.pth",
                         "gen": None, "iter": 999,
                         "path": str(p),
@@ -238,7 +255,8 @@ def main():
         if m["id"] not in agents:
             continue
         reg_reg(model_id=m["id"], model_type=m["type"],
-                file_path=m["file"], generation=m["gen"], iteration=m["iter"])
+                file_path=m["file"], generation=m["gen"],
+                iteration=m["iter"], arch=m.get("arch"))
 
     if args.mcts:
         run_mcts_eval(args, agents, model_ids, elo_ratings, reg_get, reg_upd)

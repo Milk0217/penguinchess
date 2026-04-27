@@ -55,6 +55,7 @@ def register_model(
     file_path: str,
     generation: Optional[int] = None,
     iteration: Optional[int] = None,
+    arch: Optional[str] = None,  # "mlp" | "resnet" (仅 alphazero)
 ) -> dict[str, Any]:
     """
     注册一个新模型（若 model_id 已存在则更新基本信息）。
@@ -87,6 +88,8 @@ def register_model(
         entry["generation"] = generation
     if iteration is not None:
         entry["iteration"] = iteration
+    if arch is not None:
+        entry["arch"] = arch
     entry.setdefault("created_at", _now_iso())
 
     save_registry(registry)

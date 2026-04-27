@@ -646,7 +646,8 @@ def train_alphazero(
                     model_id = f"az_{arch_tag}_best"
                     rel_path = f"alphazero/alphazero_{arch_tag}_best.pth"
                     register_model(model_id, "alphazero",
-                                   rel_path, iteration=iteration)
+                                   rel_path, iteration=iteration,
+                                   arch=net.arch_name)
                     update_evaluation(model_id, {
                         "elo": round(1200 + (wr - 0.5) * 400, 1),
                         "vs_best_prev": {"win": wr, "lose": 1 - wr, "draw": 0.0},
