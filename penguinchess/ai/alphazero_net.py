@@ -417,30 +417,110 @@ class AlphaZeroResNet(nn.Module):
 # Architecture detection helper
 # =============================================================================
 
-class AlphaZeroResNetLarge(AlphaZeroResNet):
+class AlphaZeroResNetConfigurable(AlphaZeroResNet):
     """
-    Wider variant of AlphaZeroResNet with 1024-dim hidden layers (~2.2M params).
-    Uses ~40MB GPU memory instead of ~29MB. Better for games with more complexity.
+    Configurable-width AlphaZeroResNet with multiple residual blocks.
+
+    Use `AlphaZeroResNetXL` (pre-configured) or create custom:
+        net = AlphaZeroResNetConfigurable(hidden_dim=4096, num_blocks=4)
+
+    Training memory estimate (fp16 AMP):
+        params × 14 bytes (weights_fp16 + grads_fp32 + adam_fp32 + overhead)
+        e.g. 320M params → ~4.5GB → fits RTX 4060 8GB
     """
 
+    arch_name = "resnet_configurable"
+
+    def __init__(self, obs_dim: int = 206, action_dim: int = 60,
+                 hidden_dim: int = 512, num_blocks: int = 1):
+        nn.Module.__init__(self)
+        self.obs_dim = obs_dim
+        self.action_dim = action_dim
+
+        # ----- shared trunk with residual blocks -----
+        self.fc_in = nn.Linear(obs_dim, hidden_dim)
+        self.bn_in = nn.BatchNorm1d(hidden_dim)
+
+        self.res_blocks = nn.ModuleList()
+        for _ in range(num_blocks):
+            block = nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.BatchNorm1d(hidden_dim),
+                nn.ReLU(),
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.BatchNorm1d(hidden_dim),
+            )
+            self.res_blocks.append(block)
+
+        self.fc_out = nn.Linear(hidden_dim, hidden_dim // 2)
+        self.bn_out = nn.BatchNorm1d(hidden_dim // 2)
+
+        # ----- policy head -----
+        self.policy_fc = nn.Linear(hidden_dim // 2, action_dim)
+
+        # ----- value head -----
+        self.value_fc1 = nn.Linear(hidden_dim // 2, hidden_dim // 4)
+        self.value_fc2 = nn.Linear(hidden_dim // 4, 1)
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        # Shared trunk
+        x = F.relu(self.bn_in(self.fc_in(x)))
+
+        for block in self.res_blocks:
+            identity = x
+            x = block[0](x)          # Linear
+            x = block[1](x)          # BN
+            x = block[2](x)          # ReLU
+            x = block[3](x)          # Linear
+            x = block[4](x)          # BN
+            x = F.relu(x + identity)  # Residual + ReLU
+
+        x = F.relu(self.bn_out(self.fc_out(x)))
+
+        # Policy head
+        policy_logits = self.policy_fc(x)
+
+        # Value head
+        v = F.relu(self.value_fc1(x))
+        value = torch.tanh(self.value_fc2(v))
+
+        return policy_logits, value
+
+
+class AlphaZeroResNetXL(AlphaZeroResNetConfigurable):
+    """
+    Ultra-wide ResNet: 8K hidden dim, 4 residual blocks.
+    ~320M params, ~4.5GB GPU memory (fp16 AMP training).
+
+    **Training is ~100x slower than standard ResNet.**
+    Estimated: 1-2 hours per iteration.
+    """
+    arch_name = "resnet_xl"
+
+    def __init__(self, obs_dim: int = 206, action_dim: int = 60):
+        super().__init__(obs_dim, action_dim, hidden_dim=8192, num_blocks=4)
+
+
+class AlphaZeroResNetLarge(AlphaZeroResNetConfigurable):
+    """
+    Wider ResNet: 1K hidden dim, 1 residual block.
+    ~2M params, ~45MB GPU memory.
+    """
     arch_name = "resnet_large"
 
     def __init__(self, obs_dim: int = 206, action_dim: int = 60):
-        super().__init__(obs_dim, action_dim)
-        # Override parent's layers with wider dimensions
-        self.fc1 = nn.Linear(obs_dim, 1024)          # 206→1024 (was 512)
-        self.bn1 = nn.BatchNorm1d(1024)
-        self.fc2 = nn.Linear(1024, 1024)             # 1024→1024 (was 512)
-        self.bn2 = nn.BatchNorm1d(1024)
-        self.fc3 = nn.Linear(1024, 512)                # 1024→512 (was 512→256)
-        self.bn3 = nn.BatchNorm1d(512)
+        super().__init__(obs_dim, action_dim, hidden_dim=1024, num_blocks=1)
 
-        # Policy head
-        self.policy_fc = nn.Linear(512, action_dim)    # 512→60 (was 256→60)
 
-        # Value head
-        self.value_fc1 = nn.Linear(512, 256)            # 512→256 (was 256→128)
-        self.value_fc2 = nn.Linear(256, 1)              # unchanged
+class AlphaZeroResNet(AlphaZeroResNetConfigurable):
+    """
+    Standard ResNet: 512 hidden dim, 1 residual block.
+    ~550K params, ~25MB GPU memory.
+    """
+    arch_name = "resnet"
+
+    def __init__(self, obs_dim: int = 206, action_dim: int = 60):
+        super().__init__(obs_dim, action_dim, hidden_dim=512, num_blocks=1)
 
 
 def detect_net_arch(state_dict) -> type:
@@ -448,15 +528,28 @@ def detect_net_arch(state_dict) -> type:
     Detect network architecture from state dict keys.
 
     Detection rules:
-    - Has `fc3.*` keys → ResNet variant
-        - `fc1.weight` shape[0] == 1024 → AlphaZeroResNetLarge
-        - Otherwise → AlphaZeroResNet
-    - No `fc3.*` keys → AlphaZeroNet (MLP)
+    - Has `res_blocks.0.0.weight` → JSON-able configurable
+    - Has `fc3.*` keys → original ResNet classes
+        - Check `fc_in.weight` / `fc1.weight` for size
+    - Otherwise → AlphaZeroNet (MLP)
     """
+    # New configurable architecture
+    if any(k.startswith("res_blocks.") for k in state_dict.keys()):
+        fc_in_w = state_dict.get("fc_in.weight")
+        if fc_in_w is not None:
+            h = fc_in_w.shape[0]
+            num_blocks = sum(1 for k in state_dict if k.endswith(".0.weight") and "res_blocks" in k)
+            if h >= 8192:
+                return AlphaZeroResNetXL
+            elif h >= 1024:
+                return AlphaZeroResNetLarge
+            return AlphaZeroResNet
+        return AlphaZeroResNet
+
+    # Legacy ResNet classes
     if any(k.startswith("fc3.") for k in state_dict.keys()):
-        # Check first layer width to distinguish standard vs large
-        fc1_weight = state_dict.get("fc1.weight")
-        if fc1_weight is not None and fc1_weight.shape[0] == 1024:
+        fc1_w = state_dict.get("fc1.weight")
+        if fc1_w is not None and fc1_w.shape[0] >= 1024:
             return AlphaZeroResNetLarge
         return AlphaZeroResNet
     return AlphaZeroNet
