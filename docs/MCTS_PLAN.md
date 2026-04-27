@@ -1,6 +1,8 @@
 # PenguinChess AI 优化方案：MCTS + 神经网络
 
-> 日期: 2026-04-26
+> 日期: 2026-04-26（本文档最初为计划方案，MCTS + AlphaZero 已于 2026-04-27 实现）
+
+> **现状**: MCTS 搜索（Rust `mcts_rs.rs` + Python `ai/mcts_core.py`）和 AlphaZero 训练（`ai/train_alphazero.py` + `ai/alphazero_net.py`）已全部实现并投入训练。本文档保留作为技术原理参考，实际实现细节请参阅对应源码。
 
 ## 一、纯 PPO 的问题
 
@@ -81,80 +83,49 @@ MCTS（蒙特卡洛树搜索）在推理时做 800~1600 次模拟，每次模拟
 
 ## 三、实施路线图
 
-### 第一阶段：基础设施（优先级 P0）
+### 第一阶段：基础设施 ✅ 已完成
 
 ```python
-# penguinchess/ai/mcts.py  — MCTS 核心
-class MCTSNode:
-    """MCTS 树节点。"""
-    def __init__(self, state, parent=None, action=None):
-        self.state = state      # 游戏状态快照
-        self.parent = parent
-        self.action = action    # 到达本节点的动作
-        self.children = {}      # {action: MCTSNode}
-        self.visits = 0
-        self.total_value = 0.0
-        self.prior = 0.0        # 神经网络给出的先验概率
-    
-    def ucb_score(self, c_puct=1.4):
-        """UCB 公式"""
-        if self.visits == 0:
-            return float('inf')
-        return self.total_value / self.visits + c_puct * self.prior * sqrt(parent.visits) / (1 + self.visits)
+# penguinchess/ai/mcts_core.py  — MCTS 核心（已实现）
 ```
+MCTS 搜索已分别在 Python（`ai/mcts_core.py`）和 Rust（`game_engine/src/mcts_rs.rs`）中实现。Rust 版本支持批量回调，通过 Python 神经网络一次性评估多个叶节点。
 
-**依赖**: 需要 `PenguinChessCore` 支持**深拷贝**或**状态快照**，以便 MCTS 在不影响真实游戏状态的情况下模拟。
-
-### 第二阶段：神经网络升级（优先级 P1）
-
-将 `MlpPolicy` 替换为带价值头的网络：
+### 第二阶段：神经网络 ✅ 已完成
 
 ```python
-class AlphaZeroNet(nn.Module):
-    def __init__(self, obs_dim=204, action_dim=60):
-        # 共享特征提取层
-        self.fc1 = nn.Linear(obs_dim, 512)
-        self.fc2 = nn.Linear(512, 256)
-        self.bn1 = nn.BatchNorm1d(512)
-        self.bn2 = nn.BatchNorm1d(256)
-        # 策略头
-        self.policy_head = nn.Linear(256, action_dim)
-        # 价值头
-        self.value_head = nn.Sequential(
-            nn.Linear(256, 128),
-            nn.ReLU(),
-            nn.Linear(128, 1),
-            nn.Tanh(),  # 输出 [-1, 1]
-        )
+# penguinchess/ai/alphazero_net.py — AlphaZero ResNet（已实现）
 ```
+已实现带有策略头（Policy）和价值头（Value）的残差网络，支持 MCTS 搜索的叶节点评估。
 
-### 第三阶段：AlphaZero 自对弈训练（优先级 P2）
+### 第三阶段：AlphaZero 自对弈训练 ✅ 已完成
 
+```python
+# penguinchess/ai/train_alphazero.py — AlphaZero 训练（已实现）
 ```
-每轮训练:
-  1. 当前网络 vs 自己（MCTS 搜索）
-  2. 保存 (状态, MCTS策略分布, 胜负) 到经验池
-  3. 从经验池采样训练网络
-  4. 定期与历史最佳对战，若胜率 > 55% 则更新最佳
-```
+训练流程已实现，支持：
+- Dirichlet 噪声注入（探索）
+- 动态批量大小 + root-parallel MCTS
+- GPU 优化（ResourceMonitor）
+- 定期与历史最佳对战，胜率 > 55% 时更新最佳网络
+- 每轮迭代自动输出 ONNX + PyTorch 模型
+- ELO 评分系统
 
-### 第四阶段：整合到前端（优先级 P3）
+训练命令：`uv run python -m penguinchess.ai.train_alphazero --iterations 30`
 
-MCTS 推理需要 GPU 或优化后的 C++ 实现，前端建议用异步 API：
+### 第四阶段：整合到前端 ✅ 已完成
 
-```
-前端 → POST /api/game/xxx/ai_move → 后端 MCTS 搜索 → 返回动作
-```
+通过 `POST /api/game/xxx/ai_move` 端点调用后端 AI（PPO 或 AlphaZero 均可），由 `AIPlayer` 统一管理，自动选择当前最强模型。
 
 ## 四、预期效果
 
-| 指标 | 当前（纯 PPO Gen9） | 目标（PPO + MCTS） |
+| 指标 | 当前（纯 PPO Gen9） | MCTS + AlphaZero |
 |------|-------------------|-------------------|
-| 对随机胜率 | ~62% | > 99% |
-| 对前代胜率 | ~60% | > 95% |
-| 棋力水平 | 业余初级 | 业余高级 |
-| 布局能力 | 无 | 有初步布局概念 |
+| 对随机胜率 | ~62% | 已实现（训练中） |
+| 对前代胜率 | ~60% | 已实现（训练中） |
+| 棋力水平 | 业余初级 | 通过 MCTS 搜索提升 |
+| 布局能力 | 无 | 通过 AlphaZero 自对弈学习 |
 | 单步推理时间 | < 1ms | ~100-500ms（800 次模拟） |
+| 实现状态 | ✅ 生产可用 | ✅ 已实现，持续优化中 |
 
 ## 五、风险与注意事项
 

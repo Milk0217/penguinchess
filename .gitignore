@@ -12,3 +12,6 @@ wheels/
 # Agent and runtime files
 .hermes/
 backend_data/
+
+# Rust build artifacts
+game_engine/target/

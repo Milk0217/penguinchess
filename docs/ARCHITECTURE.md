@@ -70,7 +70,8 @@
 penguinchess/
 ├── server/                  # Flask HTTP 服务层
 │   ├── app.py               # 路由、会话管理、静态托管
-│   └── game.py              # Game 会话封装
+│   ├── game.py              # Game 会话封装
+│   └── boards.py            # 棋盘存储管理
 │
 ├── game_engine/              # Rust 游戏核心（cdylib）
 │   └── src/
@@ -78,55 +79,72 @@ penguinchess/
 │       ├── rules.rs          # 游戏规则引擎
 │       ├── ffi.rs            # C FFI 导出（有状态/无状态 API）
 │       ├── mcts_rs.rs        # Rust MCTS 搜索
-│       └── lib.rs
+│       ├── net_infer.rs      # ONNX 推理（预留）
+│       ├── lib.rs            # 模块入口
+│       └── bin/cli.rs        # 独立 CLI 二进制
 │
-├── penguinchess/            # Python 游戏核心
+├── penguinchess/            # Python 游戏核心 & AI
 │   ├── __init__.py
 │   ├── core.py              # PenguinChessCore（棋盘/棋子/规则）
 │   ├── env.py               # Gymnasium 环境（AI 训练接口）
 │   ├── reward.py            # 奖励函数
 │   ├── spaces.py            # Action / Observation Space
-│   ├── random_ai.py         # 随机 AI 基准
 │   ├── model_registry.py    # Model Registry（ELO 持久化）
 │   ├── rust_ffi.py          # Rust ctypes FFI 桥接
-│   └── rust_core.py         # RustCore 包装（duck-type 兼容 core.py）
+│   ├── rust_core.py         # RustCore 包装（duck-type 兼容 core.py）
+│   ├── rust_bridge.py       # Rust 统一桥接层
+│   └── ai/                  # AI 算法模块
+│       ├── __init__.py
+│       ├── alphazero_net.py # AlphaZero 神经网络
+│       ├── mcts_core.py     # MCTS 搜索核心
+│       └── train_alphazero.py # AlphaZero 训练脚本
 │
-├── statics/                 # 原始前端（Vanilla JS，已有）
-│   ├── main.js / board.js / piece.js / config.js
-│   └── style.css
+├── examples/                # 训练与评估示例
+│   ├── random_ai.py         # 随机 AI 基准
+│   ├── train_ppo.py         # PPO 训练脚本
+│   └── eval_elo.py          # ELO 评估工具
+│
+├── models/                  # 训练产出的模型
+│   ├── ppo_penguinchess_gen_*.zip  # PPO 各代模型
+│   ├── alphazero/           # AlphaZero 模型
+│   └── model_registry.json  # ELO 评分注册表
+│
+├── statics/                 # 原始前端（Vanilla JS）
 │
 ├── frontend/                # React 前端
 │   ├── src/
 │   │   ├── App.tsx          # 主应用状态机
 │   │   ├── api.ts           # 后端 API 客户端
-│   │   └── board/           # 棋盘可视化系统（策略模式）
-│   │       ├── BoardContainer.tsx  # 棋盘容器
-│   │       ├── HexCell.tsx   # 六边形格子
-│   │       ├── Piece.tsx     # 棋子渲染
-│   │       ├── Legend.tsx    # 图例
-│   │       ├── types.ts      # 类型定义
-│   │       ├── layouts/      # 布局策略
-│   │       │   ├── index.ts
-│   │       │   ├── parallelogram.ts
-│   │       │   └── hexagon.ts
-│   │       └── themes/       # 主题策略
-│   │           ├── index.ts
-│   │           ├── default.ts
-│   │           └── dark.ts
+│   │   ├── board/           # 棋盘可视化系统（策略模式）
+│   │   │   ├── BoardContainer.tsx  # 棋盘容器
+│   │   │   ├── HexCell.tsx   # 六边形格子
+│   │   │   ├── Piece.tsx     # 棋子渲染
+│   │   │   ├── Legend.tsx    # 图例
+│   │   │   ├── types.ts      # 类型定义
+│   │   │   ├── layouts/      # 布局策略
+│   │   │   └── themes/       # 主题策略
+│   │   └── editor/          # 棋盘编辑器
+│   │       ├── BoardEditor.tsx
+│   │       ├── EditorCanvas.tsx
+│   │       ├── Sidebar.tsx
+│   │       └── templates.ts
 │   └── vite.config.ts
-│
-├── frontend/src/editor/     # 棋盘编辑器
-│   ├── BoardEditor.tsx      # 编辑器主组件
-│   ├── EditorCanvas.tsx      # SVG 画布
-│   ├── Sidebar.tsx           # 侧边栏
-│   └── templates.ts          # 预设模板
 │
 ├── backend_data/
 │   └── boards/              # 已保存的棋盘 JSON
 │       ├── parallelogram.json
 │       ├── hexagon.json
+│       ├── default.json
 │       └── custom-*.json    # 用户自定义棋盘
 │
+├── docs/                    # 文档
+│   ├── RULES.md             # 游戏规则（权威文档）
+│   ├── ARCHITECTURE.md      # 本文件
+│   ├── BOARD_EDITOR.md      # 棋盘编辑器设计
+│   ├── MCTS_PLAN.md         # MCTS + 神经网络方案
+│   └── OPTIMIZATION.md      # 性能优化分析
+│
+├── start_all.py             # 一键启动脚本
 └── tests/                   # pytest 测试套件
 ```
 
@@ -230,10 +248,15 @@ uv run python examples/eval_elo.py --episodes 50 --incremental --rust-core
 | 游戏核心（Rust 版） | `game_engine/src/rules.rs` + `board.rs` | 编译为 DLL |
 | Rust FFI 桥接 | `penguinchess/rust_ffi.py` | ctypes 封装，含 `RustEngine` + `RustStatefulGame` |
 | RustCore 包装 | `penguinchess/rust_core.py` | duck-type 兼容 `PenguinChessCore` |
-| Rust MCTS 搜索 | `game_engine/src/mcts_rs.rs` | 通过回调调用 Python 神经网络 |
+| Rust 统一桥接层 | `penguinchess/rust_bridge.py` | Rust 桥接自动选择 |
+| Rust MCTS 搜索 | `game_engine/src/mcts_rs.rs` | 通过回调批量调用 Python 神经网络 |
+| Rust ONNX 推理（预留） | `game_engine/src/net_infer.rs` | 未来原生推理 |
 | Model Registry | `penguinchess/model_registry.py` | JSON 持久化，ELO 排序 |
 | ELO 评估 | `examples/eval_elo.py` | 增量/全量，Python/Rust，PPO/AZ/MCTS |
-| PPO 训练（含 ELO） | `examples/train_ppo.py` | 训练后自动写入 Registry |
+| PPO 训练 | `examples/train_ppo.py` | 训练后自动写入 Registry |
+| AlphaZero 训练 | `penguinchess/ai/train_alphazero.py` | MCTS + ResNet 自对弈 |
+| AlphaZero 神经网络 | `penguinchess/ai/alphazero_net.py` | ResNet 策略-价值网络 |
+| MCTS 核心（Python） | `penguinchess/ai/mcts_core.py` | Python MCTS 搜索节点 |
 
 ### 构建 Rust
 
@@ -246,14 +269,16 @@ cargo build --release    # 优化构建，产出 target/release/game_engine.dll
 
 ---
 
-## AI 开发路线图
+## AI 开发进展
+
+### 已完成里程碑
 
 ```
-阶段 1 (当前)                    阶段 2                    阶段 3
-───────────────────────    ────────────────────    ─────────────────────
-Python Gymnasium 环境         Rust 游戏核心             Rust AI 推理
-+ 随机/规则 AI               + Python AI 进程通信     + 快速策略网络
-验证游戏逻辑正确性            保持 AI 开发灵活性        极致性能人机对战
+✅ 阶段 1: Python Gymnasium 环境          → 已完成，生产可用
+✅ 阶段 2: Rust 游戏核心 (FFI cdylib)     → 已完成，快 11.5x
+✅ 阶段 3: MCTS + AlphaZero 训练管道      → 已完成（Rust MCTS 搜索 + Python 神经网络）
+✅ 阶段 4: PPO + AlphaZero 双线路训练     → 已完成
+⬜ 阶段 5: Rust ONNX 原生推理 (net_infer) → 预留，待实施
 ```
 
 ### Python AI 层（长期保留）
@@ -262,16 +287,20 @@ Python Gymnasium 环境         Rust 游戏核心             Rust AI 推理
 
 ```
 penguinchess/
-├── env.py          # Gymnasium 接口，AI 训练入口（不变）
-├── reward.py       # 奖励函数研究（不变）
-├── spaces.py       # Space 定义（不变）
-└── ai/             # 新增：Python AI 算法研究目录
-    ├── policy_gradient.py   # PPO / A2C 策略梯度
-    ├── mcts.py              # 蒙特卡洛树搜索
-    └── self_play.py         # 自我对弈训练循环
+├── env.py                     # Gymnasium 接口，AI 训练入口（不变）
+├── reward.py                  # 奖励函数研究（不变）
+├── spaces.py                  # Space 定义（不变）
+├── model_registry.py          # Model Registry（ELO 持久化）
+├── rust_ffi.py                # Rust ctypes FFI 桥接
+├── rust_core.py               # RustCore 包装（duck-type 兼容 core.py）
+├── rust_bridge.py             # Rust 统一桥接层
+└── ai/                        # Python AI 算法模块
+    ├── alphazero_net.py       # AlphaZero 神经网络
+    ├── mcts_core.py           # MCTS 搜索核心
+    └── train_alphazero.py     # AlphaZero 训练脚本
 ```
 
-Rust 后端的 `ai/python_ai.rs` 通过进程间通信调用上述 Python 模块，实现高性能推理。
+Rust 后端的 `mcts_rs.rs` 通过回调调用 Python 神经网络进行批量评估。`net_infer.rs` 预留用于未来 ONNX 原生推理，届时可绕过 Python 实现极致性能。
 
 ---
 
@@ -286,27 +315,21 @@ Rust 后端的 `ai/python_ai.rs` 通过进程间通信调用上述 Python 模块
 ### 启动当前版本（Python 后端）
 
 ```bash
-cd /mnt/e/programming/penguinchess
-source .venv/bin/activate
-python server/app.py
+uv run python server/app.py
 # 访问 http://localhost:8080
 ```
 
 ### 启动开发前端（Vite 热重载）
 
 ```bash
-cd frontend
-npm install
-npm run dev
+cd frontend && bun run dev
 # 访问 http://localhost:5173
 ```
 
 ### 运行 AI 训练
 
 ```bash
-cd /mnt/e/programming/penguinchess
-source .venv/bin/activate
-python -c "
+uv run python -c "
 from penguinchess.env import PenguinChessEnv
 env = PenguinChessEnv()
 obs, info = env.reset()
@@ -320,9 +343,7 @@ for _ in range(1000):
 ### 运行测试
 
 ```bash
-cd /mnt/e/programming/penguinchess
-source .venv/bin/activate
-pytest tests/ -q
+uv run python -m pytest tests/ -q
 ```
 
 ---
