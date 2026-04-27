@@ -141,23 +141,32 @@ def self_play_game(
         t = temperature if step < temp_threshold else 0.1
 
         if _use_rust_mcts:
-            # === Rust MCTS（根并行支持）===
+            # === Rust MCTS（根并行 + 线程级并行，JSON 只序列化一次）===
+            from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
+
             n_workers = max(1, parallel_workers)
             sims_per = max(1, num_simulations // n_workers)
+            bs = min(256, max(32, sims_per // 4))
+
+            # 只序列化一次，所有 worker 共享同一份 JSON
+            state_json = _core_to_rust_json(core)
             all_counts = {}
 
-            # 动态 batch_size：确保至少 4 次回调 / 搜索
-            bs = min(256, max(32, sims_per // 4))
-            for w in range(n_workers):
-                state_json = _core_to_rust_json(core)
+            def _run_worker(_json, _net, _sims, _bs):
                 raw = mcts_search_rust(
-                    state_json, model=net,
-                    num_simulations=sims_per,
-                    c_puct=3.0, batch_size=bs,
+                    _json, model=_net,
+                    num_simulations=_sims,
+                    c_puct=3.0, batch_size=_bs,
                 )
-                for k, v in raw.items():
-                    key = int(k)
-                    all_counts[key] = all_counts.get(key, 0) + v
+                return raw
+
+            with ThreadPoolExecutor(max_workers=n_workers) as _pool:
+                _futs = {_pool.submit(_run_worker, state_json, net, sims_per, bs): _ for _ in range(n_workers)}
+                for _f in _as_completed(_futs):
+                    raw = _f.result()
+                    for _k, _v in raw.items():
+                        key = int(_k)
+                        all_counts[key] = all_counts.get(key, 0) + _v
 
             counts = all_counts
         else:
@@ -657,7 +666,7 @@ def train_alphazero(
             lr_scheduler.step(wr)
             tb_writer.add_scalar("hyperparams/lr", optimizer.param_groups[0]["lr"], iteration)
 
-            if wr > 0.55:
+            if wr >= 0.55:
                 best_state = copy.deepcopy(net.state_dict())
                 best_iter = iteration
                 best_win_rate = wr
