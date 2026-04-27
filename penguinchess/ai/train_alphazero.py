@@ -29,7 +29,7 @@ import torch.optim as optim
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from penguinchess.ai.mcts_core import select_action
-from penguinchess.ai.alphazero_net import AlphaZeroNet, AlphaZeroResNet, detect_net_arch
+from penguinchess.ai.alphazero_net import AlphaZeroNet, AlphaZeroResNet, AlphaZeroResNetLarge, detect_net_arch
 from penguinchess.rust_core import RustCore
 from penguinchess.rust_ffi import get_engine, mcts_search_rust_handle, mcts_search_rust_handle_parallel
 from penguinchess._compat import ensure_utf8_stdout
@@ -324,8 +324,12 @@ def train_alphazero(
 
     # 配置摘要
     total_sims = num_simulations * parallel_workers
+    
+    # 默认使用 ResNetLarge（新训练），resume 时自动检测架构
+    _resume_net_class = AlphaZeroResNetLarge
+
     config_lines = [
-        f" 网络:    AlphaZeroResNet",
+        f" 网络:    AlphaZeroResNetLarge (2.2M params)",
         f" 设备:    {str(device).upper()}",
         f" 配置:    games={games_per_iter}×{game_workers}并行, sims={num_simulations}×{parallel_workers}={total_sims}总",
         f"          eval_sims={eval_simulations}, eval_interval={eval_interval}",
@@ -342,11 +346,11 @@ def train_alphazero(
         net.load_state_dict(state)
         print(f" 续训: {resume} ({NetClass.__name__})")
     else:
-        net = AlphaZeroResNet().to(device)
+        net = AlphaZeroResNetLarge().to(device)
         if resume:
             print(f" 模型不存在: {resume}")
         else:
-            print(f" 新网络: AlphaZeroResNet ({sum(p.numel() for p in net.parameters()):,} 参数)")
+            print(f" 新网络: AlphaZeroResNetLarge ({sum(p.numel() for p in net.parameters()):,} 参数)")
 
     optimizer = optim.Adam(net.parameters(), lr=lr, weight_decay=l2_reg)
 

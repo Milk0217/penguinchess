@@ -417,11 +417,46 @@ class AlphaZeroResNet(nn.Module):
 # Architecture detection helper
 # =============================================================================
 
+class AlphaZeroResNetLarge(AlphaZeroResNet):
+    """
+    Wider variant of AlphaZeroResNet with 1024-dim hidden layers (~2.2M params).
+    Uses ~40MB GPU memory instead of ~29MB. Better for games with more complexity.
+    """
+
+    arch_name = "resnet_large"
+
+    def __init__(self, obs_dim: int = 206, action_dim: int = 60):
+        super().__init__(obs_dim, action_dim)
+        # Override parent's layers with wider dimensions
+        self.fc1 = nn.Linear(obs_dim, 1024)          # 206→1024 (was 512)
+        self.bn1 = nn.BatchNorm1d(1024)
+        self.fc2 = nn.Linear(1024, 1024)             # 1024→1024 (was 512)
+        self.bn2 = nn.BatchNorm1d(1024)
+        self.fc3 = nn.Linear(1024, 512)                # 1024→512 (was 512→256)
+        self.bn3 = nn.BatchNorm1d(512)
+
+        # Policy head
+        self.policy_fc = nn.Linear(512, action_dim)    # 512→60 (was 256→60)
+
+        # Value head
+        self.value_fc1 = nn.Linear(512, 256)            # 512→256 (was 256→128)
+        self.value_fc2 = nn.Linear(256, 1)              # unchanged
+
+
 def detect_net_arch(state_dict) -> type:
     """
-    Detect whether a state dict is from AlphaZeroNet or AlphaZeroResNet.
-    ResNet has `fc3.*` keys that AlphaZeroNet doesn't.
+    Detect network architecture from state dict keys.
+
+    Detection rules:
+    - Has `fc3.*` keys → ResNet variant
+        - `fc1.weight` shape[0] == 1024 → AlphaZeroResNetLarge
+        - Otherwise → AlphaZeroResNet
+    - No `fc3.*` keys → AlphaZeroNet (MLP)
     """
     if any(k.startswith("fc3.") for k in state_dict.keys()):
+        # Check first layer width to distinguish standard vs large
+        fc1_weight = state_dict.get("fc1.weight")
+        if fc1_weight is not None and fc1_weight.shape[0] == 1024:
+            return AlphaZeroResNetLarge
         return AlphaZeroResNet
     return AlphaZeroNet
