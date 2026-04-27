@@ -1007,16 +1007,12 @@ const GLOBAL_THEMES: Record<GlobalTheme, {
                   </tr>
                 </thead>
                 <tbody>
-                    // 将后端 arch 字段映射为显示标签
-                    const archToLabel = (a?: string) =>
-                      a === "resnet" ? "ResNet" : a === "mlp" ? "MLP" : "";
-
                     {rankings.sort((a, b) => (b.eval?.elo ?? 0) - (a.eval?.elo ?? 0)).map((m, i) => {
                         const isBest = i === 0;
                         const az = m.type === "alphazero";
                         const vsr = m.eval?.vs_random;
                         const winRate = vsr ? (vsr.win * 100).toFixed(0) : "—";
-                        const archLabel = archToLabel(m.arch);
+                        const archLabel = m.arch === "resnet" ? "ResNet" : m.arch === "mlp" ? "MLP" : "";
                         const modelLabel = az
                           ? `AZ${archLabel ? "-" + archLabel : ""}_${m.iteration ?? "?"}`
                           : `PPO_gen_${m.generation ?? "?"}`;
