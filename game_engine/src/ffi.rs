@@ -356,3 +356,34 @@ pub unsafe extern "C" fn game_stateful_get_obs(
     write_output(output_buffer, buffer_size, &output);
     0
 }
+
+// ────────────────────────────────────────────────────────────
+// Parallel MCTS — single FFI call, internal thread parallelism
+// ────────────────────────────────────────────────────────────
+
+#[no_mangle]
+pub unsafe extern "C" fn mcts_search_rust_handle_parallel(
+    handle: i32,
+    num_simulations: i32,
+    c_puct: f64,
+    batch_size: i32,
+    num_workers: i32,
+    eval_fn: Option<mcts_rs::EvalFn>,
+    output_buf: *mut c_char,
+    output_size: i32,
+) -> i32 {
+    let game = match GAMES.get(handle as usize) {
+        Some(Some(g)) => g,
+        _ => return -1,
+    };
+    let result = mcts_rs::mcts_search_parallel_core(
+        game,
+        num_simulations,
+        c_puct,
+        batch_size,
+        eval_fn,
+        num_workers as usize,
+    );
+    write_output(output_buf, output_size, &result);
+    0
+}

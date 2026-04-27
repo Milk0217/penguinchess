@@ -329,3 +329,53 @@ fn write_output(buf: *mut c_char, size: i32, data: &str) {
         *buf.add(len) = 0;
     }
 }
+
+// ────────────────────────────────────────────────────────────
+// Parallel MCTS: splits simulations across N internal threads
+// ────────────────────────────────────────────────────────────
+
+pub fn mcts_search_parallel_core(
+    state: &GameState,
+    num_simulations: i32,
+    c_puct: f64,
+    batch_size: i32,
+    eval_fn: Option<EvalFn>,
+    num_workers: usize,
+) -> String {
+    if num_workers <= 1 {
+        return mcts_search_core(state, num_simulations, c_puct, batch_size, eval_fn);
+    }
+
+    let sims_per = std::cmp::max(1, num_simulations / num_workers as i32);
+
+    std::thread::scope(|s| {
+        let mut handles = Vec::with_capacity(num_workers);
+        for _ in 0..num_workers {
+            let state_clone = state.clone();
+            handles.push(s.spawn(move || {
+                mcts_search_core(&state_clone, sims_per, c_puct, batch_size, eval_fn)
+            }));
+        }
+
+        use std::collections::HashMap;
+        let mut merged: HashMap<usize, u32> = HashMap::new();
+        for h in handles {
+            let json_str = h.join().unwrap();
+            if let Ok(partial) = serde_json::from_str::<HashMap<String, serde_json::Value>>(&json_str) {
+                for (k, v) in partial {
+                    if let Ok(action) = k.parse::<usize>() {
+                        if let Some(visits) = v.as_u64() {
+                            *merged.entry(action).or_insert(0) += visits as u32;
+                        }
+                    }
+                }
+            }
+        }
+
+        let out_map: serde_json::Map<String, serde_json::Value> = merged
+            .iter()
+            .map(|(k, v)| (k.to_string(), serde_json::Value::Number(serde_json::Number::from(*v))))
+            .collect();
+        serde_json::to_string(&out_map).unwrap_or_default()
+    })
+}
