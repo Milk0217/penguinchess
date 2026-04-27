@@ -227,7 +227,7 @@ class AlphaZeroNet(nn.Module):
     # Flat batch inference (for Rust bridge)
     # ------------------------------------------------------------------
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def evaluate_flat_batch(
         self,
         batch: np.ndarray,
@@ -237,7 +237,7 @@ class AlphaZeroNet(nn.Module):
         device = next(self.parameters()).device
         x = torch.from_numpy(batch).to(device, non_blocking=True)
         logits, val_t = self.forward(x)
-        return logits.cpu().numpy().astype(np.float64), val_t.cpu().numpy().flatten().astype(np.float64)
+        return logits.cpu().numpy().astype(np.float32), val_t.cpu().numpy().flatten().astype(np.float32)
 
     # ------------------------------------------------------------------
     # Static helpers
@@ -354,7 +354,7 @@ class AlphaZeroResNet(nn.Module):
             probs = probs / probs.sum()
         return probs, value
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def evaluate_batch(self, states: list) -> tuple[np.ndarray, np.ndarray]:
         """Batch inference. Same interface as AlphaZeroNet.evaluate_batch."""
         self.eval()
@@ -371,14 +371,14 @@ class AlphaZeroResNet(nn.Module):
         logits, val_t = self.forward(x)
         return logits.cpu().numpy().astype(np.float32), val_t.cpu().numpy().flatten().astype(np.float32)
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def evaluate_flat_batch(self, batch: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Pre-built flat observation batch. non_blocking GPU transfer."""
         self.eval()
         device = next(self.parameters()).device
         x = torch.from_numpy(batch).to(device, non_blocking=True)
         logits, val_t = self.forward(x)
-        return logits.cpu().numpy().astype(np.float64), val_t.cpu().numpy().flatten().astype(np.float64)
+        return logits.cpu().numpy().astype(np.float32), val_t.cpu().numpy().flatten().astype(np.float32)
 
     @staticmethod
     def _stable_softmax(x: np.ndarray) -> np.ndarray:

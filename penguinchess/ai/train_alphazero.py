@@ -87,7 +87,7 @@ def self_play_game(
             core.handle, model=net,
             num_simulations=num_simulations,
             c_puct=3.0,
-            batch_size=min(256, max(32, num_simulations // 4)),
+            batch_size=min(1024, max(128, num_simulations // 2)),
             num_workers=n_workers,
         )
         counts = {int(k): v for k, v in raw.items()}
@@ -179,7 +179,7 @@ def _evaluate_models(
                 core.handle, model=current_net,
                 num_simulations=num_simulations,
                 c_puct=3.0,
-                batch_size=min(256, max(32, num_simulations // 4)),
+                batch_size=min(1024, max(128, num_simulations // 2)),
                 num_workers=parallel_workers,
             )
             counts = {int(k): v for k, v in raw_counts.items()}
