@@ -73,6 +73,13 @@ def register_model(
             break
 
     if entry is None:
+        # Check if any existing entry has the same file path (prevent duplicates)
+        for existing_m in models:
+            if existing_m.get("file") == file_path:
+                entry = existing_m
+                break
+
+    if entry is None:
         entry = {
             "id": model_id,
             "type": model_type,
@@ -118,7 +125,11 @@ def update_evaluation(
     registry = get_registry()
     for m in registry.setdefault("models", []):
         if m.get("id") == model_id:
-            m["eval"] = eval_data
+            # Deep merge: preserve existing eval fields, add/override with new data
+            existing = m.get("eval") or {}
+            merged = dict(existing)
+            merged.update(eval_data)
+            m["eval"] = merged
             m["evaluated_at"] = _now_iso()
 
             # ELO 历史追踪

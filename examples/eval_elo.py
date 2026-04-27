@@ -149,6 +149,25 @@ def discover_models() -> list[dict]:
                         "gen": None, "iter": 999,
                         "path": str(p),
                     })
+            # 旧命名: alphazero_final.pth
+            elif stem == "alphazero_final":
+                if not any(m["id"] == "az_final" for m in models):
+                    models.append({
+                        "id": "az_final", "type": "alphazero", "arch": arch,
+                        "file": f"alphazero/{stem}.pth",
+                        "gen": None, "iter": None,
+                        "path": str(p),
+                    })
+            # 新命名: alphazero_{arch}_final.pth
+            elif len(parts) >= 3 and parts[1] in ("resnet", "mlp") and parts[2] == "final":
+                mid = f"az_{parts[1]}_final"
+                if not any(m["id"] == mid for m in models):
+                    models.append({
+                        "id": mid, "type": "alphazero", "arch": parts[1],
+                        "file": f"alphazero/{stem}.pth",
+                        "gen": None, "iter": None,
+                        "path": str(p),
+                    })
     return models
 
 
@@ -422,7 +441,12 @@ def _worker_run_pair(info_a, info_b, num_episodes, use_rust, seed_offset,
 
 
 def _run_round_robin_parallel(args, all_models, model_ids, elo_ratings, reg_get, reg_upd):
-    """并行 Round-Robin：每个 pair 在独立进程中运行。"""
+    """并行 Round-Robin：每个 pair 在独立进程中运行，ELO 按固定顺序计算。
+
+    双阶段策略保证结果确定性：
+    Phase 1 (并行): 运行所有 compete()，收集原始胜负结果
+    Phase 2 (顺序): 按 pair_idx 固定顺序计算 ELO，确保结果与顺序模式一致
+    """
     import multiprocessing as mp
     from concurrent.futures import ProcessPoolExecutor, as_completed
 
@@ -460,34 +484,51 @@ def _run_round_robin_parallel(args, all_models, model_ids, elo_ratings, reg_get,
 
     print(f"  共 {num_pairs} 对 ({skipped} 跳过)")
 
-    # 提交到进程池
+    # =====================================================================
+    # Phase 1: 并行运行所有对战（昂贵的部分，ProcessPoolExecutor）
+    # =====================================================================
     pool = ProcessPoolExecutor(max_workers=args.workers)
     futures = {}
     try:
         for pair_idx, (mid_a, mid_b) in enumerate(pairs):
+            # NOTE: seed_offset = pair_idx (不是 pair_idx * 2000)
+            # compete() 内部已经做了 seed_offset * 2000
             future = pool.submit(
                 _worker_run_pair,
                 info_map[mid_a], info_map[mid_b],
-                args.episodes, args.rust_core, pair_idx * 2000,
+                args.episodes, args.rust_core, pair_idx,
                 args.mcts, args.simulations, not args.stochastic,
                 args.use_gpu,
             )
-            futures[future] = (mid_a, mid_b)
+            futures[future] = (mid_a, mid_b, pair_idx)
 
-        done = 0
+        # 等待所有任务完成，不在此阶段计算 ELO
         for future in as_completed(futures):
-            mid_a, mid_b = futures[future]
-            done += 1
+            pass
+
+        # =====================================================================
+        # Phase 2: 收集原始结果（无 ELO 计算）
+        # =====================================================================
+        results: dict[int, tuple[str, str, dict | None]] = {}
+        for future, (mid_a, mid_b, pair_idx) in futures.items():
             try:
-                result = future.result()
+                results[pair_idx] = (mid_a, mid_b, future.result())
             except Exception as e:
+                results[pair_idx] = (mid_a, mid_b, None)
                 print(f"\n  [FAIL] {mid_a} vs {mid_b}: {e}")
+
+        # =====================================================================
+        # Phase 3: 按 pair_index 固定顺序计算 ELO（确定性的关键！）
+        # =====================================================================
+        for pair_idx in sorted(results.keys()):
+            mid_a, mid_b, result = results[pair_idx]
+            if result is None:
                 continue
 
             score_a = result["p1_win"] + 0.5 * result["draw"]
             new_a, new_b = compute_elo(elo_ratings[mid_a], elo_ratings[mid_b], score_a)
             elo_ratings[mid_a], elo_ratings[mid_b] = new_a, new_b
-            print(f"  [{done}/{num_pairs}] {mid_a} vs {mid_b}: "
+            print(f"  [{pair_idx + 1}/{num_pairs}] {mid_a} vs {mid_b}: "
                   f"胜 {result['p1_win']:.1%} 负 {result['p2_win']:.1%} 平 {result['draw']:.1%}"
                   f" | ELO: {mid_a}={new_a:.0f} {mid_b}={new_b:.0f}")
 

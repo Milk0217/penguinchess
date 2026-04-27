@@ -171,12 +171,14 @@ def self_play_game(
                     evaluate_fn=net.evaluate_batch,
                     num_workers=parallel_workers,
                     batch_size=128,
+                    training=True,
                 )
             else:
                 counts, root = mcts_search_batched(
                     core, model=None, num_simulations=num_simulations,
                     temperature=t, evaluate_fn=net.evaluate_batch,
                     batch_size=128,
+                    training=True,
                 )
 
         total = sum(counts.values())
@@ -460,6 +462,12 @@ def train_alphazero(
 
     optimizer = optim.Adam(net.parameters(), lr=lr, weight_decay=l2_reg)
 
+    # Learning rate scheduling
+    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='max', factor=0.5, patience=3,
+        threshold=0.02, min_lr=1e-5, verbose=True,
+    )
+
     # best_net 跟踪
     best_state = copy.deepcopy(net.state_dict())
     best_iter = 0
@@ -539,6 +547,9 @@ def train_alphazero(
                     value_loss = F.mse_loss(values.squeeze(-1), value_tensor)
                     loss = policy_loss + value_loss
                 scaler.scale(loss).backward()
+                # Gradient clipping for AMP path
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=1.0)
                 scaler.step(optimizer)
                 scaler.update()
             else:
@@ -547,6 +558,7 @@ def train_alphazero(
                 value_loss = F.mse_loss(values.squeeze(-1), value_tensor)
                 loss = policy_loss + value_loss
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=1.0)
                 optimizer.step()
             total_loss += loss.item()
             total_policy_loss += policy_loss.item()
@@ -573,7 +585,8 @@ def train_alphazero(
         print(f"  {iteration:>3d}/{num_iterations:<3d}  │ "
               f"{game_time:>4.0f}s {train_time:>4.0f}s "
               f"{total_elapsed:>5.0f}s  "
-              f"{avg_loss:.4f} {avg_p:.4f} {avg_v:.4f}  │ {res_str}")
+              f"{avg_loss:.4f} {avg_p:.4f} {avg_v:.4f}  "
+              f"LR {optimizer.param_groups[0]['lr']:.2e} │ {res_str}")
 
         # TensorBoard 日志
         tb_writer.add_scalar("loss/total", avg_loss, iteration)
@@ -637,6 +650,10 @@ def train_alphazero(
             # TensorBoard 记录评估结果
             tb_writer.add_scalar("eval/win_rate_vs_best", wr, iteration)
             tb_writer.add_scalar("eval/eval_time", t5 - t4, iteration)
+
+            # Step LR scheduler based on evaluation win rate
+            lr_scheduler.step(wr)
+            tb_writer.add_scalar("hyperparams/lr", optimizer.param_groups[0]["lr"], iteration)
 
             if wr > 0.55:
                 best_state = copy.deepcopy(net.state_dict())

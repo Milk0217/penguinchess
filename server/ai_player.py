@@ -50,15 +50,35 @@ def _find_best_model() -> Optional[tuple[str, str]]:
         except (IndexError, ValueError):
             pass
 
-    # AlphaZero models: alphazero/alphazero_iter_N.pth
-    for p in sorted((MODELS_DIR / "alphazero").glob("alphazero_iter_*.pth")):
-        try:
-            n = int(p.stem.split("_iter_")[1])
-            if n > best_priority:
+    # AlphaZero models: alphazero/alphazero*_iter_N.pth, *_best.pth, *_final.pth
+    az_dir = MODELS_DIR / "alphazero"
+    if az_dir.exists():
+        for p in sorted(az_dir.glob("alphazero*.pth")):
+            stem = p.stem
+            parts = stem.split("_")
+
+            # Extract iteration number if present
+            iter_num = None
+            if "iter" in parts:
+                try:
+                    idx = parts.index("iter")
+                    iter_num = int(parts[idx + 1])
+                except (IndexError, ValueError):
+                    pass
+
+            # Priority: best models > iter models > final models
+            if "best" in parts:
+                priority = 999
+            elif iter_num is not None:
+                priority = iter_num
+            elif "final" in parts:
+                priority = 0
+            else:
+                continue
+
+            if priority > best_priority:
                 best = (str(p), "alphazero")
-                best_priority = n
-        except (IndexError, ValueError):
-            pass
+                best_priority = priority
 
     # Fallback to best directory
     if best is None:

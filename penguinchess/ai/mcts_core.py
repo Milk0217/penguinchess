@@ -19,6 +19,15 @@ from penguinchess.core import PenguinChessCore
 
 
 # =============================================================================
+# Dirichlet noise config (AlphaZero root exploration)
+# Match Rust implementation: DIRICHLET_ALPHA=0.15, DIRICHLET_EPS=0.25
+# =============================================================================
+
+DIRICHLET_ALPHA: float = 0.15
+DIRICHLET_EPS: float = 0.25
+
+
+# =============================================================================
 # MCTS Node
 # =============================================================================
 
@@ -231,6 +240,7 @@ def mcts_search(
     c_puct: float = 1.4,
     temperature: float = 1.0,
     evaluate_fn: Optional[Callable[[PenguinChessCore], Tuple[np.ndarray, float]]] = None,
+    training: bool = False,
 ) -> Tuple[Dict[int, int], MCTSNode]:
     """
     Run MCTS search from a root state.
@@ -251,6 +261,10 @@ def mcts_search(
     evaluate_fn : callable or None
         Custom evaluator ``(state) -> (policy_probs_60, value_scalar)``.
         Takes priority over ``model``.
+    training : bool
+        If True, apply Dirichlet noise to the **root** node's prior
+        probabilities to encourage exploration (AlphaZero-style).
+        Must be ``False`` during evaluation / inference.  Default ``False``.
 
     Returns
     -------
@@ -317,7 +331,14 @@ def mcts_search(
                         prior=float(policy[a]),
                     )
 
-        # ----- BACKUP -----
+            # --- Dirichlet noise at root (AlphaZero training exploration) ---
+            if training and node.parent is None:
+                noise = np.random.dirichlet([DIRICHLET_ALPHA] * len(legal))
+                for i, a in enumerate(legal):
+                    child = node.children[a]
+                    child.prior = (1.0 - DIRICHLET_EPS) * child.prior + DIRICHLET_EPS * float(noise[i])
+
+            # ----- BACKUP -----
         while node is not None:
             node.visits += 1
             node.total_value += value
@@ -343,6 +364,7 @@ def mcts_search(
 def _evaluate_and_expand_batch(
     pending: List[Tuple[MCTSNode, List[int]]],
     batch_eval_fn: Callable,
+    training: bool = False,
 ) -> None:
     """
     Internal helper for ``mcts_search_batched``.
@@ -361,9 +383,13 @@ def _evaluate_and_expand_batch(
         ``states`` is a list of ``PenguinChessCore`` objects.
 
         ``logits`` : ndarray ``(B, 60)`` — raw policy logits.
-        ``values`` : ndarray ``(B,)``   — scalar values in ``[-1, 1]``.
+        ``values`` : ndarray ``(B,)``   -- scalar values in ``[-1, 1]``.
 
         Typically ``model.evaluate_batch``.
+    training : bool
+        If True, apply Dirichlet noise to the **root** node's priors
+        to force exploration (AlphaZero-style).  Has no effect on non-root
+        nodes.  Default ``False`` (safe for evaluation / inference).
     """
     # Collect leaf states for batch evaluation
     states = [node.state for node, _ in pending]
@@ -409,6 +435,13 @@ def _evaluate_and_expand_batch(
                     prior=float(policy[a]),
                 )
 
+        # --- Dirichlet noise at root (AlphaZero training exploration) ---
+        if training and node.parent is None:
+            noise = np.random.dirichlet([DIRICHLET_ALPHA] * len(legal))
+            for i, a in enumerate(legal):
+                child = node.children[a]
+                child.prior = (1.0 - DIRICHLET_EPS) * child.prior + DIRICHLET_EPS * float(noise[i])
+
         # --- BACKUP ---
         n = node
         v = value
@@ -432,6 +465,7 @@ def mcts_search_batched(
     temperature: float = 1.0,
     evaluate_fn: Optional[Callable] = None,
     batch_size: int = 32,
+    training: bool = False,
 ) -> Tuple[Dict[int, int], MCTSNode]:
     """
     MCTS search with **batched neural-network evaluation**.
@@ -447,7 +481,7 @@ def mcts_search_batched(
         The starting game state.  **Not** modified.
     model :
         Either an ``AlphaZeroNet`` (or any object with ``.evaluate_batch()``),
-        or a callable that acts as ``batch_eval_fn`` — see below.
+        or a callable that acts as ``batch_eval_fn`` -- see below.
     num_simulations : int
         Total number of MCTS simulations to run (default 800).
     c_puct : float
@@ -462,13 +496,17 @@ def mcts_search_batched(
         where ``logits`` is ``ndarray (B, 60)`` and ``values`` is
         ``ndarray (B,)``.  Takes priority over ``model``.
 
-        The passed function **must** support batch — it receives a list of
+        The passed function **must** support batch -- it receives a list of
         states, not a single state.  For single-state evaluation use
         ``mcts_search`` instead.
     batch_size : int
         Maximum number of leaf states collected before a batch evaluation is
         triggered (default 32).  Larger values give better GPU utilisation but
         may slightly alter the search tree since backups are delayed.
+    training : bool
+        If True, apply Dirichlet noise to the **root** node's prior
+        probabilities to encourage exploration (AlphaZero-style).
+        Must be ``False`` during evaluation / inference.  Default ``False``.
 
     Returns
     -------
@@ -493,6 +531,7 @@ def mcts_search_batched(
             c_puct=c_puct,
             temperature=temperature,
             evaluate_fn=evaluate_fn,
+            training=training,
         )
 
     # Fast snapshot for simulation engine
@@ -539,12 +578,12 @@ def mcts_search_batched(
 
         # Flush pending when batch is full
         if len(pending) >= batch_size:
-            _evaluate_and_expand_batch(pending, batch_eval_fn)
+            _evaluate_and_expand_batch(pending, batch_eval_fn, training=training)
             pending.clear()
 
     # ---- flush remaining pending nodes ----
     if pending:
-        _evaluate_and_expand_batch(pending, batch_eval_fn)
+        _evaluate_and_expand_batch(pending, batch_eval_fn, training=training)
         pending.clear()
 
     # ---- build result ----
@@ -573,6 +612,7 @@ def mcts_search_parallel(
     num_workers: int = 4,
     batch_size: int = 32,
     use_batched: bool = True,
+    training: bool = False,
 ) -> Tuple[Dict[int, int], None]:
     """
     Root-parallelised MCTS via **ensemble averaging**.
@@ -604,6 +644,10 @@ def mcts_search_parallel(
     use_batched : bool
         If ``True`` (default), uses ``mcts_search_batched`` for each worker.
         If ``False``, uses the original ``mcts_search``.
+    training : bool
+        If True, apply Dirichlet noise to the **root** node's prior
+        probabilities in each worker search (AlphaZero-style).
+        Must be ``False`` during evaluation / inference.  Default ``False``.
 
     Returns
     -------
@@ -626,6 +670,7 @@ def mcts_search_parallel(
                 temperature=temperature,
                 evaluate_fn=evaluate_fn,
                 batch_size=batch_size,
+                training=training,
             )
         else:
             counts, _ = mcts_search(
@@ -635,6 +680,7 @@ def mcts_search_parallel(
                 c_puct=c_puct,
                 temperature=temperature,
                 evaluate_fn=evaluate_fn,
+                training=training,
             )
         for action, count in counts.items():
             merged_counts[action] = merged_counts.get(action, 0) + count
