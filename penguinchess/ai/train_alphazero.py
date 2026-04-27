@@ -125,12 +125,11 @@ def self_play_game(
     num_simulations: int = 200,
     temperature: float = 1.0,
     temp_threshold: int = 30,
+    parallel_workers: int = 1,
 ) -> list:
     """
     使用神经网络 + MCTS 进行一次自对弈。
-
-    Returns:
-        [(state_snapshot, policy_target_60, current_player), ...] × steps
+    parallel_workers > 1 时启用根并行 MCTS（集成平均，提升探索质量）。
     """
     core = PenguinChessCore()
     core.reset(seed=None)
@@ -146,27 +145,46 @@ def self_play_game(
         pass
 
     for step in range(500):
-        # 温度退火
         t = temperature if step < temp_threshold else 0.1
 
         if _use_rust_mcts:
-            # Rust MCTS（快 10-100x，自动利用 GPU 批处理）
-            state_json = _core_to_rust_json(core)
-            raw_counts = mcts_search_rust(
-                state_json,
-                model=net,
-                num_simulations=num_simulations,
-                c_puct=3.0,
-                batch_size=256,
-            )
-            counts = {int(k): v for k, v in raw_counts.items()}
+            # === Rust MCTS（根并行支持）===
+            n_workers = max(1, parallel_workers)
+            sims_per = max(1, num_simulations // n_workers)
+            all_counts = {}
+
+            # 动态 batch_size：确保至少 4 次回调 / 搜索
+            bs = min(256, max(32, sims_per // 4))
+            for w in range(n_workers):
+                state_json = _core_to_rust_json(core)
+                raw = mcts_search_rust(
+                    state_json, model=net,
+                    num_simulations=sims_per,
+                    c_puct=3.0, batch_size=bs,
+                )
+                for k, v in raw.items():
+                    key = int(k)
+                    all_counts[key] = all_counts.get(key, 0) + v
+
+            counts = all_counts
         else:
-            # Python MCTS（回退）
-            counts, root = mcts_search_batched(
-                core, model=None, num_simulations=num_simulations,
-                temperature=t, evaluate_fn=net.evaluate_batch,
-                batch_size=128,
-            )
+            # === Python MCTS（支持根并行）===
+            if parallel_workers > 1:
+                from penguinchess.ai.mcts_core import mcts_search_parallel
+                counts, _ = mcts_search_parallel(
+                    core, model=None,
+                    num_simulations=num_simulations,
+                    temperature=t,
+                    evaluate_fn=net.evaluate_batch,
+                    num_workers=parallel_workers,
+                    batch_size=128,
+                )
+            else:
+                counts, root = mcts_search_batched(
+                    core, model=None, num_simulations=num_simulations,
+                    temperature=t, evaluate_fn=net.evaluate_batch,
+                    batch_size=128,
+                )
 
         total = sum(counts.values())
         policy = np.zeros(60, dtype=np.float32)
@@ -220,6 +238,7 @@ def _evaluate_models(
     net_b: AlphaZeroNet,
     num_games: int = 200,
     num_simulations: int = 800,
+    parallel_workers: int = 4,
 ) -> float:
     """
     net_a vs net_b 使用 Rust MCTS 对战。
@@ -261,16 +280,22 @@ def _evaluate_models(
                 break
 
             if _use_rust_mcts:
-                # Rust MCTS (returns {str_action: visit_count})
-                state_json = core.to_json()
-                raw_counts = mcts_search_rust(
-                    state_json,
-                    model=current_net,
-                    num_simulations=num_simulations,
-                    c_puct=3.0,
-                    batch_size=256,
-                )
-                counts = {int(k): v for k, v in raw_counts.items()}
+                # Rust MCTS (根并行集成平均)
+                n_workers = max(1, parallel_workers)
+                sims_per = max(1, num_simulations // n_workers)
+                all_c = {}
+                bs = min(256, max(32, sims_per // 4))
+                for w in range(n_workers):
+                    state_json = core.to_json()
+                    raw = mcts_search_rust(
+                        state_json, model=current_net,
+                        num_simulations=sims_per,
+                        c_puct=3.0, batch_size=bs,
+                    )
+                    for k, v in raw.items():
+                        key = int(k)
+                        all_c[key] = all_c.get(key, 0) + v
+                counts = all_c
             else:
                 # Python MCTS (fallback)
                 counts, _ = mcts_search_batched(
@@ -406,6 +431,7 @@ def train_alphazero(
     lr: float = 1e-3,
     l2_reg: float = 1e-4,
     resume: str | None = None,
+    parallel_workers: int = 4,
 ):
     """AlphaZero 自对弈训练主循环。"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -415,10 +441,11 @@ def train_alphazero(
     monitor = ResourceMonitor()
 
     # 配置摘要
+    total_sims = num_simulations * parallel_workers
     config_lines = [
         f" 网络:    AlphaZeroResNet",
         f" 设备:    {str(device).upper()}",
-        f" 配置:    games={games_per_iter}, sims={num_simulations}",
+        f" 配置:    games={games_per_iter}, sims={num_simulations}×{parallel_workers}并行={total_sims}总",
         f"          eval_sims={eval_simulations}, eval_interval={eval_interval}",
         f"          batch_size={batch_size}, lr={lr}",
     ]
@@ -470,7 +497,10 @@ def train_alphazero(
         iter_data = []
         game_results = []
         for g in range(games_per_iter):
-            game_data, winner = self_play_game(net, num_simulations=num_simulations)
+            game_data, winner = self_play_game(
+                net, num_simulations=num_simulations,
+                parallel_workers=parallel_workers,
+            )
             iter_data.extend(game_data)
             game_results.append(winner)
 
@@ -573,7 +603,8 @@ def train_alphazero(
 
             wr = _evaluate_models(net_cpu, best_net,
                                   num_games=eval_games,
-                                  num_simulations=eval_simulations)
+                                  num_simulations=eval_simulations,
+                                  parallel_workers=parallel_workers)
             t5 = time.time()
             print(f"胜率: {wr:.1%} ({t5-t4:.0f}s)")
 
@@ -614,9 +645,9 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="AlphaZero 训练")
     parser.add_argument("--iterations", type=int, default=100, help="迭代次数")
-    parser.add_argument("--games", type=int, default=100, help="每迭代对局数（默认 100）")
-    parser.add_argument("--simulations", type=int, default=400,
-                        help="训练 MCTS 模拟次数（默认 400）")
+    parser.add_argument("--games", type=int, default=200, help="每迭代对局数（默认 200）")
+    parser.add_argument("--simulations", type=int, default=200,
+                        help="训练 MCTS 模拟次数（默认 200，配合 --parallel-workers 总模拟量 = simulations × workers）")
     parser.add_argument("--eval-simulations", type=int, default=800,
                         help="评估 MCTS 模拟次数（默认 800）")
     parser.add_argument("--eval-interval", type=int, default=10,
@@ -625,6 +656,8 @@ if __name__ == "__main__":
                         help="评估局数（默认 200）")
     parser.add_argument("--batch-size", type=int, default=256, help="训练批次大小")
     parser.add_argument("--lr", type=float, default=1e-3, help="学习率")
+    parser.add_argument("--parallel-workers", type=int, default=4,
+                        help="根并行 MCTS workers（默认 4，每个 worker 获得 simulations/workers 次模拟）")
     parser.add_argument("--resume", type=str, default=None, help="续训练模型路径")
     args = parser.parse_args()
 
@@ -638,4 +671,5 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         lr=args.lr,
         resume=args.resume,
+        parallel_workers=args.parallel_workers,
     )
