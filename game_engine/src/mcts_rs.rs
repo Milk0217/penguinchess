@@ -5,6 +5,8 @@ use rand::Rng;
 use rand_distr::{Dirichlet, Distribution};
 use crate::board::*;
 use crate::rules::*;
+#[cfg(feature = "ort")]
+use crate::net_infer::NetInfer;
 
 
 pub type EvalFn = extern "C" fn(*const f32, i32, *mut f32, i32) -> i32;
@@ -362,6 +364,217 @@ pub fn mcts_search_parallel_core(
         }
 
         use std::collections::HashMap;
+        let mut merged: HashMap<usize, u32> = HashMap::new();
+        for h in handles {
+            let json_str = h.join().unwrap();
+            if let Ok(partial) = serde_json::from_str::<HashMap<String, serde_json::Value>>(&json_str) {
+                for (k, v) in partial {
+                    if let Ok(action) = k.parse::<usize>() {
+                        if let Some(visits) = v.as_u64() {
+                            *merged.entry(action).or_insert(0) += visits as u32;
+                        }
+                    }
+                }
+            }
+        }
+
+        let out_map: serde_json::Map<String, serde_json::Value> = merged
+            .iter()
+            .map(|(k, v)| (k.to_string(), serde_json::Value::Number(serde_json::Number::from(*v))))
+            .collect();
+        serde_json::to_string(&out_map).unwrap_or_default()
+    })
+}
+
+// ═══════════════════════════════════════════════════════════
+// ONNX Runtime inference path (no Python callback)
+// Disabled by default — Python callback is ~10x faster for small batches.
+// Enable with: cargo build --release --features ort
+// ═══════════════════════════════════════════════════════════
+#[cfg(feature = "ort")]
+fn flush_batch_obs_ort(
+    root: &mut MCTSNode,
+    states: &mut Vec<GameState>,
+    legal_list: &mut Vec<Vec<usize>>,
+    paths: &mut Vec<Vec<usize>>,
+    model: &NetInfer,
+    obs_buf: &mut Vec<f32>,
+) {
+    let n = states.len();
+    obs_buf.clear();
+    for state in states.iter() {
+        encode_obs(state, obs_buf);
+    }
+    debug_assert_eq!(obs_buf.len(), n * obs_dim());
+
+    let (logits_matrix, values_vec) = model.evaluate_batch(obs_buf, n).unwrap_or_else(|_| {
+        let uniform_logits = vec![vec![0.0f32; 60]; n];
+        let zero_values = vec![0.0f32; n];
+        (uniform_logits, zero_values)
+    });
+
+    for (i, (path, legal)) in paths.iter().zip(legal_list.iter()).enumerate() {
+        let logits = &logits_matrix[i];
+        let value = values_vec[i] as f64;
+        let policy = masked_softmax(logits, legal);
+        let node = node_by_path(root, path);
+        for &a in legal {
+            node.children.entry(a).or_insert(MCTSNode::new(policy[a]));
+        }
+        backup(root, path, value);
+    }
+    states.clear();
+    legal_list.clear();
+    paths.clear();
+}
+
+#[cfg(feature = "ort")]
+pub fn mcts_search_core_ort(
+    state: &GameState,
+    num_simulations: i32,
+    c_puct: f64,
+    batch_size: i32,
+    model: &NetInfer,
+) -> String {
+    let mut root = MCTSNode::new(0.0);
+    let bs = batch_size.max(1) as usize;
+
+    let mut root_obs = Vec::with_capacity(obs_dim());
+    encode_obs(state, &mut root_obs);
+    let legal_root = state.get_legal_actions();
+    if legal_root.is_empty() {
+        return "{}".to_string();
+    }
+
+    // Root evaluation + Dirichlet noise
+    {
+        let (logits_vec, _) = model.evaluate_batch(&root_obs, 1).unwrap_or_else(|_| {
+            (vec![vec![0.0f32; 60]], vec![0.0f32])
+        });
+        let policy = masked_softmax(&logits_vec[0], &legal_root);
+        let noise = sample_dirichlet(DIRICHLET_ALPHA, 60);
+        for &a in &legal_root {
+            let noisy_prior = (1.0 - DIRICHLET_EPS) * policy[a] + DIRICHLET_EPS * noise[a];
+            root.children.insert(a, MCTSNode::new(noisy_prior));
+        }
+    }
+
+    let mut pending_states: Vec<GameState> = vec![];
+    let mut pending_legal: Vec<Vec<usize>> = vec![];
+    let mut pending_paths: Vec<Vec<usize>> = vec![];
+    let mut obs_buf: Vec<f32> = Vec::with_capacity(bs * obs_dim());
+
+    for _ in 0..num_simulations.max(1) {
+        let mut state_clone = state.clone();
+        let mut path: Vec<usize> = vec![];
+
+        // SELECT
+        loop {
+            let parent_visits = {
+                let n = node_by_path(&mut root, &path);
+                if n.children.is_empty() {
+                    break;
+                }
+                n.visits.max(1)
+            };
+            let best = {
+                let n = node_by_path(&mut root, &path);
+                let mut rng = rand::thread_rng();
+                n.children
+                    .iter()
+                    .map(|(a, child)| {
+                        (a, child.ucb(parent_visits, c_puct) + rng.gen::<f64>() * 1e-12)
+                    })
+                    .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+                    .map(|(a, _)| *a)
+                    .unwrap()
+            };
+            state_clone.step(best);
+            path.push(best);
+            if state_clone.terminated {
+                break;
+            }
+        }
+
+        let terminated = state_clone.terminated;
+        let legal = state_clone.get_legal_actions();
+
+        if terminated {
+            backup(&mut root, &path, terminal_value(&state_clone));
+        } else if !legal.is_empty() {
+            pending_states.push(state_clone);
+            pending_legal.push(legal);
+            pending_paths.push(path);
+            if pending_states.len() >= bs {
+                flush_batch_obs_ort(
+                    &mut root,
+                    &mut pending_states,
+                    &mut pending_legal,
+                    &mut pending_paths,
+                    model,
+                    &mut obs_buf,
+                );
+            }
+        }
+    }
+
+    if !pending_states.is_empty() {
+        flush_batch_obs_ort(
+            &mut root,
+            &mut pending_states,
+            &mut pending_legal,
+            &mut pending_paths,
+            model,
+            &mut obs_buf,
+        );
+    }
+
+    let mut out = serde_json::Map::new();
+    for (a, c) in &root.children {
+        out.insert(
+            a.to_string(),
+            serde_json::Value::Number(serde_json::Number::from(c.visits)),
+        );
+    }
+    serde_json::to_string(&out).unwrap_or_default()
+}
+
+#[cfg(feature = "ort")]
+pub unsafe fn mcts_search_on_handle_ort(
+    state: &GameState,
+    num_simulations: i32,
+    c_puct: f64,
+    batch_size: i32,
+    model: &NetInfer,
+) -> String {
+    mcts_search_core_ort(state, num_simulations, c_puct, batch_size, model)
+}
+
+#[cfg(feature = "ort")]
+pub fn mcts_search_parallel_core_ort(
+    state: &GameState,
+    num_simulations: i32,
+    c_puct: f64,
+    batch_size: i32,
+    model: &NetInfer,
+    num_workers: usize,
+) -> String {
+    if num_workers <= 1 {
+        return mcts_search_core_ort(state, num_simulations, c_puct, batch_size, model);
+    }
+
+    let sims_per = std::cmp::max(1, num_simulations / num_workers as i32);
+    let base_state = state.clone();
+
+    std::thread::scope(|s| {
+        let mut handles = Vec::with_capacity(num_workers);
+        for _ in 0..num_workers {
+            let state_clone = base_state.clone();
+            handles.push(s.spawn(move || {
+                mcts_search_core_ort(&state_clone, sims_per, c_puct, batch_size, model)
+            }));
+        }
+
         let mut merged: HashMap<usize, u32> = HashMap::new();
         for h in handles {
             let json_str = h.join().unwrap();

@@ -4,6 +4,12 @@
 /// Input/Output via pre-allocated buffers to avoid memory management issues.
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
+#[cfg(feature = "ort")]
+use std::sync::OnceLock;
+#[cfg(feature = "ort")]
+use crate::net_infer::NetInfer;
+#[cfg(feature = "ort")]
+static ORT_MODEL: OnceLock<NetInfer> = OnceLock::new();
 
 use crate::board::*;
 use crate::rules::*;
@@ -388,4 +394,61 @@ pub unsafe extern "C" fn mcts_search_rust_handle_parallel(
     0
 }
 
+// ═══════════════════════════════════════════════════════════
+// ONNX Runtime: disabled by default (Python callback is faster)
+// Enable with: cargo build --release --features ort
+// ═══════════════════════════════════════════════════════════
+#[cfg(feature = "ort")]
+mod ffi_ort {
+    use std::ffi::CStr;
+    use std::os::raw::c_char;
+    use std::sync::OnceLock;
+    use crate::net_infer::NetInfer;
+    use crate::mcts_rs;
+
+    static ORT_MODEL: OnceLock<NetInfer> = OnceLock::new();
+
+    #[no_mangle]
+    pub unsafe extern "C" fn ort_init(model_path: *const c_char) -> i32 {
+        let path = match CStr::from_ptr(model_path).to_str() {
+            Ok(s) => s,
+            Err(_) => return -1,
+        };
+        let model = NetInfer::new(path);
+        let _ = ORT_MODEL.set(model);
+        0
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn mcts_search_rust_handle_parallel_ort(
+        handle: i32, num_simulations: i32, c_puct: f64, batch_size: i32,
+        num_workers: i32, output_buf: *mut c_char, output_size: i32,
+    ) -> i32 {
+        let model = match ORT_MODEL.get() { Some(m) => m, None => return -2 };
+        let game = match crate::GAMES.get(handle as usize) {
+            Some(Some(g)) => g, _ => return -1,
+        };
+        let result = mcts_rs::mcts_search_parallel_core_ort(
+            game, num_simulations, c_puct, batch_size, model, num_workers as usize,
+        );
+        crate::write_output(output_buf, output_size, &result);
+        0
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn mcts_search_rust_handle_ort(
+        handle: i32, num_simulations: i32, c_puct: f64, batch_size: i32,
+        output_buf: *mut c_char, output_size: i32,
+    ) -> i32 {
+        let model = match ORT_MODEL.get() { Some(m) => m, None => return -2 };
+        let game = match crate::GAMES.get(handle as usize) {
+            Some(Some(g)) => g, _ => return -1,
+        };
+        let result = mcts_rs::mcts_search_core_ort(
+            game, num_simulations, c_puct, batch_size, model,
+        );
+        crate::write_output(output_buf, output_size, &result);
+        0
+    }
+}
 

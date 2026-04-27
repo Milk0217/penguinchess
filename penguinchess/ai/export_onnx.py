@@ -10,10 +10,22 @@ from penguinchess.ai.alphazero_net import detect_net_arch
 MODELS_DIR = Path(__file__).parent.parent.parent / "models"
 ALPHAZERO_DIR = MODELS_DIR / "alphazero"
 
-# 自动检测并导出最好的模型
-best_candidates = list(ALPHAZERO_DIR.glob("alphazero_resnet_best.pth"))
-if not best_candidates:
-    best_candidates = list(ALPHAZERO_DIR.glob("alphazero_resnet_iter_*.pth"))
+# 从命令行参数选择导出目标，默认导出 best 检查点
+import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument("--model", default=None,
+                    help="Model path to export (default: auto-detect alphazero_resnet_large_best.pth)")
+args = parser.parse_args()
+
+# 自动检测并导出模型
+if args.model:
+    best_candidates = [Path(args.model)]
+else:
+    best_candidates = list(ALPHAZERO_DIR.glob("alphazero_resnet_large_best.pth"))
+    if not best_candidates:
+        best_candidates = list(ALPHAZERO_DIR.glob("alphazero_resnet_best.pth"))
+    if not best_candidates:
+        best_candidates = list(ALPHAZERO_DIR.glob("alphazero_resnet_iter_*.pth"))
 
 if not best_candidates:
     print("Error: No ResNet model found")
