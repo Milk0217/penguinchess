@@ -7,3 +7,12 @@
 *.ico binary
 *.woff2 binary
 *.dll binary
+*.pth binary
+*.zip binary
+*.onnx binary
+*.lock binary
+
+# Generated / cache directories - keep as-is
+.opencode/ -text
+backend_data/boards/ -text
+statics/ -text
