@@ -17,6 +17,7 @@ AlphaZero 自对弈训练 — 使用 MCTS + 神经网络进行自我对弈学习
 
 import os
 import sys
+import math
 import time
 import copy
 from pathlib import Path
@@ -360,11 +361,16 @@ def train_alphazero(
 
     optimizer = optim.Adam(net.parameters(), lr=lr, weight_decay=l2_reg)
 
-    # Learning rate scheduling
-    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='max', factor=0.5, patience=3,
-        threshold=0.02, min_lr=1e-5,
-    )
+    # Learning rate: warmup(0→max_lr) + cosine decay(max_lr→min_lr)
+    # 完全自动，无需手动调参
+    _warmup = 5  # 前 5 迭代线性升温
+    def _lr_lambda(it: int) -> float:
+        if it < _warmup:
+            return it / _warmup  # 0.0 → 1.0
+        progress = (it - _warmup) / max(1, num_iterations - _warmup)
+        cosine = 0.5 * (1 + math.cos(math.pi * progress))  # 1.0 → 0.0
+        return max(cosine, 0.01)  # 不低于 min_lr = max_lr × 0.01
+    lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=_lr_lambda)
 
     # best_net 跟踪
     best_state = copy.deepcopy(net.state_dict())
@@ -489,6 +495,10 @@ def train_alphazero(
         avg_p = total_policy_loss / max(1, num_batches)
         avg_v = total_value_loss / max(1, num_batches)
 
+        # 每迭代自动调整 LR（warmup + cosine decay）
+        lr_scheduler.step()
+        tb_writer.add_scalar("hyperparams/lr", optimizer.param_groups[0]["lr"], iteration)
+
         # 单行迭代摘要
         res_str = monitor.summary_line()
         print(f"  {iteration:>3d}/{num_iterations:<3d}  │ "
@@ -560,8 +570,6 @@ def train_alphazero(
             tb_writer.add_scalar("eval/win_rate_vs_best", wr, iteration)
             tb_writer.add_scalar("eval/eval_time", t5 - t4, iteration)
 
-            # Step LR scheduler based on evaluation win rate
-            lr_scheduler.step(wr)
             tb_writer.add_scalar("hyperparams/lr", optimizer.param_groups[0]["lr"], iteration)
 
             if wr >= 0.55:
