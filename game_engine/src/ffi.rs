@@ -188,18 +188,132 @@ pub unsafe extern "C" fn game_stateful_step(
         _ => return -1,
     };
     let (reward, terminated) = game.step(action as usize);
-    let legal = game.get_legal_actions();
-    let result = serde_json::json!({
-        "reward": reward,
-        "terminated": terminated,
-        "legal_actions": legal,
-        "scores": game.scores,
-        "current_player": game.current_player,
-        "phase": game.phase,
-    });
-    let output = serde_json::to_string(&result).unwrap_or_default();
-    write_output(output_buffer, buffer_size, &output);
+    let result = serde_json::json!({"reward": reward, "terminated": terminated}).to_string();
+    write_ab_json(output_buffer, buffer_size, &result);
     0
+}
+
+// ─── AlphaZero Model Inference FFI ────────────────────────────
+
+const MAX_AZ_MODELS: usize = 16;
+static mut AZ_MODELS: Vec<Option<crate::az_model::AZModelWeights>> = Vec::new();
+
+fn get_az_model(handle: i32) -> Option<&'static mut crate::az_model::AZModelWeights> {
+    if handle < 0 || handle as usize >= MAX_AZ_MODELS { return None; }
+    unsafe { AZ_MODELS[handle as usize].as_mut() }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ffi_az_create(
+    json_config: *const c_char, output_buf: *mut c_char, output_size: i32,
+) -> i32 {
+    let config_str = match std::ffi::CStr::from_ptr(json_config).to_str() {
+        Ok(s) => s, _ => { write_ab_json(output_buf, output_size, r#"{"error":"bad config"}"#); return -1; }
+    };
+    let config: serde_json::Value = match serde_json::from_str(config_str) {
+        Ok(v) => v, _ => { write_ab_json(output_buf, output_size, r#"{"error":"bad json"}"#); return -2; }
+    };
+    let arches = config["arches"].as_str().unwrap_or("mlp");
+    let _total_layers = config["total_layers"].as_u64().unwrap_or(0) as usize;
+    let total_weights = config["total_weights"].as_u64().unwrap_or(0) as usize;
+    let total_biases = config["total_biases"].as_u64().unwrap_or(0) as usize;
+    let policy_idx = config["policy_idx"].as_u64().unwrap_or(0) as usize;
+    let value1_idx = config["value1_idx"].as_u64().unwrap_or(0) as usize;
+    let value2_idx = config["value2_idx"].as_u64().unwrap_or(0) as usize;
+
+    if AZ_MODELS.is_empty() {
+        for _ in 0..MAX_AZ_MODELS { AZ_MODELS.push(None); }
+    }
+
+    let weights = crate::az_model::AZModelWeights {
+        arch: if arches == "resnet" { crate::az_model::AZArch::ResNet } else { crate::az_model::AZArch::MLP },
+        layers: Vec::new(),
+        weights: vec![0.0f32; total_weights],
+        biases: vec![0.0f32; total_biases],
+        layer_info: Vec::new(),
+        policy_idx,
+        value1_idx,
+        value2_idx,
+    };
+
+    let mut handle = -1i32;
+    for i in 0..MAX_AZ_MODELS {
+        if AZ_MODELS[i].is_none() {
+            AZ_MODELS[i] = Some(weights);
+            handle = i as i32; break;
+        }
+    }
+    let result = format!(r#"{{"handle":{}}}"#, handle);
+    write_ab_json(output_buf, output_size, &result);
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ffi_az_set_layer_info(
+    handle: i32,
+    data: *const i32, count: i32,
+) -> i32 {
+    let model = match get_az_model(handle) { Some(m) => m, None => return -1 };
+    let info = std::slice::from_raw_parts(data, count as usize);
+    // Each layer: rows, cols, weight_offset, bias_offset, has_relu, is_residual (6 ints)
+    let n = count as usize / 6;
+    model.layers.clear();
+    for i in 0..n {
+        let base = i * 6;
+        let rows = info[base] as usize;
+        let cols = info[base + 1] as usize;
+        let wo = info[base + 2] as usize;
+        let bo = info[base + 3] as usize;
+        let has_relu = info[base + 4] != 0;
+        let is_res = info[base + 5] != 0;
+        model.layers.push(crate::az_model::AZLayer {
+            weight_offset: wo, bias_offset: bo,
+            rows, cols, has_relu, is_residual: is_res,
+        });
+        model.layer_info.push((rows, cols));
+    }
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ffi_az_set_weights(
+    handle: i32, w_ptr: *const f32, w_count: i32,
+    b_ptr: *const f32, b_count: i32,
+) -> i32 {
+    let model = match get_az_model(handle) { Some(m) => m, None => return -1 };
+    let w_src = std::slice::from_raw_parts(w_ptr, w_count as usize);
+    let b_src = std::slice::from_raw_parts(b_ptr, b_count as usize);
+    model.weights.copy_from_slice(w_src);
+    model.biases.copy_from_slice(b_src);
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ffi_az_evaluate(
+    handle: i32, obs: *const f32, n_states: i32,
+    logits_out: *mut f32, values_out: *mut f32,
+) -> i32 {
+    let model = match get_az_model(handle) { Some(m) => m, None => return -1 };
+    let n = n_states as usize;
+    let obs_slice = std::slice::from_raw_parts(obs, n * 206);
+    for i in 0..n {
+        let mut obs_arr = [0.0f32; 206];
+        obs_arr.copy_from_slice(&obs_slice[i * 206..(i + 1) * 206]);
+        let (logits, value) = model.forward(&obs_arr);
+        for j in 0..60 {
+            *logits_out.add(i * 60 + j) = logits[j];
+        }
+        *values_out.add(i) = value;
+    }
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ffi_az_free(handle: i32) -> i32 {
+    if handle >= 0 && (handle as usize) < MAX_AZ_MODELS {
+        AZ_MODELS[handle as usize] = None;
+        0
+    } else { -1 }
 }
 
 /// Get legal actions for a stateful game (JSON array).

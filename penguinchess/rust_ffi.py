@@ -591,3 +591,97 @@ def ffi_ab_create(config_json: str = '{}') -> AlphaBetaSearchHandle:
     if handle < 0:
         raise RuntimeError(f"ffi_ab_create failed: {result.get('error', 'unknown')} (rc={rc})")
     return AlphaBetaSearchHandle(handle, get_engine()._lib)
+
+
+# =============================================================================
+# AlphaZero Model Inference FFI (Rust-native, no Python callback)
+# =============================================================================
+
+class AZModelHandle:
+    """Rust-native AlphaZero model inference handle."""
+
+    def __init__(self, handle: int, lib):
+        self._handle = handle
+        self._lib = lib
+
+    def evaluate(self, obs_batch: np.ndarray) -> tuple:
+        """Run forward pass. obs_batch: (N, 206) float32. Returns (logits, values)."""
+        n = obs_batch.shape[0]
+        logits_out = np.empty((n, 60), dtype=np.float32)
+        values_out = np.empty(n, dtype=np.float32)
+
+        self._lib.ffi_az_evaluate(
+            c_int32(self._handle),
+            obs_batch.ctypes.data_as(POINTER(c_float)),
+            c_int32(n),
+            logits_out.ctypes.data_as(POINTER(c_float)),
+            values_out.ctypes.data_as(POINTER(c_float)),
+        )
+        return logits_out, values_out
+
+    def free(self):
+        if self._handle >= 0:
+            self._lib.ffi_az_free(c_int32(self._handle))
+            self._handle = -1
+
+    def __del__(self):
+        self.free()
+
+
+def ffi_az_create(arch: str, layer_info: list, weights: np.ndarray, biases: np.ndarray) -> AZModelHandle:
+    """Create Rust AZ model handle. weights/biases are BN-folded flat arrays."""
+    lib = get_engine()._lib
+
+    # Build config JSON
+    config = {
+        'arches': arch,
+        'total_weights': len(weights),
+        'total_biases': len(biases),
+        'policy_idx': layer_info[-3][0] if len(layer_info) >= 3 else 0,
+        'value1_idx': layer_info[-2][0] if len(layer_info) >= 2 else 0,
+        'value2_idx': layer_info[-1][0] if len(layer_info) >= 1 else 0,
+    }
+    # Actually policy/value indices are by layer index, not weight offset.
+    # Find them:
+    # Last 3 layers: policy, value1, value2. Their indices in the layer list.
+    config['policy_idx'] = len(layer_info) - 3
+    config['value1_idx'] = len(layer_info) - 2
+    config['value2_idx'] = len(layer_info) - 1
+
+    buf = create_string_buffer(4096)
+    rc = lib.ffi_az_create(
+        c_char_p(json.dumps(config).encode('utf-8')),
+        buf, c_int32(4096))
+    result = json.loads(buf.value.decode('utf-8')) if buf.value else {}
+    handle = result.get('handle', -1)
+    if handle < 0:
+        raise RuntimeError(f"ffi_az_create failed: {result.get('error', 'unknown')} (rc={rc})")
+
+    # Set layer info: for each layer: rows, cols, weight_offset, bias_offset, has_relu, is_residual
+    layer_data = np.zeros(len(layer_info) * 6, dtype=np.int32)
+    w_off = 0
+    b_off = 0
+    for i, (rows, cols, has_relu, is_res) in enumerate(layer_info):
+        base = i * 6
+        layer_data[base] = rows
+        layer_data[base + 1] = cols
+        layer_data[base + 2] = w_off
+        layer_data[base + 3] = b_off
+        layer_data[base + 4] = 1 if has_relu else 0
+        layer_data[base + 5] = 1 if is_res else 0
+        w_off += rows * cols
+        b_off += rows
+
+    lib.ffi_az_set_layer_info(
+        c_int32(handle),
+        layer_data.ctypes.data_as(POINTER(c_int32)),
+        c_int32(len(layer_data)))
+
+    w_ptr = weights.ctypes.data_as(POINTER(c_float)) if len(weights) > 0 else None
+    b_ptr = biases.ctypes.data_as(POINTER(c_float)) if len(biases) > 0 else None
+    lib.ffi_az_set_weights(
+        c_int32(handle),
+        w_ptr, c_int32(len(weights)),
+        b_ptr, c_int32(len(biases)))
+
+    return AZModelHandle(handle, lib)
