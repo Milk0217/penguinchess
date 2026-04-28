@@ -93,6 +93,11 @@ def self_play_game(
         )
         counts = {int(k): v for k, v in raw.items()}
 
+        if not counts:
+            # MCTS 无合法动作 — 棋子被困，平局退出
+            game_data = []
+            return game_data, 2
+
         total = sum(counts.values())
         policy = np.zeros(60, dtype=np.float32)
         if t > 0:

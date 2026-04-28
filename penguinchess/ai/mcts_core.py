@@ -713,8 +713,10 @@ def select_action(
     -------
     int : selected action index.
     """
+    if not action_counts:
+        raise ValueError("select_action: empty action_counts — MCTS returned no visits")
+
     if temperature < 1e-8:
-        # Deterministic: pick most-visited
         return max(action_counts, key=action_counts.__getitem__)
 
     actions = list(action_counts.keys())
