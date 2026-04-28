@@ -27,7 +27,7 @@ from penguinchess.ai.sparse_features import (
 )
 
 FT_DIM = 64
-HIDDEN_DIM = 128  # increased from 64 for more capacity
+HIDDEN_DIM = 256  # increased from 128 for better capacity
 
 # P1 features: indices 0-179 (pieces 0,1,2 × 60 hexes)
 # P2 features: indices 180-359 (pieces 3,4,5 × 60 hexes)

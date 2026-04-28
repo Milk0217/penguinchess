@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 
 pub const FT_DIM: usize = 64;
 pub const DENSE_DIM: usize = 66;
-pub const FC1_DIM: usize = 256;
-pub const FC2_DIM: usize = 128;
+pub const FC1_DIM: usize = 256;  // must match NNUE.py HIDDEN_DIM
+pub const FC2_DIM: usize = 128;  // must match NNUE.py HIDDEN_DIM / 2
 pub const INPUT_DIM: usize = FT_DIM * 2 + DENSE_DIM; // 194
 pub const P1_CUTOFF: usize = 180;
 
