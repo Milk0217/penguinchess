@@ -220,6 +220,7 @@ pub unsafe extern "C" fn ffi_az_create(
     let policy_idx = config["policy_idx"].as_u64().unwrap_or(0) as usize;
     let value1_idx = config["value1_idx"].as_u64().unwrap_or(0) as usize;
     let value2_idx = config["value2_idx"].as_u64().unwrap_or(0) as usize;
+    let value_uses_obs = config["value_uses_obs"].as_bool().unwrap_or(false);
 
     if AZ_MODELS.is_empty() {
         for _ in 0..MAX_AZ_MODELS { AZ_MODELS.push(None); }
@@ -234,6 +235,7 @@ pub unsafe extern "C" fn ffi_az_create(
         policy_idx,
         value1_idx,
         value2_idx,
+        value_uses_obs,
     };
 
     let mut handle = -1i32;

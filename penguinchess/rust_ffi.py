@@ -628,25 +628,25 @@ class AZModelHandle:
         self.free()
 
 
-def ffi_az_create(arch: str, layer_info: list, weights: np.ndarray, biases: np.ndarray) -> AZModelHandle:
+def ffi_az_create(arch: str = "mlp", layer_info: list = None,
+                  weights: np.ndarray = None, biases: np.ndarray = None,
+                  policy_idx: int = 0, value1_idx: int = 0, value2_idx: int = 0,
+                  value_uses_obs: bool = False) -> AZModelHandle:
     """Create Rust AZ model handle. weights/biases are BN-folded flat arrays."""
+    if layer_info is None: layer_info = []
+    if weights is None: weights = np.array([], dtype=np.float32)
+    if biases is None: biases = np.array([], dtype=np.float32)
     lib = get_engine()._lib
 
-    # Build config JSON
     config = {
         'arches': arch,
         'total_weights': len(weights),
         'total_biases': len(biases),
-        'policy_idx': layer_info[-3][0] if len(layer_info) >= 3 else 0,
-        'value1_idx': layer_info[-2][0] if len(layer_info) >= 2 else 0,
-        'value2_idx': layer_info[-1][0] if len(layer_info) >= 1 else 0,
+        'policy_idx': policy_idx,
+        'value1_idx': value1_idx,
+        'value2_idx': value2_idx,
+        'value_uses_obs': value_uses_obs,
     }
-    # Actually policy/value indices are by layer index, not weight offset.
-    # Find them:
-    # Last 3 layers: policy, value1, value2. Their indices in the layer list.
-    config['policy_idx'] = len(layer_info) - 3
-    config['value1_idx'] = len(layer_info) - 2
-    config['value2_idx'] = len(layer_info) - 1
 
     buf = create_string_buffer(4096)
     rc = lib.ffi_az_create(
@@ -677,11 +677,12 @@ def ffi_az_create(arch: str, layer_info: list, weights: np.ndarray, biases: np.n
         layer_data.ctypes.data_as(POINTER(c_int32)),
         c_int32(len(layer_data)))
 
-    w_ptr = weights.ctypes.data_as(POINTER(c_float)) if len(weights) > 0 else None
-    b_ptr = biases.ctypes.data_as(POINTER(c_float)) if len(biases) > 0 else None
-    lib.ffi_az_set_weights(
-        c_int32(handle),
-        w_ptr, c_int32(len(weights)),
-        b_ptr, c_int32(len(biases)))
+    if len(weights) > 0 and len(biases) > 0:
+        w_ptr = weights.ctypes.data_as(POINTER(c_float))
+        b_ptr = biases.ctypes.data_as(POINTER(c_float))
+        lib.ffi_az_set_weights(
+            c_int32(handle),
+            w_ptr, c_int32(len(weights)),
+            b_ptr, c_int32(len(biases)))
 
     return AZModelHandle(handle, lib)

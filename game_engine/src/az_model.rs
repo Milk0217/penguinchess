@@ -142,6 +142,7 @@ pub struct AZModelWeights {
     pub policy_idx: usize,  // index in layers for policy head
     pub value1_idx: usize,  // index for value_fc1 (or None)
     pub value2_idx: usize,  // index for value_fc2 (output)
+    pub value_uses_obs: bool, // if true, value head reads obs directly (PPO-style separate nets)
 }
 
 /// A single layer: weight matrix dimensions
@@ -166,6 +167,7 @@ impl AZModelWeights {
         let mut x = obs.to_vec();
         let trunk_end = self.policy_idx;
 
+        // Shared trunk (AlphaZero) or policy trunk
         for layer_idx in 0..trunk_end {
             let l = &self.layers[layer_idx];
             let w = &self.weights[l.weight_offset..l.weight_offset + l.rows * l.cols];
@@ -175,19 +177,14 @@ impl AZModelWeights {
                 h_prev = x.clone();
             }
 
-            x.resize(l.cols, 0.0); // ensure correct size
+            x.resize(l.cols, 0.0);
             let mut out = vec![0.0f32; l.rows];
             matvec(w, &x, l.rows, l.cols, b, &mut out);
 
             if l.is_residual {
-                for i in 0..l.rows {
-                    out[i] += h_prev[i];
-                }
+                for i in 0..l.rows { out[i] += h_prev[i]; }
             }
-
-            if l.has_relu {
-                relu_inplace(&mut out);
-            }
+            if l.has_relu { relu_inplace(&mut out); }
 
             x = out;
         }
@@ -199,12 +196,23 @@ impl AZModelWeights {
         let mut policy = vec![0.0f32; pl.rows];
         matvec(pw, &x, pl.rows, pl.cols, pb, &mut policy);
 
-        // Value head
+        // Value head (may share trunk or use separate PPO-style network)
+        let value_input: Vec<f32> = if self.value_uses_obs {
+            obs.to_vec() // PPO: value has its own separate network
+        } else {
+            x.clone() // AlphaZero: value shares trunk output
+        };
+
         let v1 = &self.layers[self.value1_idx];
+        let mut val_x = if v1.cols == OBS_DIM && self.value_uses_obs {
+            value_input.clone()
+        } else {
+            value_input.clone()
+        };
         let v1w = &self.weights[v1.weight_offset..v1.weight_offset + v1.rows * v1.cols];
         let v1b = &self.biases[v1.bias_offset..v1.bias_offset + v1.rows];
         let mut value = vec![0.0f32; v1.rows];
-        matvec(v1w, &x, v1.rows, v1.cols, v1b, &mut value);
+        matvec(v1w, &val_x, v1.rows, v1.cols, v1b, &mut value);
         relu_inplace(&mut value);
 
         let v2 = &self.layers[self.value2_idx];
