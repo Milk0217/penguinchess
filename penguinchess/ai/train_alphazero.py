@@ -341,17 +341,26 @@ def train_alphazero(
 
     print(monitor.header("\n".join(config_lines)))
 
-    # 使用 ResNet 架构；续训时自动检测旧模型架构
-    if resume and os.path.exists(resume):
-        state = torch.load(resume, map_location=device, weights_only=True)
+    # 自动导入前代最优参数
+    _auto_resume_path = None
+    if not resume:
+        _best_path = ALPHAZERO_DIR / f"alphazero_{_net_cls.arch_name}_best.pth"
+        if _best_path.exists():
+            _auto_resume_path = str(_best_path)
+    resume_path = resume or _auto_resume_path
+
+    if resume_path and os.path.exists(resume_path):
+        state = torch.load(resume_path, map_location=device, weights_only=True)
         NetClass = detect_net_arch(state)
         net = NetClass().to(device)
         net.load_state_dict(state)
-        print(f" 续训: {resume} ({NetClass.__name__})")
+        tag = "自动续训" if _auto_resume_path else "续训"
+        print(f" {tag}: {resume_path} ({NetClass.__name__})")
     else:
         net = _net_cls().to(device)
-        if resume:
-            print(f" 模型不存在: {resume}")
+        if resume_path:
+            print(f" 模型不存在: {resume_path}")
+            print(f" 新网络: {_net_cls.__name__} ({sum(p.numel() for p in net.parameters()):,} 参数)")
         else:
             print(f" 新网络: {_net_cls.__name__} ({sum(p.numel() for p in net.parameters()):,} 参数)")
 
@@ -578,23 +587,24 @@ def train_alphazero(
                 best_state = copy.deepcopy(net.state_dict())
                 best_iter = iteration
                 best_win_rate = wr
-                arch_tag = net.arch_name  # "mlp" 或 "resnet"
+                arch_tag = net.arch_name
                 best_path = str(ALPHAZERO_DIR / f"alphazero_{arch_tag}_best.pth")
                 torch.save(best_state, best_path)
 
-                # 注册到 Model Registry
+                # 保存迭代特定副本并注册（排位用迭代号，不用 "best"）
+                iter_path = str(ALPHAZERO_DIR / f"alphazero_{arch_tag}_iter_{iteration}.pth")
+                torch.save(best_state, iter_path)
                 try:
                     from penguinchess.model_registry import register_model, update_evaluation
-                    model_id = f"az_{arch_tag}_best"
-                    rel_path = f"alphazero/alphazero_{arch_tag}_best.pth"
-                    register_model(model_id, "alphazero",
-                                   rel_path, iteration=iteration,
+                    iter_id = f"az_{arch_tag}_iter_{iteration}"
+                    iter_rel = f"alphazero/alphazero_{arch_tag}_iter_{iteration}.pth"
+                    register_model(iter_id, "alphazero",
+                                   iter_rel, iteration=iteration,
                                    arch=net.arch_name)
-                    # auto_eval 会自动计算真实 ELO，训练中不写近似 ELO
                     eval_data = {"vs_best_prev": {"win": wr, "lose": 1 - wr, "draw": 0.0}}
                     if not auto_eval:
                         eval_data["elo"] = round(1200 + (wr - 0.5) * 400, 1)
-                    update_evaluation(model_id, eval_data)
+                    update_evaluation(iter_id, eval_data)
                 except Exception:
                     pass
             elif best_iter > 0:
@@ -616,7 +626,7 @@ def train_alphazero(
     _clear_ts()
     _elapsed = time.time() - _start_time
     print(f"\n{monitor.footer(_elapsed)}")
-    print(f"  best: {ALPHAZERO_DIR / f'alphazero_{arch_tag}_best.pth'} (iter_{best_iter})")
+    print(f"  best iter_{best_iter}: {ALPHAZERO_DIR / f'alphazero_{arch_tag}_best.pth'}")
     print(f"  final: {final_path}")
 
     # ----- 自动 ELO 评估 -----
