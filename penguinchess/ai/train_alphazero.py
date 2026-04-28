@@ -107,7 +107,16 @@ def self_play_game(
             best_cnt = max(counts.values())
             for a, c in counts.items():
                 policy[a] = 1.0 if c == best_cnt else 0.0
-        policy /= policy.sum()
+        s = policy.sum()
+        if s > 0:
+            policy /= s
+        else:
+            legal = core.get_legal_actions()
+            if legal:
+                policy[legal] = 1.0 / len(legal)
+            else:
+                game_data = []
+                return game_data, 2
 
         flat_obs = _encode_flat_obs(core)
         game_data.append((flat_obs, policy, core.current_player))
