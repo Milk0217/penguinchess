@@ -602,3 +602,15 @@ pub unsafe extern "C" fn ffi_ab_destroy(handle: i32) -> i32 {
     }
 }
 
+/// Set the batch evaluation callback for all AB search instances.
+/// The callback receives ([75 f32 per state], n_states, scores_out).
+#[no_mangle]
+pub unsafe extern "C" fn ffi_ab_set_eval_callback(cb: Option<crate::alphabeta_rs::EvalBatchFn>) -> i32 {
+    if let Some(f) = cb {
+        crate::alphabeta_rs::set_eval_callback(f);
+        0
+    } else {
+        -1
+    }
+}
+

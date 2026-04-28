@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import numpy as np
 from ctypes import CDLL, POINTER, c_char, c_char_p, c_float, c_int32, c_int64, c_double, create_string_buffer, CFUNCTYPE, c_void_p, memmove
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -447,6 +448,7 @@ class RustStatefulGame:
 
 # 单例
 _engine: Optional[RustEngine] = None
+_ab_eval_callback = None  # Keep reference alive to prevent GC
 
 
 def get_engine() -> RustEngine:
@@ -454,6 +456,67 @@ def get_engine() -> RustEngine:
     if _engine is None:
         _engine = RustEngine()
     return _engine
+
+
+def ffi_ab_init_eval_callback(model: 'NNUE', device: str = 'cuda') -> bool:
+    """
+    Set the batch evaluation callback for Rust Alpha-Beta search.
+    Uses model.forward() on CUDA for fast batched NNUE evaluation.
+    
+    Must be called once before using any AB search handle.
+    """
+    global _ab_eval_callback
+    import torch
+
+    model.eval()
+    model.to(device)
+
+    EVAL_BATCH_STRIDE = 75  # 8 sparse + 66 dense + 1 stm
+    EVAL_BATCH_CB = CFUNCTYPE(c_int32, POINTER(c_float), c_int32, POINTER(c_float))
+    lib = get_engine()._lib
+
+    @EVAL_BATCH_CB
+    def _eval_batch(data_ptr, n_states, scores_ptr):
+        """FFI callback: batch evaluate states for Rust AB search."""
+        try:
+            n = n_states
+            # Read data as flat float array
+            flat = np.ctypeslib.as_array(data_ptr, shape=(n * EVAL_BATCH_STRIDE,))
+            flat = flat.copy()  # Copy to avoid lifetime issues
+            data = flat.reshape(n, EVAL_BATCH_STRIDE)
+
+            # Parse batch data
+            sparse_batch = []
+            dense_batch_np = np.empty((n, 66), dtype=np.float32)
+            stm_batch = []
+
+            for i in range(n):
+                row = data[i]
+                sparse = [int(row[j]) for j in range(8) if row[j] >= 0.0]
+                sparse_batch.append(sparse)
+                dense_batch_np[i] = row[8:74]
+                stm_batch.append(int(row[74]))
+
+            dense_t = torch.from_numpy(dense_batch_np).to(device)
+
+            with torch.no_grad():
+                values = model.forward(sparse_batch, dense_t, stm_players=stm_batch)
+
+            scores_np = values.cpu().numpy().astype(np.float32)
+            for i in range(n):
+                scores_ptr[i] = scores_np[i]
+
+            return 0
+        except Exception as e:
+            print(f"[EVAL ERROR] {e}")
+            return -1
+
+    lib.ffi_ab_set_eval_callback.argtypes = [EVAL_BATCH_CB]
+    lib.ffi_ab_set_eval_callback.restype = c_int32
+
+    rc = lib.ffi_ab_set_eval_callback(_eval_batch)
+    _ab_eval_callback = _eval_batch  # Keep reference
+    return rc == 0
 
 
 # =============================================================================
