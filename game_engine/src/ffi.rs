@@ -2,7 +2,7 @@
 ///
 /// Protocol: all functions take and return JSON strings.
 /// Input/Output via pre-allocated buffers to avoid memory management issues.
-use std::ffi::{CStr, CString};
+use std::ffi::CStr;
 use std::os::raw::c_char;
 #[cfg(feature = "ort")]
 use std::sync::OnceLock;
@@ -449,6 +449,156 @@ mod ffi_ort {
         );
         crate::write_output(output_buf, output_size, &result);
         0
+    }
+}
+
+// ─── Alpha-Beta Search FFI ────────────────────────────────────
+
+const MAX_AB_SEARCHES: usize = 64;
+static mut AB_SEARCHES: Vec<Option<crate::alphabeta_rs::AlphaBetaSearch>> = Vec::new();
+
+fn get_ab_search(handle: i32) -> Option<&'static mut crate::alphabeta_rs::AlphaBetaSearch> {
+    if handle < 0 || handle as usize >= MAX_AB_SEARCHES {
+        return None;
+    }
+    unsafe {
+        AB_SEARCHES[handle as usize].as_mut()
+    }
+}
+
+fn write_ab_json(output_buf: *mut c_char, output_size: i32, result: &str) {
+    let bytes = result.as_bytes();
+    let n = (bytes.len() + 1).min(output_size as usize);
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), output_buf as *mut u8, n - 1);
+        *output_buf.add(n - 1) = 0;
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ffi_ab_create(
+    json_config: *const c_char,
+    output_buf: *mut c_char,
+    output_size: i32,
+) -> i32 {
+    let config_json = match CStr::from_ptr(json_config).to_str() {
+        Ok(s) => s, Err(_) => {
+            write_ab_json(output_buf, output_size, r#"{"error":"invalid config json"}"#);
+            return -1;
+        }
+    };
+
+    let config: crate::alphabeta_rs::SearchConfig = match serde_json::from_str(config_json) {
+        Ok(c) => c, Err(e) => {
+            let err = format!(r#"{{"error":"bad config: {}"}}"#, e);
+            write_ab_json(output_buf, output_size, &err);
+            return -2;
+        }
+    };
+
+    if AB_SEARCHES.is_empty() {
+        for _ in 0..MAX_AB_SEARCHES {
+            AB_SEARCHES.push(None);
+        }
+    }
+
+    let mut handle = -1;
+    for i in 0..MAX_AB_SEARCHES {
+        if AB_SEARCHES[i].is_none() {
+            let weights = crate::nnue_rs::NNUEWeights::new_empty();
+            let search = crate::alphabeta_rs::AlphaBetaSearch::new(weights, config);
+            AB_SEARCHES[i] = Some(search);
+            handle = i as i32;
+            break;
+        }
+    }
+
+    let result = format!(r#"{{"handle":{}}}"#, handle);
+    write_ab_json(output_buf, output_size, &result);
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ffi_ab_set_weights(
+    handle: i32,
+    ptr: *const f32,
+    count: i32,
+    output_buf: *mut c_char,
+    output_size: i32,
+) -> i32 {
+    let search = match get_ab_search(handle) {
+        Some(s) => s, None => {
+            write_ab_json(output_buf, output_size, r#"{"error":"invalid handle"}"#);
+            return -1;
+        }
+    };
+
+    let expected = crate::nnue_rs::NNUEWeights::total_floats();
+    if count as usize != expected {
+        let err = format!(r#"{{"error":"expected {} floats, got {}"}}"#, expected, count);
+        write_ab_json(output_buf, output_size, &err);
+        return -2;
+    }
+
+    let data = std::slice::from_raw_parts(ptr, expected);
+    let weights = crate::nnue_rs::NNUEWeights::from_flat(data);
+    search.weights = weights;
+
+    write_ab_json(output_buf, output_size, r#"{"ok":true}"#);
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ffi_ab_search(
+    handle: i32,
+    json_state: *const c_char,
+    max_depth: i32,
+    output_buf: *mut c_char,
+    output_size: i32,
+) -> i32 {
+    let search = match get_ab_search(handle) {
+        Some(s) => s, None => {
+            write_ab_json(output_buf, output_size, r#"{"error":"invalid handle"}"#);
+            return -1;
+        }
+    };
+
+    let state_json = match CStr::from_ptr(json_state).to_str() {
+        Ok(s) => s, Err(_) => {
+            write_ab_json(output_buf, output_size, r#"{"error":"bad state json"}"#);
+            return -2;
+        }
+    };
+
+    let state: crate::rules::GameState = match serde_json::from_str::<crate::rules::GameState>(state_json) {
+        Ok(mut s) => {
+            s.board.rebuild_index_for_json();
+            s
+        },
+        Err(e) => {
+            let err = format!(r#"{{"error":"bad state: {}"}}"#, e);
+            write_ab_json(output_buf, output_size, &err);
+            return -3;
+        }
+    };
+
+    if max_depth > 0 {
+        search.config.max_depth = max_depth as u8;
+    }
+
+    let result = search.search(&state);
+    let json = serde_json::to_string(&result).unwrap_or_default();
+    write_ab_json(output_buf, output_size, &json);
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ffi_ab_destroy(handle: i32) -> i32 {
+    if handle >= 0 && (handle as usize) < MAX_AB_SEARCHES {
+        AB_SEARCHES[handle as usize] = None;
+        0
+    } else {
+        -1
     }
 }
 

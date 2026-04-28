@@ -454,3 +454,77 @@ def get_engine() -> RustEngine:
     if _engine is None:
         _engine = RustEngine()
     return _engine
+
+
+# =============================================================================
+# Alpha-Beta Search FFI
+# =============================================================================
+
+class AlphaBetaSearchHandle:
+    """Handle for a Rust-side Alpha-Beta search instance with pre-loaded NNUE weights."""
+
+    def __init__(self, handle: int, lib):
+        self._handle = handle
+        self._lib = lib
+
+    def set_weights(self, model_state: dict) -> bool:
+        """
+        Set NNUE weights from a PyTorch model state dict.
+        Weights are flattened into a single float array with fixed layout.
+        """
+        import numpy as np
+        import torch
+
+        # Build flat weight array
+        ft_weight = model_state['ft.weight'].cpu().numpy().T.ravel()  # (360, 64) row-major
+        ft_bias = model_state['ft.bias'].cpu().numpy().ravel()  # (64,)
+        fc1_w = model_state['fc1.weight'].cpu().numpy().ravel()  # (256, 194)
+        fc1_b = model_state['fc1.bias'].cpu().numpy().ravel()
+        fc2_w = model_state['fc2.weight'].cpu().numpy().ravel()  # (128, 256)
+        fc2_b = model_state['fc2.bias'].cpu().numpy().ravel()
+        fc3_w = model_state['fc3.weight'].cpu().numpy().ravel()  # (1, 128)
+        fc3_b = model_state['fc3.bias'].cpu().numpy().ravel()
+
+        flat = np.concatenate([ft_weight, ft_bias, fc1_w, fc1_b, fc2_w, fc2_b, fc3_w, fc3_b]).astype(np.float32)
+        ptr = flat.ctypes.data_as(POINTER(c_float))
+        buf_size = 1024
+        out = create_string_buffer(buf_size)
+
+        rc = self._lib.ffi_ab_set_weights(
+            c_int32(self._handle), ptr, c_int32(len(flat)), out, c_int32(buf_size))
+        result = json.loads(out.value.decode('utf-8')) if out.value else {}
+        return rc == 0 and result.get('ok', False)
+
+    def search(self, state_json: str, max_depth: int = 6) -> dict:
+        """Run Alpha-Beta search. Returns SearchResult dict."""
+        buf_size = 65536
+        out = create_string_buffer(buf_size)
+        rc = self._lib.ffi_ab_search(
+            c_int32(self._handle),
+            c_char_p(state_json.encode('utf-8')),
+            c_int32(max_depth),
+            out, c_int32(buf_size))
+        result_str = out.value.decode('utf-8') if out.value else '{}'
+        return json.loads(result_str)
+
+    def free(self):
+        if self._handle >= 0:
+            self._lib.ffi_ab_destroy(c_int32(self._handle))
+            self._handle = -1
+
+    def __del__(self):
+        self.free()
+
+
+def ffi_ab_create(config_json: str = '{}') -> AlphaBetaSearchHandle:
+    """Create an Alpha-Beta search instance. Returns handle."""
+    buf_size = 4096
+    out = create_string_buffer(buf_size)
+    rc = get_engine()._lib.ffi_ab_create(
+        c_char_p(config_json.encode('utf-8')),
+        out, c_int32(buf_size))
+    result = json.loads(out.value.decode('utf-8')) if out.value else {}
+    handle = result.get('handle', -1)
+    if handle < 0:
+        raise RuntimeError(f"ffi_ab_create failed: {result.get('error', 'unknown')} (rc={rc})")
+    return AlphaBetaSearchHandle(handle, get_engine()._lib)
