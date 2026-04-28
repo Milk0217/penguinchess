@@ -68,7 +68,7 @@ _MAX_RETRIES = 3
 _RESTART_DELAY = 10  # seconds before retry
 
 def _train_with_restart(**kwargs):
-    """带自动重启的保护壳 —— 中断后自动续训。"""
+    """带自动重启的保护壳 —— 中断后自动续训（若 checkpoint 损坏则回退到 best）。"""
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
             train_alphazero(**kwargs)
@@ -79,9 +79,19 @@ def _train_with_restart(**kwargs):
         except Exception as e:
             import traceback
             traceback.print_exc()
-            print(f"\n  [!] 训练异常中止 (第 {attempt}/{_MAX_RETRIES} 次): {e}")
+            err_str = str(e)
+            print(f"\n  [!] 训练异常中止 (第 {attempt}/{_MAX_RETRIES} 次): {err_str[:120]}")
             if attempt < _MAX_RETRIES:
-                print(f"  将在 {_RESTART_DELAY}s 后自动重启（从 checkpoint 续训）...")
+                # 检查 checkpoint 是否损坏
+                _arch = kwargs.get("network_name", "xl")
+                _cp = MODELS_DIR / "alphazero" / f"alphazero_{_arch}_checkpoint.pth"
+                if _cp.exists():
+                    try:
+                        torch.load(_cp, map_location="cpu", weights_only=False)
+                    except Exception:
+                        print(f"  [!] checkpoint 文件损坏，已删除，将回退到 best.pth")
+                        _cp.unlink(missing_ok=True)
+                print(f"  将在 {_RESTART_DELAY}s 后自动重启...")
                 time.sleep(_RESTART_DELAY)
             else:
                 print("  [!] 已达最大重试次数，放弃。")
@@ -411,11 +421,27 @@ def train_alphazero(
 
     print(monitor.header("\n".join(config_lines)))
 
-    # 自动导入：checkpoint > best > 新网络
+    # 自动导入：checkpoint > best > 新网络（checkpoint 损坏自动回退到 best）
     _arch = _net_cls.arch_name
     _checkpoint_path = ALPHAZERO_DIR / f"alphazero_{_arch}_checkpoint.pth"
     _best_path = ALPHAZERO_DIR / f"alphazero_{_arch}_best.pth"
     resume_path = resume  # 显式指定优先级最高
+
+    if not resume_path and _checkpoint_path.exists():
+        try:
+            # 验证 checkpoint 完整性
+            _test = torch.load(_checkpoint_path, map_location="cpu", weights_only=False)
+            if isinstance(_test, dict) and "model_state" in _test:
+                resume_path = str(_checkpoint_path)
+            else:
+                print(f"  [!] checkpoint 格式异常，回退到 best")
+                _checkpoint_path.unlink(missing_ok=True)
+        except Exception:
+            print(f"  [!] checkpoint 文件损坏，已删除，回退到 best")
+            _checkpoint_path.unlink(missing_ok=True)
+
+    if not resume_path and _best_path.exists():
+        resume_path = str(_best_path)
 
     if not resume_path and _checkpoint_path.exists():
         resume_path = str(_checkpoint_path)
@@ -630,9 +656,10 @@ def train_alphazero(
         tb_writer.add_scalar("performance/win_rate", win_rate, iteration)
         tb_writer.add_scalar("performance/draw_rate", draw_rate, iteration)
 
-        # 每迭代保存 checkpoint（用于 crash recovery 自动续训）
+        # 每迭代保存 checkpoint（原子写入：先写.tmp, 再 rename, 防止断电/崩溃导致文件损坏）
         arch_tag = net.arch_name
         cp_path = str(ALPHAZERO_DIR / f"alphazero_{arch_tag}_checkpoint.pth")
+        cp_tmp = cp_path + ".tmp"
         torch.save({
             "iteration": iteration,
             "model_state": net.state_dict(),
@@ -641,7 +668,10 @@ def train_alphazero(
             "best_state": best_state,
             "best_iter": best_iter,
             "best_win_rate": best_win_rate,
-        }, cp_path)
+        }, cp_tmp)
+        os.replace(cp_tmp, cp_path)  # 原子替换（Windows 上需要目标不存在，先删除再 rename）
+        if os.path.exists(cp_tmp):
+            os.remove(cp_tmp)
 
         # 更新训练状态（供前端仪表盘使用）
         _update_ts(
