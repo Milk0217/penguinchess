@@ -430,18 +430,24 @@ def train_alphazero(
         total_loss = 0.0
         total_policy_loss = 0.0
         total_value_loss = 0.0
-        num_batches = max(1, len(data_buffer) // batch_size)
 
-        for _ in range(num_batches):
-            batch = np.random.choice(len(data_buffer), min(batch_size, len(data_buffer)), replace=False)
-            # flat obs already pre-encoded — zero CPU decode needed
-            obs_batch = np.array([data_buffer[i][0] for i in batch], dtype=np.float32)
-            policy_targets = np.array([data_buffer[i][1] for i in batch], dtype=np.float32)
-            value_targets = np.array([data_buffer[i][2] for i in batch], dtype=np.float32)
+        # 预提取 + 一次性 shuffle（避免每批 np.random.choice）
+        buf_size = len(data_buffer)
+        num_batches = max(1, buf_size // batch_size)
+        shuf = np.random.permutation(buf_size)
+        obs_list = [data_buffer[src][0] for src in shuf]
+        pol_list = [data_buffer[src][1] for src in shuf]
+        val_list = [data_buffer[src][2] for src in shuf]
+        obs_np = np.array(obs_list, dtype=np.float32)
+        pol_np = np.array(pol_list, dtype=np.float32)
+        val_np = np.array(val_list, dtype=np.float32)
 
-            obs_tensor = torch.from_numpy(obs_batch).to(device, non_blocking=True)
-            policy_tensor = torch.from_numpy(policy_targets).to(device, non_blocking=True)
-            value_tensor = torch.from_numpy(value_targets).to(device, non_blocking=True)
+        for batch_i in range(num_batches):
+            s = batch_i * batch_size
+            e = s + batch_size
+            obs_tensor = torch.from_numpy(obs_np[s:e]).to(device, non_blocking=True)
+            policy_tensor = torch.from_numpy(pol_np[s:e]).to(device, non_blocking=True)
+            value_tensor = torch.from_numpy(val_np[s:e]).to(device, non_blocking=True)
 
             optimizer.zero_grad()
             if use_amp:
@@ -451,7 +457,6 @@ def train_alphazero(
                     value_loss = F.mse_loss(values.squeeze(-1), value_tensor)
                     loss = policy_loss + value_loss
                 scaler.scale(loss).backward()
-                # Gradient clipping for AMP path
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=1.0)
                 scaler.step(optimizer)
@@ -645,7 +650,7 @@ if __name__ == "__main__":
                         help="评估局数（默认 200）")
     parser.add_argument("--network", type=str, default="large",
                         help="网络架构: large/resnet/xl (默认 large)")
-    parser.add_argument("--batch-size", type=int, default=512, help="训练批次大小（默认 512）")
+    parser.add_argument("--batch-size", type=int, default=1024, help="训练批次大小（默认 1024）")
     parser.add_argument("--lr", type=float, default=1e-3, help="学习率")
     parser.add_argument("--parallel-workers", type=int, default=2,
                         help="根并行 MCTS workers（默认 2，Rust 内建线程并行）")
