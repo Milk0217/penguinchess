@@ -650,7 +650,7 @@ if __name__ == "__main__":
                         help="评估局数（默认 200）")
     parser.add_argument("--network", type=str, default="large",
                         help="网络架构: large/resnet/xl (默认 large)")
-    parser.add_argument("--batch-size", type=int, default=1024, help="训练批次大小（默认 1024）")
+    parser.add_argument("--batch-size", type=int, default=4096, help="训练批次大小（默认 4096）")
     parser.add_argument("--lr", type=float, default=1e-3, help="学习率")
     parser.add_argument("--parallel-workers", type=int, default=2,
                         help="根并行 MCTS workers（默认 2，Rust 内建线程并行）")
