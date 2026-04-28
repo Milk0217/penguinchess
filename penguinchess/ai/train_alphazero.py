@@ -37,6 +37,56 @@ from penguinchess._compat import ensure_utf8_stdout
 from penguinchess.training_status import update_status as _update_ts, clear_status as _clear_ts
 ensure_utf8_stdout()
 
+# ───── 后台日志 Tee ─────
+class _Tee:
+    """将 stdout/stderr 同时输出到终端和日志文件，确保后台运行不丢日志。"""
+    def __init__(self, filepath: str):
+        self.file = open(filepath, "w", encoding="utf-8")
+        self.stdout = sys.stdout
+
+    def write(self, text: str):
+        self.stdout.write(text)
+        self.file.write(text)
+        self.file.flush()
+
+    def flush(self):
+        self.stdout.flush()
+        self.file.flush()
+
+    def close(self):
+        self.file.close()
+        sys.stdout = self.stdout
+
+def _setup_logging(log_file: str | None):
+    """启用日志文件输出（如提供路径）。"""
+    if log_file:
+        sys.stdout = _Tee(log_file)
+        sys.stderr = sys.stdout
+
+# ───── 自动重启 ─────
+_MAX_RETRIES = 3
+_RESTART_DELAY = 10  # seconds before retry
+
+def _train_with_restart(**kwargs):
+    """带自动重启的保护壳 —— 中断后自动续训。"""
+    for attempt in range(1, _MAX_RETRIES + 1):
+        try:
+            train_alphazero(**kwargs)
+            return  # 成功
+        except KeyboardInterrupt:
+            print("\n  KeyboardInterrupt — 训练已停止。")
+            return
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print(f"\n  [!] 训练异常中止 (第 {attempt}/{_MAX_RETRIES} 次): {e}")
+            if attempt < _MAX_RETRIES:
+                print(f"  将在 {_RESTART_DELAY}s 后自动重启（从 checkpoint 续训）...")
+                time.sleep(_RESTART_DELAY)
+            else:
+                print("  [!] 已达最大重试次数，放弃。")
+                raise
+
 MODELS_DIR = Path(__file__).parent.parent.parent / "models"
 ALPHAZERO_DIR = MODELS_DIR / "alphazero"
 ALPHAZERO_DIR.mkdir(exist_ok=True)
@@ -361,21 +411,47 @@ def train_alphazero(
 
     print(monitor.header("\n".join(config_lines)))
 
-    # 自动导入前代最优参数
-    _auto_resume_path = None
-    if not resume:
-        _best_path = ALPHAZERO_DIR / f"alphazero_{_net_cls.arch_name}_best.pth"
-        if _best_path.exists():
-            _auto_resume_path = str(_best_path)
-    resume_path = resume or _auto_resume_path
+    # 自动导入：checkpoint > best > 新网络
+    _arch = _net_cls.arch_name
+    _checkpoint_path = ALPHAZERO_DIR / f"alphazero_{_arch}_checkpoint.pth"
+    _best_path = ALPHAZERO_DIR / f"alphazero_{_arch}_best.pth"
+    resume_path = resume  # 显式指定优先级最高
+
+    if not resume_path and _checkpoint_path.exists():
+        resume_path = str(_checkpoint_path)
+
+    if not resume_path and _best_path.exists():
+        resume_path = str(_best_path)
+
+    best_iter = 0
+    best_win_rate = 0.0
+    best_state = None
+    optimizer_state = None
+    lr_scheduler_state = None
+    start_iteration = 1
 
     if resume_path and os.path.exists(resume_path):
-        state = torch.load(resume_path, map_location=device, weights_only=True)
-        NetClass = detect_net_arch(state)
-        net = NetClass().to(device)
-        net.load_state_dict(state)
-        tag = "自动续训" if _auto_resume_path else "续训"
-        print(f" {tag}: {resume_path} ({NetClass.__name__})")
+        data = torch.load(resume_path, map_location=device, weights_only=False)
+
+        if isinstance(data, dict) and "model_state" in data:
+            # 完整 checkpoint dict
+            NetClass = detect_net_arch(data["model_state"])
+            net = NetClass().to(device)
+            net.load_state_dict(data["model_state"])
+            optimizer_state = data.get("optimizer_state")
+            lr_scheduler_state = data.get("lr_scheduler")
+            best_state = data.get("best_state")
+            best_iter = data.get("best_iter", 0)
+            best_win_rate = data.get("best_win_rate", 0.0)
+            start_iteration = data.get("iteration", 0) + 1
+            tag = "checkpoint 续训" if _checkpoint_path.exists() else "自动续训"
+            print(f" {tag}: {resume_path} (iter_{start_iteration-1}, {NetClass.__name__})")
+        else:
+            # 旧格式：仅有 state_dict
+            NetClass = detect_net_arch(data)
+            net = NetClass().to(device)
+            net.load_state_dict(data)
+            print(f"续训: {resume_path} ({NetClass.__name__})")
     else:
         net = _net_cls().to(device)
         if resume_path:
@@ -397,11 +473,17 @@ def train_alphazero(
         return max(cosine, 0.01)  # 不低于 min_lr = max_lr × 0.01
     lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=_lr_lambda)
 
+    # checkpoint 恢复训练状态
+    if optimizer_state is not None:
+        optimizer.load_state_dict(optimizer_state)
+    if lr_scheduler_state is not None:
+        lr_scheduler.load_state_dict(lr_scheduler_state)
+
     # best_net 跟踪
-    best_state = copy.deepcopy(net.state_dict())
-    best_iter = 0
-    best_win_rate = 0.0
-    print(f" 初始 best: iter_{best_iter}", flush=True)
+    if best_state is None:
+        best_state = copy.deepcopy(net.state_dict())
+    if best_iter == 0:
+        print(f" 初始 best: iter_{best_iter}", flush=True)
     _start_time = time.time()
 
     # AMP (Automatic Mixed Precision)
@@ -423,7 +505,7 @@ def train_alphazero(
     data_buffer = []
     MAX_BUFFER = 100000
 
-    for iteration in range(1, num_iterations + 1):
+    for iteration in range(start_iteration, num_iterations + 1):
         iter_start = time.time()
 
         # ----- 自对弈（游戏级并行） -----
@@ -547,6 +629,19 @@ def train_alphazero(
         tb_writer.add_scalar("performance/train_time", train_time, iteration)
         tb_writer.add_scalar("performance/win_rate", win_rate, iteration)
         tb_writer.add_scalar("performance/draw_rate", draw_rate, iteration)
+
+        # 每迭代保存 checkpoint（用于 crash recovery 自动续训）
+        arch_tag = net.arch_name
+        cp_path = str(ALPHAZERO_DIR / f"alphazero_{arch_tag}_checkpoint.pth")
+        torch.save({
+            "iteration": iteration,
+            "model_state": net.state_dict(),
+            "optimizer_state": optimizer.state_dict(),
+            "lr_scheduler": lr_scheduler.state_dict(),
+            "best_state": best_state,
+            "best_iter": best_iter,
+            "best_win_rate": best_win_rate,
+        }, cp_path)
 
         # 更新训练状态（供前端仪表盘使用）
         _update_ts(
@@ -701,9 +796,13 @@ if __name__ == "__main__":
                         help="训练完成后自动执行 ELO 评估")
     parser.add_argument("--auto-eval-episodes", type=int, default=200,
                         help="自动 ELO 评估每对局数（默认 200）")
+    parser.add_argument("--log-file", type=str, default=None,
+                        help="日志文件路径（后台训练用，实时写入）")
     args = parser.parse_args()
 
-    train_alphazero(
+    _setup_logging(args.log_file)
+
+    _train_with_restart(
         num_iterations=args.iterations,
         games_per_iter=args.games,
         num_simulations=args.simulations,
