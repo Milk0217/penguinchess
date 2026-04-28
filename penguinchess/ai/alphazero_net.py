@@ -268,7 +268,7 @@ class AlphaZeroNet(nn.Module):
 # ResNet-style network (with residual connections)
 # =============================================================================
 
-class AlphaZeroResNet(nn.Module):
+class _AlphaZeroResNetOriginal(nn.Module):
     """
     ResNet-style MLP with a residual skip connection around the middle layer.
 
@@ -281,6 +281,10 @@ class AlphaZeroResNet(nn.Module):
 
     The residual connection improves gradient flow and allows training
     deeper networks without vanishing/exploding gradients.
+
+    NOTE: This is the ORIGINAL (legacy) architecture, preserved for
+    backward compatibility with checkpoints saved before the configurable
+    refactor.  New code should use ``AlphaZeroResNet`` (configurable).
     """
 
     # 架构标记，用于文件名区分
@@ -417,7 +421,7 @@ class AlphaZeroResNet(nn.Module):
 # Architecture detection helper
 # =============================================================================
 
-class AlphaZeroResNetConfigurable(AlphaZeroResNet):
+class AlphaZeroResNetConfigurable(_AlphaZeroResNetOriginal):
     """
     Configurable-width AlphaZeroResNet with multiple residual blocks.
 
@@ -544,10 +548,10 @@ def detect_net_arch(state_dict) -> type:
             return AlphaZeroResNet  # 550K params
         return AlphaZeroResNet
 
-    # Legacy ResNet classes
+    # Legacy ResNet classes (fc1/bn1/fc2/bn2/fc3/bn3 keys)
     if any(k.startswith("fc3.") for k in state_dict.keys()):
         fc1_w = state_dict.get("fc1.weight")
         if fc1_w is not None and fc1_w.shape[0] >= 1024:
             return AlphaZeroResNetLarge
-        return AlphaZeroResNet
+        return _AlphaZeroResNetOriginal
     return AlphaZeroNet
