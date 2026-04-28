@@ -57,11 +57,12 @@ def main():
     net.eval()
     print(f"  Loaded {NetClass.__name__} ({sum(p.numel() for p in net.parameters()):,} params)")
 
-    # 2. Generate MCTS training data
-    print(f"\n[2/4] Generating {args.games} MCTS games ({args.sims} sims)...")
+    # 2. Generate MCTS training data using Rust MCTS (fast)
+    print(f"\n[2/4] Generating {args.games} MCTS games ({args.sims} sims x Rust)...")
     t0 = time.time()
-    wrapper = AZMCTSWrapper(net, num_simulations=args.sims, c_puct=1.4, batch_size=32)
-    data = generate_games_mcts(wrapper, args.games, seed_offset=0)
+    from penguinchess.eval_utils import AlphaZeroMCTSAgent
+    wrapper = AlphaZeroMCTSAgent(net, num_simulations=args.sims, c_puct=1.4, batch_size=32)
+    data = generate_games_mcts(wrapper, args.games, seed_offset=0, use_rust=True)
     print(f"  Generated {len(data)} positions in {time.time()-t0:.0f}s")
 
     # 3. Train NNUE
