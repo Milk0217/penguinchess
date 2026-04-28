@@ -14,6 +14,7 @@ Usage:
 from __future__ import annotations
 
 from typing import Any, Callable, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 
@@ -170,17 +171,21 @@ def _make_core_factory(use_rust: bool) -> Callable:
         return lambda s: PenguinChessCore(seed=s).reset()
 
 
-def _run_series(agent_p1, agent_p2, num_games: int, core_factory: Callable, seed_base: int = 0) -> dict:
+def _run_series(agent_p1, agent_p2, num_games: int, core_factory: Callable,
+                seed_base: int = 0, game_workers: int = 1) -> dict:
     """
     固定方向（agent_p1 始终先手）的系列对战。
+    支持并行对局 (game_workers > 1)。
+
     seed_base: 棋盘种子偏移，确保不同系列对局使用不同棋盘。
+    game_workers: 并行对局数（默认 1 = 串行）。
     返回 {"p1_win", "p2_win", "draw"} 比例。
     """
     a1 = agent_p1 if agent_p1 is not None else RandomAgent(seed=seed_base)
     a2 = agent_p2 if agent_p2 is not None else RandomAgent(seed=seed_base + 1)
 
-    p1_wins = p2_wins = draws = 0
-    for ep in range(num_games):
+    def _play_one(ep: int) -> int:
+        """Play one game. Returns: 1 if a1 wins, 0 if a2 wins, 0.5 if draw."""
         core = core_factory(seed_base + ep)
         terminated = False
         while not terminated:
@@ -196,14 +201,26 @@ def _run_series(agent_p1, agent_p2, num_games: int, core_factory: Callable, seed
                 break
             action = a2.select_action(core, legal)
             _, _, terminated, _ = core.step(action)
-
         s1, s2 = core.players_scores
         if s1 > s2:
-            p1_wins += 1
+            return 1
         elif s2 > s1:
-            p2_wins += 1
+            return 0
         else:
-            draws += 1
+            return 0.5
+
+    if game_workers <= 1:
+        results = [_play_one(ep) for ep in range(num_games)]
+    else:
+        results = []
+        with ThreadPoolExecutor(max_workers=game_workers) as pool:
+            futs = {pool.submit(_play_one, ep): ep for ep in range(num_games)}
+            for fut in as_completed(futs):
+                results.append(fut.result())
+
+    p1_wins = sum(1 for r in results if r == 1)
+    p2_wins = sum(1 for r in results if r == 0)
+    draws = sum(1 for r in results if r == 0.5)
 
     n = num_games
     return {"p1_win": p1_wins / n, "p2_win": p2_wins / n, "draw": draws / n}
@@ -215,11 +232,14 @@ def compete(
     num_episodes: int,
     use_rust: bool = False,
     seed_offset: int = 0,
+    game_workers: int = 1,
 ) -> dict:
     """
     agent_p1 与 agent_p2 对战 num_episodes 局。
     自动交换先后手（各一半），消除先手优势导致的 ELO 偏差。
+
     seed_offset: 棋盘种子偏移，每对模型使用不同棋盘序列。
+    game_workers: 并行对局数（默认 1 = 串行）。
     None → RandomAgent。
     返回 {"p1_win", "p2_win", "draw"} 比例 (0.0~1.0)。
     """
@@ -230,9 +250,9 @@ def compete(
     pair_seed = seed_offset * 2000
 
     # 方向 1: agent_p1 先手
-    r1 = _run_series(agent_p1, agent_p2, half, cf, seed_base=pair_seed)
+    r1 = _run_series(agent_p1, agent_p2, half, cf, seed_base=pair_seed, game_workers=game_workers)
     # 方向 2: agent_p2 先手（交换先后手，使用相同棋盘种子确保同一棋盘先后各一次）
-    r2 = _run_series(agent_p2, agent_p1, half, cf, seed_base=pair_seed)
+    r2 = _run_series(agent_p2, agent_p1, half, cf, seed_base=pair_seed, game_workers=game_workers)
 
     # r2 的 P1 是 agent_p2，P2 是 agent_p1
     # 合并时 r1.p1 和 r2.p2 都是 agent_p1 获胜，r1.p2 和 r2.p1 都是 agent_p2 获胜

@@ -249,6 +249,8 @@ def main():
                         help="PPO 使用随机采样而非 argmax（增加方差但更接近实际对局分布）")
     parser.add_argument("--workers", type=int, default=1,
                         help="并行工作进程数（默认 1=顺序执行；>1 使用 ProcessPoolExecutor）")
+    parser.add_argument("--game-workers", type=int, default=8,
+                        help="每场比赛并行对局数（默认 8，大幅加速 ELO 评估）")
     args = parser.parse_args()
 
     all_models = discover_models()
@@ -358,7 +360,8 @@ def run_round_robin(args, agents, model_ids, elo_ratings, reg_get, reg_upd):
             print(f"  [{pair_done}/{total}] {mid_a} vs {mid_b} ...", end=" ", flush=True)
 
             result = compete(agents[mid_a], agents[mid_b], args.episodes,
-                             use_rust=args.rust_core, seed_offset=pair_idx)
+                             use_rust=args.rust_core, seed_offset=pair_idx,
+                             game_workers=args.game_workers)
             pair_idx += 1
             score_a = result["p1_win"] + 0.5 * result["draw"]
             new_a, new_b = compute_elo(elo_ratings[mid_a], elo_ratings[mid_b], score_a)
@@ -390,7 +393,8 @@ def run_mcts_eval(args, agents, model_ids, elo_ratings, reg_get, reg_upd):
     for i, mid in enumerate(model_ids):
         print(f"  {mid} vs MCTS ...", end=" ", flush=True)
         result = compete(agents[mid], mcts_agent, args.episodes,
-                         use_rust=args.rust_core, seed_offset=i)
+                         use_rust=args.rust_core, seed_offset=i,
+                         game_workers=args.game_workers)
         # 胜率 → 近似 ELO
         score = result["p1_win"] + 0.5 * result["draw"]
         elo_ratings[mid] = 1200 + (score - 0.5) * 400
@@ -423,7 +427,8 @@ def run_vs_random(args, agents, model_ids, reg_get, reg_upd, elo_ratings):
             continue
         print(f"  {mid} vs 随机 ...", end=" ", flush=True)
         result = compete(agents[mid], None, vs_eps,
-                         use_rust=args.rust_core, seed_offset=i + 10000)
+                         use_rust=args.rust_core, seed_offset=i + 10000,
+                         game_workers=args.game_workers)
         vr = {"win": result["p1_win"], "lose": result["p2_win"], "draw": result["draw"]}
         existing = (entry.get("eval") or {}) if entry else {}
         eval_data = dict(existing)
