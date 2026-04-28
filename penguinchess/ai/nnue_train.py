@@ -144,13 +144,7 @@ def generate_games_mcts(
         players = []
         
         while True:
-            if not use_rust:
-                sparse, dense = state_to_features(core)
-            else:
-                # For RustCore, features are not yet supported
-                # Fall back to simple features
-                sparse = extract_sparse_rust(core) if hasattr(core, 'to_json') else []
-                dense = np.zeros(DENSE_DIM, dtype=np.float32)
+            sparse, dense = state_to_features(core)
             
             player = core.current_player
             legal = core.get_legal_actions()
@@ -158,9 +152,7 @@ def generate_games_mcts(
                 break
             
             action = agent.select_action(core, legal)
-            
-            if not use_rust:
-                game_features.append((sparse, dense, player))
+            game_features.append((sparse, dense, player))
             
             _, _, terminated, _ = core.step(action)
             
@@ -175,8 +167,7 @@ def generate_games_mcts(
         else:
             outcome = 0
         
-        if not use_rust:
-            for sparse, dense, player in game_features:
+        for sparse, dense, player in game_features:
                 value = outcome if player == 0 else -outcome
                 data.append({
                     'sparse': sparse,

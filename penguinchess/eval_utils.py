@@ -152,6 +152,30 @@ class AlphaZeroMCTSAgent(Agent):
         return int(best)
 
 
+class AZMCTSWrapper(Agent):
+    """Python MCTS + AlphaZero net — 使用 PenguinChessCore 的 MCTS 批处理搜索。
+    用于 NNUE 训练数据生成。"""
+
+    def __init__(self, net, num_simulations: int = 200, c_puct: float = 1.4, batch_size: int = 32):
+        self.net = net
+        self.num_simulations = num_simulations
+        self.c_puct = c_puct
+        self.batch_size = batch_size
+
+    def select_action(self, core, legal: list[int]) -> int:
+        if not legal:
+            return 0
+        if len(legal) == 1:
+            return legal[0]
+        from penguinchess.ai.mcts_core import mcts_search_batched
+
+        counts, _ = mcts_search_batched(
+            core, evaluate_fn=self.net.evaluate,
+            num_simulations=self.num_simulations,
+            c_puct=self.c_puct, batch_size=self.batch_size)
+        return max(counts, key=counts.__getitem__)
+
+
 # =============================================================================
 # 对战引擎
 # =============================================================================

@@ -337,7 +337,7 @@ class PenguinChessCore:
         self._occupied_set: set = set()  # 已占据格子的 hex 索引集合，O(1) 查询
         self._neighbors: List[List[int]] = []  # hex_index → [neighbor_indices]，预计算邻居
 
-    def reset(self, *, seed: Optional[int] = None) -> None:
+    def reset(self, *, seed: Optional[int] = None) -> "PenguinChessCore":
         """初始化/重置游戏到初始状态。"""
         if seed is None:
             seed = self._seed if self._seed is not None else None
@@ -375,6 +375,7 @@ class PenguinChessCore:
         self._episode_steps = 0
         self._terminated = False
         self._rebuild_occupied()
+        return self
 
     def get_legal_actions(self) -> List[int]:
         """
