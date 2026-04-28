@@ -173,31 +173,44 @@ class NNUE(nn.Module):
         stm_players: Optional[list[int]] = None,
     ) -> torch.Tensor:
         """
-        Batch forward pass for training.
-        Builds separate stm and nstm accumulators per sample.
+        Batch forward pass — embedding-based sparse accumulation.
+        Builds padded index tensors for stm and nstm features,
+        then uses ft_weight[indices].sum(dim=1) for O(1) GPU gather.
         """
         B = dense_batch.shape[0]
-        ft_w = self.ft_weight_gather
-        ft_b = self.ft_bias
-        device = ft_w.device
+        device = dense_batch.device
+        ft_w = self.ft_weight_gather  # (360, ft_dim)
+        ft_b = self.ft_bias           # (ft_dim,)
 
         if stm_players is None:
             stm_players = [0] * B
 
-        acc_stm = ft_b.unsqueeze(0).expand(B, -1).clone()
-        acc_nstm = ft_b.unsqueeze(0).expand(B, -1).clone()
+        # Build padded index tensors for stm and nstm features
+        # Each sample has at most 3 pieces per player
+        stm_idx = torch.zeros(B, 3, dtype=torch.long, device=device)
+        nstm_idx = torch.zeros(B, 3, dtype=torch.long, device=device)
 
         for i in range(B):
-            idx = sparse_batch[i]
-            if not idx:
+            sp = sparse_batch[i]
+            if not sp:
                 continue
-            stm_idx, nstm_idx = _split_stm_nstm(idx, stm_players[i])
-            if stm_idx:
-                idx_t = torch.tensor(stm_idx, dtype=torch.long, device=device)
-                acc_stm[i] = acc_stm[i] + ft_w[idx_t].sum(dim=0)
-            if nstm_idx:
-                idx_t = torch.tensor(nstm_idx, dtype=torch.long, device=device)
-                acc_nstm[i] = acc_nstm[i] + ft_w[idx_t].sum(dim=0)
+            stm = stm_players[i]
+            si = 0
+            ni = 0
+            for f in sp:
+                is_p1 = f < P1_FEATURE_CUTOFF
+                is_stm = (stm == 0 and is_p1) or (stm == 1 and not is_p1)
+                if is_stm and si < 3:
+                    stm_idx[i, si] = f
+                    si += 1
+                elif not is_stm and ni < 3:
+                    nstm_idx[i, ni] = f
+                    ni += 1
+
+        # Feature Transformer: single embedding gather per perspective
+        # ft_w[stm_idx]: (B, 3, ft_dim) → sum(dim=1): (B, ft_dim)
+        acc_stm = ft_w[stm_idx].sum(dim=1) + ft_b  # (B, ft_dim)
+        acc_nstm = ft_w[nstm_idx].sum(dim=1) + ft_b
 
         x = torch.cat([F.relu(acc_stm), F.relu(acc_nstm), dense_batch], dim=-1)
         x = F.relu(self.fc1(x))

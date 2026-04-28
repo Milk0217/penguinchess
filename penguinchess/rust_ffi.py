@@ -62,12 +62,17 @@ class RustEngine:
         self._lib.mcts_search_rust_handle.restype = c_int32
 
         # Handle-based Parallel MCTS (internal thread parallelism)
-        self._lib.mcts_search_rust_handle_parallel.argtypes = [
-            c_int32, c_int32, c_double, c_int32, c_int32,
-            CFUNCTYPE(c_int32, POINTER(c_float), c_int32, POINTER(c_float), c_int32),
-            POINTER(c_char), c_int32,
-        ]
-        self._lib.mcts_search_rust_handle_parallel.restype = c_int32
+        try:
+            self._lib.mcts_search_rust_handle_parallel
+        except AttributeError:
+            pass
+        else:
+            self._lib.mcts_search_rust_handle_parallel.argtypes = [
+                c_int32, c_int32, c_double, c_int32, c_int32,
+                CFUNCTYPE(c_int32, POINTER(c_float), c_int32, POINTER(c_float), c_int32),
+                POINTER(c_char), c_int32,
+            ]
+            self._lib.mcts_search_rust_handle_parallel.restype = c_int32
 
         self._lib.api_version.restype = c_int32
 
