@@ -21,9 +21,9 @@ from typing import Optional
 
 from penguinchess.core import PenguinChessCore
 from penguinchess.eval_utils import Agent
-from penguinchess.ai.nnue import NNUE, NNUEAccumulator, state_to_features
+from penguinchess.ai.nnue import NNUE, NNUEAccumulator
 from penguinchess.ai.sparse_features import (
-    extract_sparse, extract_dense,
+    extract_sparse, extract_dense, state_to_features,
     compute_sparse_diff,
 )
 
@@ -130,33 +130,64 @@ class NNUEAgent(Agent):
         """
         Select best action using alpha-beta search.
         
-        Works with both RustCore and PenguinChessCore.
-        For search, converts to PenguinChessCore if needed.
+        Works with PenguinChessCore (full search with snapshot undo)
+        and RustCore (one-step lookahead with NNUE evaluation).
         """
         if not legal:
             return 0
-
-        # If it's a RustCore, convert for search
-        # (PenguinChessCore has snapshot/restore)
-        search_core = self._get_search_core(core)
         
         if len(legal) == 1:
             return legal[0]
         
-        best_move, _ = self._iterative_deepening(search_core, legal)
-        return best_move
-
-    def _get_search_core(self, core) -> PenguinChessCore:
-        """Get a PenguinChessCore for search (supports snapshot/restore)."""
+        # Try to use PenguinChessCore for full search
         if hasattr(core, 'get_snapshot'):
-            return core
-        # If it's a RustCore, we need to convert
-        # For now, assume core supports get_snapshot
-        # (Will work with PenguinChessCore)
-        raise TypeError(
-            "NNUEAgent requires PenguinChessCore for search. "
-            "RustCore not yet supported."
-        )
+            best_move, _ = self._iterative_deepening(core, legal)
+            return best_move
+        else:
+            # RustCore fallback: one-step lookahead with NNUE evaluation
+            return self._select_best_by_eval(core, legal)
+
+    def _select_best_by_eval(self, core, legal: list[int]) -> int:
+        """
+        Fallback for RustCore: evaluate each move with NNUE, pick best.
+        No tree search, but fast and works with any core type.
+        """
+        best_action = legal[0]
+        best_score = -float('inf')
+        snapshot = None
+        
+        if hasattr(core, 'get_snapshot'):
+            snapshot = core.get_snapshot()
+        
+        for action in legal:
+            # Save sparse features if using PenguinChessCore
+            if hasattr(core, 'get_snapshot'):
+                old_sparse = extract_sparse(core)
+            
+            _, reward, terminated, info = core.step(action)
+            
+            # Evaluate resulting position
+            sparse = extract_sparse(core)
+            dense = extract_dense(core)
+            dense_t = torch.from_numpy(dense).float().to(self.device)
+            sparse_batch = [sparse]
+            dense_batch = dense_t.unsqueeze(0)
+            
+            with torch.no_grad():
+                val = self.model.forward(sparse_batch, dense_batch)
+            
+            # Score = immediate reward + future value
+            score = reward + (0.0 if terminated else val.item())
+            
+            # Undo
+            if hasattr(core, 'restore_snapshot') and snapshot is not None:
+                core.restore_snapshot(snapshot)
+            
+            if score > best_score:
+                best_score = score
+                best_action = action
+        
+        return best_action
 
     def _evaluate(self, core: PenguinChessCore) -> float:
         """

@@ -28,9 +28,9 @@ from typing import Optional
 
 from penguinchess.core import PenguinChessCore
 from penguinchess.ai.sparse_features import (
-    extract_sparse, extract_dense, state_to_features,
-    PIECE_HEX_DIM, DENSE_DIM,
+    HEX_COUNT, PIECE_COUNT, PIECE_HEX_DIM, DENSE_DIM,
 )
+# state_to_features and extractors imported inline to avoid issues
 
 # ─── Default sizes ────────────────────────────────────────────
 FT_DIM = 64       # Feature transformer dimension
@@ -244,6 +244,7 @@ class NNUE(nn.Module):
         Evaluate a game state from scratch.
         Returns value in [-1, 1] from current player's perspective.
         """
+        from penguinchess.ai.sparse_features import state_to_features
         sparse, dense = state_to_features(core)
         dense_t = torch.from_numpy(dense).float()
         
