@@ -353,6 +353,12 @@ def train_alphazero(
         f"          batch_size={batch_size}, lr={lr}",
     ]
 
+    # 预估训练时间（基于历史经验: XL~70s, Large~53s, ResNet~50s / iter）
+    _est_sec_per_iter = 70 if network_name == "xl" else 53 if network_name == "large" else 50
+    _est_total_min = num_iterations * _est_sec_per_iter / 60
+    _est_eval_min = (num_iterations // max(1, eval_interval)) * 55 / 60  # each eval ~55s
+    config_lines.append(f" 预估:    {num_iterations} iter × {_est_sec_per_iter}s ≈ {_est_total_min:.0f} 分钟（含评估 +{_est_eval_min:.0f}m）")
+
     print(monitor.header("\n".join(config_lines)))
 
     # 自动导入前代最优参数
