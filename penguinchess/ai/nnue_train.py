@@ -192,6 +192,7 @@ class NNUEDataset(Dataset):
         self.value_list = torch.tensor(
             np.array([d['value'] for d in data], dtype=np.float32)
         )
+        self.stm_list = [d.get('player', 0) for d in data]
 
     def __len__(self) -> int:
         return len(self.value_list)
@@ -201,6 +202,7 @@ class NNUEDataset(Dataset):
             self.sparse_list[idx],
             self.dense_list[idx],
             self.value_list[idx],
+            self.stm_list[idx],
         )
 
 
@@ -209,7 +211,8 @@ def collate_nnue(batch: list[tuple]) -> tuple:
     sparse_batch = [b[0] for b in batch]
     dense_batch = torch.stack([b[1] for b in batch])
     value_batch = torch.stack([b[2] for b in batch])
-    return sparse_batch, dense_batch, value_batch
+    stm_batch = [b[3] for b in batch]
+    return sparse_batch, dense_batch, value_batch, stm_batch
 
 
 # ─── Training ─────────────────────────────────────────────────
@@ -259,11 +262,11 @@ def train_nnue(
         train_loss = 0.0
         num_batches = 0
         
-        for sparse_batch, dense_batch, value_batch in train_loader:
+        for sparse_batch, dense_batch, value_batch, stm_batch in train_loader:
             dense_batch = dense_batch.to(device)
             value_batch = value_batch.to(device)
             
-            pred = model(sparse_batch, dense_batch)
+            pred = model(sparse_batch, dense_batch, stm_players=stm_batch)
             loss = criterion(pred, value_batch)
             
             optimizer.zero_grad()
@@ -283,10 +286,10 @@ def train_nnue(
             val_loss = 0.0
             v_batches = 0
             with torch.no_grad():
-                for sparse_batch, dense_batch, value_batch in val_loader:
+                for sparse_batch, dense_batch, value_batch, stm_batch in val_loader:
                     dense_batch = dense_batch.to(device)
                     value_batch = value_batch.to(device)
-                    pred = model(sparse_batch, dense_batch)
+                    pred = model(sparse_batch, dense_batch, stm_players=stm_batch)
                     val_loss += criterion(pred, value_batch).item()
                     v_batches += 1
             val_loss /= max(1, v_batches)

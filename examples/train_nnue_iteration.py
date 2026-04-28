@@ -83,9 +83,9 @@ def main():
     for epoch in range(args.epochs):
         model.train()
         train_loss = 0.0
-        for sb, db, vb in train_loader:
+        for sb, db, vb, stm_b in train_loader:
             db, vb = db.to(device), vb.to(device)
-            pred = model(sb, db)
+            pred = model(sb, db, stm_players=stm_b)
             loss = criterion(pred, vb)
             optimizer.zero_grad()
             loss.backward()
@@ -96,9 +96,9 @@ def main():
         model.eval()
         val_loss = 0.0
         with torch.no_grad():
-            for sb, db, vb in val_loader:
+            for sb, db, vb, stm_b in val_loader:
                 db, vb = db.to(device), vb.to(device)
-                pred = model(sb, db)
+                pred = model(sb, db, stm_players=stm_b)
                 val_loss += criterion(pred, vb).item()
 
         train_loss /= max(1, len(train_loader))

@@ -169,12 +169,14 @@ class NNUEAgent(Agent):
             # Evaluate resulting position
             sparse = extract_sparse(core)
             dense = extract_dense(core)
-            dense_t = torch.from_numpy(dense).float().to(self.device)
-            sparse_batch = [sparse]
-            dense_batch = dense_t.unsqueeze(0)
+            stm = core.current_player
             
             with torch.no_grad():
-                val = self.model.forward(sparse_batch, dense_batch)
+                val = self.model._forward_sparse_single(
+                    sparse,
+                    torch.from_numpy(dense).float().to(self.device),
+                    stm_player=stm,
+                )
             
             # Score = immediate reward + future value
             score = reward + (0.0 if terminated else val.item())
@@ -194,13 +196,14 @@ class NNUEAgent(Agent):
         Evaluate a position using the NNUE model.
         Returns value from current player's perspective in [-1, 1].
         """
+        from penguinchess.ai.sparse_features import state_to_features
         sparse, dense = state_to_features(core)
         dense_t = torch.from_numpy(dense).float().to(self.device)
-        sparse_batch = [sparse]
-        dense_batch = dense_t.unsqueeze(0)
-        
+        stm = core.current_player
+
         with torch.no_grad():
-            val = self.model.forward(sparse_batch, dense_batch)
+            val = self.model._forward_sparse_single(
+                sparse, dense_t, stm_player=stm)
         return val.item()
 
     def _evaluate_with_acc(
@@ -284,15 +287,15 @@ class NNUEAgent(Agent):
             if acc is not None and self.use_accumulator:
                 new_sparse = extract_sparse(core)
                 removed, added = compute_sparse_diff(old_sparse, new_sparse)
-                acc.apply_diff(removed, added)
-            
+                acc.apply_diff(removed, added, core.current_player)
+
             # Recursive search
             score, _ = self._negamax(core, depth - 1, -beta, -alpha, acc)
             score = -score
-            
+
             # Restore accumulator
             if acc is not None and self.use_accumulator:
-                acc.apply_diff(added, removed)  # reverse
+                acc.apply_diff(added, removed, core.current_player)  # reverse
             
             # Restore game state
             core.restore_snapshot(snapshot)
