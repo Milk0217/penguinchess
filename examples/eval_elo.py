@@ -68,12 +68,14 @@ from penguinchess.eval_utils import (
 # =============================================================================
 
 def _detect_az_arch(pth_path: str) -> str:
-    """从文件名或 state_dict 检测 AZ 模型架构，返回 'resnet' / 'mlp' / 'legacy'。"""
+    """从文件名或 state_dict 检测 AZ 模型架构。"""
     stem = Path(pth_path).stem
     parts = stem.split("_")
-    # 新命名: alphazero_resnet_iter_10（parts[1]=arch）, alphazero_mlp_best
-    # 格式: ["alphazero", arch, ...]
+    # 新命名: alphazero_resnet_iter_10 → parts = [alphazero, arch, ...]
+    #          alphazero_resnet_xl_iter_10 → parts = [alphazero, resnet, xl, ...]
     if len(parts) >= 3 and parts[1] in ("resnet", "mlp"):
+        if len(parts) >= 4 and parts[2] in ("xl", "large", "configurable"):
+            return f"{parts[1]}_{parts[2]}"
         return parts[1]
     # 旧命名: alphazero_iter_10 → 加载 state_dict 检测
     try:
@@ -106,11 +108,21 @@ def discover_models() -> list[dict]:
             parts = stem.split("_")
             arch = _detect_az_arch(str(p))
 
-            # 新命名: alphazero_{arch}_iter_N.pth → parts = ["alphazero", arch, "iter", N]
-            if len(parts) >= 4 and parts[1] in ("resnet", "mlp") and parts[2] == "iter":
+            # 解析多段式架构名: alphazero_resnet_xl_iter_N.pth
+            # parts = ["alphazero", "resnet", "xl", "iter", "N"]
+            # Single-part arch: parts[1]=resnet/mlp; 2-part: parts[1]_parts[2]
+            p1 = parts[1] if len(parts) > 1 else ""
+            p2 = parts[2] if len(parts) > 2 else ""
+            p3 = parts[3] if len(parts) > 3 else ""
+            _2part_archs = {"xl", "large", "configurable"}
+
+            def _is_iter(p) -> bool: return p in ("iter", "best", "final")
+
+            # Single arch + iter: alphazero_resnet_iter_10 (parts=4)
+            if p1 in ("resnet", "mlp") and p2 == "iter" and len(parts) == 4:
                 try:
-                    n = int(parts[3])
-                except (IndexError, ValueError):
+                    n = int(p3)
+                except (ValueError, IndexError):
                     continue
                 mid = f"az_{arch}_iter_{n}"
                 models.append({
@@ -118,28 +130,38 @@ def discover_models() -> list[dict]:
                     "file": f"alphazero/{stem}.pth",
                     "gen": None, "iter": n, "path": str(p),
                 })
-            # 新命名: alphazero_{arch}_best.pth / alphazero_{arch}_final.pth
-            elif len(parts) >= 3 and parts[1] in ("resnet", "mlp") and parts[2] in ("best", "final"):
-                suffix = parts[2]  # "best" or "final"
-                mid = f"az_{arch}_{suffix}"
+            # 2-part arch + iter: alphazero_resnet_xl_iter_10 (parts=5)
+            elif p1 == "resnet" and p2 in _2part_archs and p3 == "iter" and len(parts) == 5:
+                try:
+                    n = int(parts[4])
+                except (ValueError, IndexError):
+                    continue
+                mid = f"az_{arch}_iter_{n}"
+                models.append({
+                    "id": mid, "type": "alphazero", "arch": arch,
+                    "file": f"alphazero/{stem}.pth",
+                    "gen": None, "iter": n, "path": str(p),
+                })
+            # Single arch + best/final: alphazero_resnet_best.pth
+            elif p1 in ("resnet", "mlp") and p2 in ("best", "final") and len(parts) == 3:
+                mid = f"az_{arch}_{p2}"
                 if not any(m["id"] == mid for m in models):
                     models.append({
                         "id": mid, "type": "alphazero", "arch": arch,
                         "file": f"alphazero/{stem}.pth",
-                        "gen": None, "iter": 999 if suffix == "best" else None,
+                        "gen": None, "iter": 999 if p2 == "best" else None,
                         "path": str(p),
                     })
-            # 旧命名: alphazero_iter_N.pth → parts = ["alphazero", "iter", N]
-            elif len(parts) >= 3 and parts[1] == "iter":
-                try:
-                    n = int(parts[2])
-                except (IndexError, ValueError):
-                    continue
-                models.append({
-                    "id": f"az_iter_{n}", "type": "alphazero", "arch": arch,
-                    "file": f"alphazero/{stem}.pth",
-                    "gen": None, "iter": n, "path": str(p),
-                })
+            # 2-part arch + best/final: alphazero_resnet_xl_best.pth
+            elif p1 == "resnet" and p2 in _2part_archs and p3 in ("best", "final") and len(parts) == 4:
+                mid = f"az_{arch}_{p3}"
+                if not any(m["id"] == mid for m in models):
+                    models.append({
+                        "id": mid, "type": "alphazero", "arch": arch,
+                        "file": f"alphazero/{stem}.pth",
+                        "gen": None, "iter": 999 if p3 == "best" else None,
+                        "path": str(p),
+                    })
             # 旧命名: alphazero_best.pth
             elif stem == "alphazero_best":
                 if not any(m["id"] == "az_best" for m in models):
@@ -149,21 +171,22 @@ def discover_models() -> list[dict]:
                         "gen": None, "iter": 999,
                         "path": str(p),
                     })
+            # 旧命名: alphazero_iter_N.pth
+            elif p1 == "iter" and len(parts) == 3:
+                try:
+                    n = int(p2)
+                except (ValueError, IndexError):
+                    continue
+                models.append({
+                    "id": f"az_iter_{n}", "type": "alphazero", "arch": arch,
+                    "file": f"alphazero/{stem}.pth",
+                    "gen": None, "iter": n, "path": str(p),
+                })
             # 旧命名: alphazero_final.pth
             elif stem == "alphazero_final":
                 if not any(m["id"] == "az_final" for m in models):
                     models.append({
                         "id": "az_final", "type": "alphazero", "arch": arch,
-                        "file": f"alphazero/{stem}.pth",
-                        "gen": None, "iter": None,
-                        "path": str(p),
-                    })
-            # 新命名: alphazero_{arch}_final.pth
-            elif len(parts) >= 3 and parts[1] in ("resnet", "mlp") and parts[2] == "final":
-                mid = f"az_{parts[1]}_final"
-                if not any(m["id"] == mid for m in models):
-                    models.append({
-                        "id": mid, "type": "alphazero", "arch": parts[1],
                         "file": f"alphazero/{stem}.pth",
                         "gen": None, "iter": None,
                         "path": str(p),
