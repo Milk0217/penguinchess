@@ -387,10 +387,9 @@ def train_alphazero(
     tb_writer = SummaryWriter(log_dir=tb_log_dir)
     print(f" TensorBoard: {tb_log_dir}")
 
-    # 表头
     iter_avg_time = 0.0
-    print(f"\n{'迭代':>6}  耗时    Loss        LR       │ 资源")
-    print("-" * 50)
+    _header_printed = False
+    sys.stdout.flush()
 
     data_buffer = []
     MAX_BUFFER = 100000
@@ -495,9 +494,13 @@ def train_alphazero(
         lr_scheduler.step()
         tb_writer.add_scalar("hyperparams/lr", optimizer.param_groups[0]["lr"], iteration)
 
-        # 紧凑单行迭代摘要
+        # 延迟打印表头（首次迭代完成后随数据输出）
         def _fmt_time(t: float) -> str:
             return f"{t//60:.0f}m{t%60:02.0f}s" if t >= 120 else f"{t:.0f}s"
+        if not _header_printed:
+            print(f"\n{'迭代':>6}  耗时    Loss        LR       │ 资源")
+            print("-" * 50)
+            _header_printed = True
         res_str = monitor.summary_line()
         lr_val = optimizer.param_groups[0]["lr"]
         print(f"  {iteration:>3d}/{num_iterations:<3d}  "
