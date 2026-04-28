@@ -195,8 +195,8 @@ def discover_models() -> list[dict]:
 
 
 def load_agent(info: dict, use_mcts=False, mcts_simulations=800, deterministic=True, use_gpu=False) -> Agent:
-    if info["type"] == "alphazero" and use_mcts:
-        # AlphaZero + Rust MCTS: load neural net, guide Rust MCTS search
+    if info["type"] == "alphazero":
+        # AZ 模型默认使用 MCTS 搜索（它的核心优势所在）
         import torch
         from penguinchess.ai.alphazero_net import AlphaZeroNet, AlphaZeroResNet, detect_net_arch
         state = torch.load(info["path"], map_location="cpu", weights_only=True)
@@ -242,7 +242,7 @@ def main():
     parser.add_argument("--gpu", action="store_true",
                         help="PPO 使用 GPU 推理（默认 CPU）")
     parser.add_argument("--mcts", action="store_true",
-                        help="使用 Rust MCTS 作为评估 Agent")
+                        help="非 AZ 模型也使用 Rust MCTS 评估（默认 AZ 已启用 MCTS，PPO 使用自身策略）")
     parser.add_argument("--simulations", type=int, default=800,
                         help="MCTS 模拟次数（默认 800）")
     parser.add_argument("--stochastic", action="store_true",
@@ -271,9 +271,10 @@ def main():
     det_str = "随机" if args.stochastic else "确定"
     gpu_str = " GPU" if args.use_gpu else ""
     print(f"引擎: {'Rust (stateful)' if args.use_rust else 'Python'}"
-          f" | Agent: {'MCTS' if args.mcts else 'PPO/AZ'}"
+          f" | AZ: MCTS({args.simulations} sims)"
+          f" | PPO: {'MCTS' if args.mcts else '自身策略'}{gpu_str}"
           f" | 模式: {'增量' if args.incremental else '全量'}"
-          f" | PPO: {det_str}{gpu_str}")
+          f" | {'确定' if not args.stochastic else '随机'}")
     print()
 
     # 加载模型
