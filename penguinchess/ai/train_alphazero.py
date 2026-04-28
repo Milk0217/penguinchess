@@ -656,22 +656,17 @@ def train_alphazero(
         tb_writer.add_scalar("performance/win_rate", win_rate, iteration)
         tb_writer.add_scalar("performance/draw_rate", draw_rate, iteration)
 
-        # 每迭代保存 checkpoint（原子写入：先写.tmp, 再 rename, 防止断电/崩溃导致文件损坏）
-        arch_tag = net.arch_name
-        cp_path = str(ALPHAZERO_DIR / f"alphazero_{arch_tag}_checkpoint.pth")
-        cp_tmp = cp_path + ".tmp"
-        torch.save({
-            "iteration": iteration,
-            "model_state": net.state_dict(),
-            "optimizer_state": optimizer.state_dict(),
-            "lr_scheduler": lr_scheduler.state_dict(),
-            "best_state": best_state,
-            "best_iter": best_iter,
-            "best_win_rate": best_win_rate,
-        }, cp_tmp)
-        os.replace(cp_tmp, cp_path)  # 原子替换（Windows 上需要目标不存在，先删除再 rename）
-        if os.path.exists(cp_tmp):
-            os.remove(cp_tmp)
+        # 每 5 迭代保存 checkpoint（不含 optimizer, ~1.2GB, 保存间隔减少 I/O 开销）
+        if iteration % 5 == 0:
+            arch_tag = net.arch_name
+            cp_path = str(ALPHAZERO_DIR / f"alphazero_{arch_tag}_checkpoint.pth")
+            torch.save({
+                "iteration": iteration,
+                "model_state": net.state_dict(),
+                "best_state": best_state,
+                "best_iter": best_iter,
+                "best_win_rate": best_win_rate,
+            }, cp_path)
 
         # 更新训练状态（供前端仪表盘使用）
         _update_ts(
