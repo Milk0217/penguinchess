@@ -1,32 +1,146 @@
-/// NNUE forward pass — transposed weight format for cache-friendly access.
+/// NNUE forward pass — SIMD-accelerated with explicit AVX2 intrinsics.
 /// Architecture:
 ///   360 sparse binary → FT(64) → CReLU(acc_stm || acc_nstm) → concat dense[66]
 ///   → FC1(256) → ReLU → FC2(128) → ReLU → FC3(1) → tanh
 ///
-/// FC weights stored in TRANSPOSED (column-major) format:
-///   weight_t[col * rows + row] = original[row][col]
-/// This gives CONTIGUOUS memory access for the inner loop.
+/// FC weights stored TRANSPOSED (column-major) for contiguous SIMD access:
+///   w_t[col * rows + row] = original[row][col]
 
 use serde::{Deserialize, Serialize};
 
 pub const FT_DIM: usize = 64;
 pub const DENSE_DIM: usize = 66;
-pub const FC1_DIM: usize = 256;  // must match NNUE.py HIDDEN_DIM
-pub const FC2_DIM: usize = 128;  // must match NNUE.py HIDDEN_DIM / 2
+pub const FC1_DIM: usize = 256;
+pub const FC2_DIM: usize = 128;
 pub const INPUT_DIM: usize = FT_DIM * 2 + DENSE_DIM; // 194
 pub const P1_CUTOFF: usize = 180;
+
+// ─── AVX2 helpers (requires target-cpu=native) ────────────────
+
+#[cfg(target_arch = "x86_64")]
+mod simd {
+    use std::arch::x86_64::*;
+
+    /// y[j..j+8] += col[j..j+8] * xk  with FMA
+    #[inline(always)]
+    pub unsafe fn fma_add(col: *const f32, xk: __m256, y: *mut f32, j: usize) {
+        let w = _mm256_loadu_ps(col.add(j));
+        let o = _mm256_loadu_ps(y.add(j));
+        let r = _mm256_fmadd_ps(w, xk, o);
+        _mm256_storeu_ps(y.add(j), r);
+    }
+
+    /// vec[j..j+8] += row[j..j+8]
+    #[inline(always)]
+    pub unsafe fn add_vec(vec: *mut f32, row: *const f32, j: usize) {
+        let v = _mm256_loadu_ps(vec.add(j));
+        let r = _mm256_loadu_ps(row.add(j));
+        _mm256_storeu_ps(vec.add(j), _mm256_add_ps(v, r));
+    }
+
+    /// vec[j..j+8] -= row[j..j+8]
+    #[inline(always)]
+    pub unsafe fn sub_vec(vec: *mut f32, row: *const f32, j: usize) {
+        let v = _mm256_loadu_ps(vec.add(j));
+        let r = _mm256_loadu_ps(row.add(j));
+        _mm256_storeu_ps(vec.add(j), _mm256_sub_ps(v, r));
+    }
+
+    /// relu: x[j..j+8] = max(x[j..j+8], 0)
+    #[inline(always)]
+    pub unsafe fn relu8(x: *mut f32, j: usize) {
+        let v = _mm256_loadu_ps(x.add(j));
+        let zero = _mm256_setzero_ps();
+        _mm256_storeu_ps(x.add(j), _mm256_max_ps(v, zero));
+    }
+
+    /// clip to [0, 127]
+    #[inline(always)]
+    pub unsafe fn clip8(x: *const f32, j: usize) -> __m256 {
+        let v = _mm256_loadu_ps(x.add(j));
+        let zero = _mm256_setzero_ps();
+        let maxv = _mm256_set1_ps(127.0);
+        _mm256_min_ps(_mm256_max_ps(v, zero), maxv)
+    }
+
+    /// set1(xk)
+    #[inline(always)]
+    pub unsafe fn splat(xk: f32) -> __m256 {
+        _mm256_set1_ps(xk)
+    }
+
+    /// Store to y[]
+    #[inline(always)]
+    pub unsafe fn store(y: *mut f32, j: usize, v: __m256) {
+        _mm256_storeu_ps(y.add(j), v);
+    }
+}
+
+/// Scalar fallback (always available).
+#[allow(dead_code)]
+fn matvec_scalar(w_t: &[f32], x: &[f32], rows: usize, cols: usize,
+                 bias: &[f32], out: &mut [f32]) {
+    out.copy_from_slice(bias);
+    for k in 0..cols {
+        let xk = x[k];
+        let col = &w_t[k * rows..(k + 1) * rows];
+        for j in 0..rows {
+            out[j] += col[j] * xk;
+        }
+    }
+}
+
+fn matvec_mul_add_t(w_t: &[f32], x: &[f32], rows: usize, cols: usize,
+                     bias: &[f32], out: &mut [f32]) {
+    out.copy_from_slice(bias);
+    for k in 0..cols {
+        let xk = x[k];
+        let col = &w_t[k * rows..(k + 1) * rows];
+        let mut j = 0usize;
+        #[cfg(target_arch = "x86_64")]
+        {
+            let w_ptr = col.as_ptr();
+            let o_ptr = out.as_mut_ptr();
+            while j + 8 <= rows {
+                unsafe { simd::fma_add(w_ptr, simd::splat(xk), o_ptr, j); }
+                j += 8;
+            }
+        }
+        for j in j..rows {
+            out[j] += col[j] * xk;
+        }
+    }
+}
+
+fn relu_inplace(x: &mut [f32]) {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        let p = x.as_mut_ptr();
+        let mut j = 0usize;
+        while j + 8 <= x.len() {
+            simd::relu8(p, j);
+            j += 8;
+        }
+        for i in j..x.len() {
+            if x[i] < 0.0 { x[i] = 0.0; }
+        }
+        return;
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    for v in x.iter_mut() { if *v < 0.0 { *v = 0.0; } }
+}
 
 // ─── Weights ──────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NNUEWeights {
-    pub ft_weight: Vec<f32>,     // (360, FT_DIM=64) row-major
+    pub ft_weight: Vec<f32>,     // (360, 64) row-major
     pub ft_bias: Vec<f32>,
-    pub fc1_weight_t: Vec<f32>,  // (INPUT_DIM=194, FC1_DIM=256) TRANSPOSED
+    pub fc1_weight_t: Vec<f32>,  // (194, 256) TRANSPOSED
     pub fc1_bias: Vec<f32>,
-    pub fc2_weight_t: Vec<f32>,  // (FC1_DIM=256, FC2_DIM=128) TRANSPOSED
+    pub fc2_weight_t: Vec<f32>,  // (256, 128) TRANSPOSED
     pub fc2_bias: Vec<f32>,
-    pub fc3_weight_t: Vec<f32>,  // (FC2_DIM=128, 1) — just 128 floats
+    pub fc3_weight_t: Vec<f32>,  // (128, 1)
     pub fc3_bias: Vec<f32>,
 }
 
@@ -51,42 +165,32 @@ impl NNUEWeights {
             + 1 * FC2_DIM + 1
     }
 
-    /// Construct from flat float array. FC weights are TRANSPOSED on load.
     pub fn from_flat(data: &[f32]) -> Self {
         let mut off = 0;
         let ft_weight = data[off..off + 360 * FT_DIM].to_vec(); off += 360 * FT_DIM;
         let ft_bias = data[off..off + FT_DIM].to_vec(); off += FT_DIM;
 
-        // fc1: original (256, 194) row-major → transpose to (194, 256)
         let fc1_rows = FC1_DIM; let fc1_cols = INPUT_DIM;
         let mut fc1_weight_t = vec![0.0f32; fc1_cols * fc1_rows];
-        for row in 0..fc1_rows {
-            for col in 0..fc1_cols {
-                fc1_weight_t[col * fc1_rows + row] = data[off + row * fc1_cols + col];
-            }
-        }
+        for row in 0..fc1_rows { for col in 0..fc1_cols {
+            fc1_weight_t[col * fc1_rows + row] = data[off + row * fc1_cols + col];
+        }}
         off += fc1_rows * fc1_cols;
         let fc1_bias = data[off..off + FC1_DIM].to_vec(); off += FC1_DIM;
 
-        // fc2: original (128, 256) → transpose to (256, 128)
         let fc2_rows = FC2_DIM; let fc2_cols = FC1_DIM;
         let mut fc2_weight_t = vec![0.0f32; fc2_cols * fc2_rows];
-        for row in 0..fc2_rows {
-            for col in 0..fc2_cols {
-                fc2_weight_t[col * fc2_rows + row] = data[off + row * fc2_cols + col];
-            }
-        }
+        for row in 0..fc2_rows { for col in 0..fc2_cols {
+            fc2_weight_t[col * fc2_rows + row] = data[off + row * fc2_cols + col];
+        }}
         off += fc2_rows * fc2_cols;
         let fc2_bias = data[off..off + FC2_DIM].to_vec(); off += FC2_DIM;
 
-        // fc3: original (1, 128) → transpose to (128, 1) = same layout, just reshape
         let fc3_rows = 1usize; let fc3_cols = FC2_DIM;
         let mut fc3_weight_t = vec![0.0f32; fc3_cols * fc3_rows];
-        for row in 0..fc3_rows {
-            for col in 0..fc3_cols {
-                fc3_weight_t[col * fc3_rows + row] = data[off + row * fc3_cols + col];
-            }
-        }
+        for row in 0..fc3_rows { for col in 0..fc3_cols {
+            fc3_weight_t[col * fc3_rows + row] = data[off + row * fc3_cols + col];
+        }}
         off += fc3_rows * fc3_cols;
         let fc3_bias = data[off..off + 1].to_vec();
 
@@ -122,13 +226,31 @@ impl NNUEAccumulator {
         self.acc_nstm.copy_from_slice(&weights.ft_bias);
     }
 
+    fn add_ft_weight(dst: &mut [f32; 64], wt_row: &[f32], sign: f32) {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            let d = dst.as_mut_ptr();
+            let s = wt_row.as_ptr();
+            let mut j = 0usize;
+            if sign > 0.0 {
+                while j + 8 <= 64 { simd::add_vec(d, s, j); j += 8; }
+            } else {
+                while j + 8 <= 64 { simd::sub_vec(d, s, j); j += 8; }
+            }
+            for i in j..64 { dst[i] += sign * wt_row[i]; }
+            return;
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        for i in 0..64 { dst[i] += sign * wt_row[i]; }
+    }
+
     pub fn apply_sparse(&mut self, features: &[usize], stm_player: usize, weights: &NNUEWeights) {
         for &f in features {
             let is_p1 = f < P1_CUTOFF;
             let stm = if stm_player == 0 { is_p1 } else { !is_p1 };
             let src = &weights.ft_weight[f * FT_DIM..(f + 1) * FT_DIM];
             let dst: &mut [f32; 64] = if stm { &mut self.acc_stm } else { &mut self.acc_nstm };
-            for i in 0..FT_DIM { dst[i] += src[i]; }
+            Self::add_ft_weight(dst, src, 1.0);
         }
     }
 
@@ -139,48 +261,46 @@ impl NNUEAccumulator {
             let stm = if stm_player == 0 { is_p1 } else { !is_p1 };
             let src = &weights.ft_weight[f * FT_DIM..(f + 1) * FT_DIM];
             let dst: &mut [f32; 64] = if stm { &mut self.acc_stm } else { &mut self.acc_nstm };
-            for i in 0..FT_DIM { dst[i] -= src[i]; }
+            Self::add_ft_weight(dst, src, -1.0);
         }
         for &f in added {
             let is_p1 = f < P1_CUTOFF;
             let stm = if stm_player == 0 { is_p1 } else { !is_p1 };
             let src = &weights.ft_weight[f * FT_DIM..(f + 1) * FT_DIM];
             let dst: &mut [f32; 64] = if stm { &mut self.acc_stm } else { &mut self.acc_nstm };
-            for i in 0..FT_DIM { dst[i] += src[i]; }
+            Self::add_ft_weight(dst, src, 1.0);
         }
     }
 
     pub fn get_crelu(&self) -> [f32; FT_DIM * 2] {
-        let mut out = [0.0f32; FT_DIM * 2];
-        for i in 0..FT_DIM {
-            out[i] = self.acc_stm[i].max(0.0).min(127.0);
-            out[FT_DIM + i] = self.acc_nstm[i].max(0.0).min(127.0);
+        #[cfg(target_arch = "x86_64")]
+        {
+            let mut out = [0.0f32; FT_DIM * 2];
+            unsafe {
+                let mut j = 0usize;
+                while j + 8 <= FT_DIM {
+                    let sv = simd::clip8(self.acc_stm.as_ptr(), j);
+                    let nv = simd::clip8(self.acc_nstm.as_ptr(), j);
+                    simd::store(out.as_mut_ptr(), j, sv);
+                    simd::store(out.as_mut_ptr(), FT_DIM + j, nv);
+                    j += 8;
+                }
+                for i in j..FT_DIM {
+                    out[i] = self.acc_stm[i].max(0.0).min(127.0);
+                    out[FT_DIM + i] = self.acc_nstm[i].max(0.0).min(127.0);
+                }
+            }
+            return out;
         }
-        out
-    }
-}
-
-// ─── Matvec with transposed (column-major) weights ────────────
-
-/// y = W * x + b, W stored column-major: w_t[col * rows + row] = original[row][col]
-/// For each input element x[k], we add W[:,k] * x[k] to out, with contiguous memory access.
-#[inline(always)]
-fn matvec_mul_add_t(w_t: &[f32], x: &[f32], rows: usize, cols: usize,
-                    bias: &[f32], out: &mut [f32]) {
-    out.copy_from_slice(bias);
-    for k in 0..cols {
-        let xk = x[k];
-        let col = &w_t[k * rows..(k + 1) * rows];
-        for j in 0..rows {
-            out[j] += col[j] * xk;
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let mut out = [0.0f32; FT_DIM * 2];
+            for i in 0..FT_DIM {
+                out[i] = self.acc_stm[i].max(0.0).min(127.0);
+                out[FT_DIM + i] = self.acc_nstm[i].max(0.0).min(127.0);
+            }
+            out
         }
-    }
-}
-
-#[inline]
-fn relu_inplace(x: &mut [f32]) {
-    for v in x.iter_mut() {
-        if *v < 0.0 { *v = 0.0; }
     }
 }
 
