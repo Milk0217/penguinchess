@@ -69,6 +69,7 @@ impl GameState {
             return self.board.cells.iter().enumerate()
                 .filter(|(i, c)| {
                     c.state == HexState::Active
+                    && c.points < 3  // 放置阶段禁止放在3分格上
                     && !self.pieces.iter().any(|p| p.hex_idx == Some(*i))
                 })
                 .map(|(i, _)| i)

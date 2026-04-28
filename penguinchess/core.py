@@ -382,13 +382,13 @@ class PenguinChessCore:
         返回当前所有合法动作的 ID 列表。
         动作 ID = hexes 数组索引（0 ~ N-1）。
 
-        放置阶段: 返回所有可放置的空格子索引
+        放置阶段: 返回所有可放置的空格子（3分格除外）
         移动阶段: 返回所有己方棋子可移动到的目标格子索引
         """
         if self.phase == self.PHASE_PLACEMENT:
             ids = []
             for i, h in enumerate(self.hexes):
-                if h.is_active() and not self._hex_occupied(h):
+                if h.is_active() and h.points < 3 and not self._hex_occupied(h):
                     ids.append(i)
             return ids
 
