@@ -395,7 +395,7 @@ def train_alphazero(
     best_state = copy.deepcopy(net.state_dict())
     best_iter = 0
     best_win_rate = 0.0
-    print(f" 初始 best: iter_{best_iter}")
+    print(f" 初始 best: iter_{best_iter}", flush=True)
     _start_time = time.time()
 
     # AMP (Automatic Mixed Precision)
@@ -521,16 +521,17 @@ def train_alphazero(
         def _fmt_time(t: float) -> str:
             return f"{t//60:.0f}m{t%60:02.0f}s" if t >= 120 else f"{t:.0f}s"
         if not _header_printed:
-            print(f"\n{'迭代':>6}  耗时    Loss        LR       │ 资源")
-            print("-" * 50)
+            print(f"\n{'迭代':>6}  耗时    Loss        LR         ETA    │ 资源", flush=True)
+            print("-" * 60, flush=True)
             _header_printed = True
         res_str = monitor.summary_line()
         lr_val = optimizer.param_groups[0]["lr"]
+        eta = f"{_fmt_time(eta_remaining):>5s} " if eta_remaining > 0 else "     "
         print(f"  {iteration:>3d}/{num_iterations:<3d}  "
               f"{_fmt_time(total_elapsed):>7s}  "
               f"L={avg_loss:.3f}  "
               f"LR={lr_val:.1e}  "
-              f"│ {res_str}")
+              f"{eta}│ {res_str}", flush=True)
 
         # TensorBoard 日志
         tb_writer.add_scalar("loss/total", avg_loss, iteration)
@@ -589,7 +590,7 @@ def train_alphazero(
                                   parallel_workers=parallel_workers)
             t5 = time.time()
             best_label = f" [BEST]" if wr >= 0.55 else ""
-            print(f"{wr:.1%} ({t5-t4:.0f}s){best_label}")
+            print(f"{wr:.1%} ({t5-t4:.0f}s){best_label}", flush=True)
 
             # TensorBoard 记录评估结果
             tb_writer.add_scalar("eval/win_rate_vs_best", wr, iteration)
@@ -645,7 +646,7 @@ def train_alphazero(
 
     # ----- 自动 ELO 评估 -----
     if auto_eval:
-        print(f"\n  ├─ 自动 ELO 评估 ({auto_eval_episodes} 局/对, 增量模式)...")
+        print(f"\n  ├─ 自动 ELO 评估 ({auto_eval_episodes} 局/对, 增量模式)...", flush=True)
         _update_ts(is_training=True, current_phase="elo_eval", progress=0.9)
         try:
             from examples.eval_elo import main as _eval_main
