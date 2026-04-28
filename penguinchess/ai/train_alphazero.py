@@ -274,25 +274,21 @@ class ResourceMonitor:
 
     def header(self, config_str: str) -> str:
         """起始总览。"""
-        lines = []
-        lines.append("=" * 65)
-        lines.append(" PenguinChess AlphaZero 训练")
-        lines.append("=" * 65)
+        lines = ["─" * 55]
         if self._gpu_name:
-            lines.append(f" GPU:    {self._gpu_name}")
+            lines.append(f" {self._gpu_name}")
         lines.extend(config_str.split("\n"))
-        lines.append("-" * 65)
+        lines.append("─" * 55)
         return "\n".join(lines)
 
     def footer(self, elapsed: float) -> str:
         """结束时峰值总结（仅本进程峰值）。"""
-        lines = []
-        lines.append("=" * 65)
-        lines.append(f" 训练完成! 总耗时 {elapsed//60:.0f}m{elapsed%60:.0f}s")
+        lines = ["─" * 55]
+        lines.append(f" ✅ {elapsed//60:.0f}m{elapsed%60:.0f}s")
         if self._gpu_name:
-            lines.append(f" GPU 峰值: {self._peak_gpu_mem}/{self._gpu_total_mem} MB")
-        lines.append(f" CPU 峰值: {self._peak_cpu:.1f}% | RAM 峰值: {self._peak_ram:.1f}GB")
-        lines.append("=" * 65)
+            lines.append(f"    GPU: {self._peak_gpu_mem}/{self._gpu_total_mem}MB")
+        lines.append(f"    CPU: {self._peak_cpu:.0f}%  RAM: {self._peak_ram:.1f}GB")
+        lines.append("─" * 55)
         return "\n".join(lines)
 
 
@@ -357,7 +353,7 @@ def train_alphazero(
         if resume:
             print(f" 模型不存在: {resume}")
         else:
-            print(f" 新网络: AlphaZeroResNetLarge ({sum(p.numel() for p in net.parameters()):,} 参数)")
+            print(f" 新网络: {_net_cls.__name__} ({sum(p.numel() for p in net.parameters()):,} 参数)")
 
     optimizer = optim.Adam(net.parameters(), lr=lr, weight_decay=l2_reg)
 
@@ -376,7 +372,7 @@ def train_alphazero(
     best_state = copy.deepcopy(net.state_dict())
     best_iter = 0
     best_win_rate = 0.0
-    print(f" 初始 best = iter_{best_iter}")
+    print(f" 初始 best: iter_{best_iter}")
     _start_time = time.time()
 
     # AMP (Automatic Mixed Precision)
@@ -393,8 +389,8 @@ def train_alphazero(
 
     # 表头
     iter_avg_time = 0.0
-    print(f"\n{'迭代':>6}  │ 对弈   训练   总耗时   Loss     P-Loss   V-Loss   资源")
-    print("-" * 65)
+    print(f"\n{'迭代':>6}  耗时    Loss        LR       │ 资源")
+    print("-" * 50)
 
     data_buffer = []
     MAX_BUFFER = 100000
@@ -499,13 +495,16 @@ def train_alphazero(
         lr_scheduler.step()
         tb_writer.add_scalar("hyperparams/lr", optimizer.param_groups[0]["lr"], iteration)
 
-        # 单行迭代摘要
+        # 紧凑单行迭代摘要
+        def _fmt_time(t: float) -> str:
+            return f"{t//60:.0f}m{t%60:02.0f}s" if t >= 120 else f"{t:.0f}s"
         res_str = monitor.summary_line()
-        print(f"  {iteration:>3d}/{num_iterations:<3d}  │ "
-              f"{game_time:>4.0f}s {train_time:>4.0f}s "
-              f"{total_elapsed:>5.0f}s  "
-              f"{avg_loss:.4f} {avg_p:.4f} {avg_v:.4f}  "
-              f"LR {optimizer.param_groups[0]['lr']:.2e} │ {res_str}")
+        lr_val = optimizer.param_groups[0]["lr"]
+        print(f"  {iteration:>3d}/{num_iterations:<3d}  "
+              f"{_fmt_time(total_elapsed):>7s}  "
+              f"L={avg_loss:.3f}  "
+              f"LR={lr_val:.1e}  "
+              f"│ {res_str}")
 
         # TensorBoard 日志
         tb_writer.add_scalar("loss/total", avg_loss, iteration)
@@ -543,8 +542,7 @@ def train_alphazero(
         # ----- 评估 vs best_net -----
         if iteration % eval_interval == 0:
             t4 = time.time()
-            print(f"  ├─ 评估 vs best(iter_{best_iter}) "
-                  f"({eval_games}局, {eval_simulations} sims)...", end=" ", flush=True)
+            print(f"  ├─ vs best(iter_{best_iter})...", end=" ", flush=True)
 
             # 构建 best_net 副本（CPU 评估）
             # 自动检测 best_net 和 current_net 的架构
@@ -564,7 +562,8 @@ def train_alphazero(
                                   num_simulations=eval_simulations,
                                   parallel_workers=parallel_workers)
             t5 = time.time()
-            print(f"胜率: {wr:.1%} ({t5-t4:.0f}s)")
+            best_label = f" [BEST]" if wr >= 0.55 else ""
+            print(f"{wr:.1%} ({t5-t4:.0f}s){best_label}")
 
             # TensorBoard 记录评估结果
             tb_writer.add_scalar("eval/win_rate_vs_best", wr, iteration)
@@ -579,7 +578,6 @@ def train_alphazero(
                 arch_tag = net.arch_name  # "mlp" 或 "resnet"
                 best_path = str(ALPHAZERO_DIR / f"alphazero_{arch_tag}_best.pth")
                 torch.save(best_state, best_path)
-                print(f"  [BEST] 新 best! iter_{iteration} 胜率 {wr:.1%} ({arch_tag})")
 
                 # 注册到 Model Registry
                 try:
@@ -596,8 +594,8 @@ def train_alphazero(
                     update_evaluation(model_id, eval_data)
                 except Exception:
                     pass
-            else:
-                print(f"  保持当前 best (iter_{best_iter}, {best_win_rate:.1%})")
+            elif best_iter > 0:
+                print(f"  keep best iter_{best_iter} ({best_win_rate:.0%})")
 
     # ----- 训练结束：保存最终模型并注册 -----
     arch_tag = net.arch_name
@@ -615,8 +613,8 @@ def train_alphazero(
     _clear_ts()
     _elapsed = time.time() - _start_time
     print(f"\n{monitor.footer(_elapsed)}")
-    print(f"  best 模型: {ALPHAZERO_DIR / f'alphazero_{arch_tag}_best.pth'} (iter_{best_iter}, {arch_tag})")
-    print(f"  最终模型: {final_path}")
+    print(f"  best: {ALPHAZERO_DIR / f'alphazero_{arch_tag}_best.pth'} (iter_{best_iter})")
+    print(f"  final: {final_path}")
 
     # ----- 自动 ELO 评估 -----
     if auto_eval:
