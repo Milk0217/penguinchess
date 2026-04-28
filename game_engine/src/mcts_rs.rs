@@ -282,7 +282,6 @@ fn flush_batch_obs(
         out_buf.resize(n * out_dim(), 0.0f32);
         unsafe { f(obs_buf.as_ptr(), n as i32, out_buf.as_mut_ptr(), out_buf.len() as i32); }
     } else {
-        // Uniform: fill out_buf with zeros (value=0 → uniform backup)
         out_buf.clear();
         out_buf.resize(n * out_dim(), 0.0f32);
     }
@@ -298,13 +297,123 @@ fn flush_batch_obs(
         }
         backup(root, path, value);
     }
-    // NOTE: Uniform case (eval_fn=None and use_onnx=false) falls through here
-    // with out_buf all zeros → masked_softmax produces uniform policy, backup uses 0 value
-    // This matches the old behavior.
+    states.clear(); legal_list.clear(); paths.clear();
+}
 
-    states.clear();
-    legal_list.clear();
-    paths.clear();
+/// Rust-native batch flush using AZ model (no Python callback).
+fn flush_batch_obs_az(
+    root: &mut MCTSNode,
+    states: &mut Vec<GameState>,
+    legal_list: &mut Vec<Vec<usize>>,
+    paths: &mut Vec<Vec<usize>>,
+    model: &crate::az_model::AZModelWeights,
+) {
+    let n = states.len();
+    let mut obs_buf = Vec::with_capacity(n * 206);
+
+    // Encode all states
+    for state in states.iter() {
+        encode_obs(state, &mut obs_buf);
+    }
+
+    // Evaluate with Rust AZ model
+    for i in 0..n {
+        let mut obs = [0.0f32; 206];
+        obs.copy_from_slice(&obs_buf[i * 206..(i + 1) * 206]);
+        let (logits, value) = model.forward(&obs);
+
+        let legal = &legal_list[i];
+        let path = &paths[i];
+        let policy = masked_softmax(&logits, legal);
+        let node = node_by_path(root, path);
+        for &a in legal {
+            node.children.entry(a).or_insert(MCTSNode::new(policy[a]));
+        }
+        backup(root, path, value as f64);
+    }
+    states.clear(); legal_list.clear(); paths.clear();
+}
+
+/// MCTS search using Rust-native AZ model (no Python callback).
+pub fn mcts_search_core_az(
+    state: &GameState,
+    num_simulations: i32,
+    c_puct: f64,
+    batch_size: i32,
+    model: &crate::az_model::AZModelWeights,
+) -> String {
+    let mut root = MCTSNode::new(0.0);
+    let bs = batch_size.max(1) as usize;
+
+    // Root evaluation with AZ model
+    let mut root_obs = Vec::with_capacity(obs_dim());
+    encode_obs(state, &mut root_obs);
+    let legal_root = state.get_legal_actions();
+    if legal_root.is_empty() { return "{}".to_string(); }
+
+    let mut obs_arr = [0.0f32; 206];
+    for (i, &v) in root_obs.iter().enumerate() { obs_arr[i] = v; }
+    let (root_logits, _root_val) = model.forward(&obs_arr);
+    let policy = masked_softmax(&root_logits, &legal_root);
+    let noise = sample_dirichlet(DIRICHLET_ALPHA, 60);
+    for &a in &legal_root {
+        let noisy_prior = (1.0 - DIRICHLET_EPS) * policy[a] + DIRICHLET_EPS * noise[a];
+        root.children.insert(a, MCTSNode::new(noisy_prior));
+    }
+
+    let mut pending_states: Vec<GameState> = vec![];
+    let mut pending_legal: Vec<Vec<usize>> = vec![];
+    let mut pending_paths: Vec<Vec<usize>> = vec![];
+
+    for _ in 0..num_simulations.max(1) {
+        let mut state_clone = state.clone();
+        let mut path: Vec<usize> = vec![];
+
+        // SELECT
+        loop {
+            let parent_visits = {
+                let n = node_by_path(&mut root, &path);
+                if n.children.is_empty() { break; }
+                n.visits.max(1)
+            };
+            let best = {
+                let n = node_by_path(&mut root, &path);
+                let mut rng = rand::thread_rng();
+                n.children.iter()
+                    .map(|(a, child)| (a, child.ucb(parent_visits, c_puct) + rng.gen::<f64>() * 1e-12))
+                    .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+                    .map(|(a, _)| *a).unwrap()
+            };
+            state_clone.step(best);
+            path.push(best);
+            if state_clone.terminated { break; }
+        }
+
+        let terminated = state_clone.terminated;
+        let legal = state_clone.get_legal_actions();
+
+        if terminated {
+            backup(&mut root, &path, terminal_value(&state_clone));
+        } else if !legal.is_empty() {
+            pending_states.push(state_clone);
+            pending_legal.push(legal);
+            pending_paths.push(path);
+            if pending_states.len() >= bs {
+                flush_batch_obs_az(&mut root, &mut pending_states, &mut pending_legal,
+                                    &mut pending_paths, model);
+            }
+        }
+    }
+    if !pending_states.is_empty() {
+        flush_batch_obs_az(&mut root, &mut pending_states, &mut pending_legal,
+                            &mut pending_paths, model);
+    }
+
+    let mut out = serde_json::Map::new();
+    for (a, child) in &root.children {
+        out.insert(a.to_string(), serde_json::Value::Number(serde_json::Number::from(child.visits)));
+    }
+    serde_json::to_string(&out).unwrap_or_default()
 }
 
 fn backup(root: &mut MCTSNode, path: &[usize], mut value: f64) {

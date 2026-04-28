@@ -428,67 +428,15 @@ pub unsafe extern "C" fn mcts_search_rust_handle(
     0
 }
 
-/// Get flat observation from stateful game (for PPO Agent).
-/// Returns JSON array of floats in the same format as PenguinChessCore.get_observation().
+/// MCTS search using Rust-native AZ model (no Python callback).
+/// Takes a stateful game handle + AZ model handle.
 #[no_mangle]
-pub unsafe extern "C" fn game_stateful_get_obs(
-    handle: i32,
-    output_buffer: *mut c_char,
-    buffer_size: i32,
-) -> i32 {
-    let game = match GAMES.get(handle as usize) {
-        Some(Some(g)) => g,
-        _ => return -1,
-    };
-    // board: 60 cells × [q/8, r/8, value/3 or 0]
-    let mut board: Vec<Vec<f64>> = Vec::with_capacity(60);
-    for cell in &game.board.cells {
-        let val = if cell.state == HexState::Active || cell.state == HexState::Occupied {
-            cell.points as f64 / 3.0
-        } else {
-            0.0
-        };
-        board.push(vec![cell.coord.q as f64 / 8.0, cell.coord.r as f64 / 8.0, val]);
-    }
-    // pieces: 6 pieces × [id/10, q/8, r/8, s/8]
-    let mut pieces: Vec<Vec<f64>> = Vec::with_capacity(6);
-    for piece in &game.pieces {
-        if piece.alive && piece.hex_idx.is_some() {
-            let idx = piece.hex_idx.unwrap();
-            let cell = &game.board.cells[idx];
-            pieces.push(vec![
-                piece.id as f64 / 10.0,
-                cell.coord.q as f64 / 8.0,
-                cell.coord.r as f64 / 8.0,
-                cell.coord.s as f64 / 8.0,
-            ]);
-        } else {
-            pieces.push(vec![-1.0, 0.0, 0.0, 0.0]);
-        }
-    }
-    let result = serde_json::json!({
-        "board": board,
-        "pieces": pieces,
-        "current_player": game.current_player as f64,
-        "phase": if matches!(game.phase, Phase::Placement) { 0.0 } else { 1.0 },
-    });
-    let output = serde_json::to_string(&result).unwrap_or_default();
-    write_output(output_buffer, buffer_size, &output);
-    0
-}
-
-// ────────────────────────────────────────────────────────────
-// Parallel MCTS — single FFI call, internal thread parallelism
-// ────────────────────────────────────────────────────────────
-
-#[no_mangle]
-pub unsafe extern "C" fn mcts_search_rust_handle_parallel(
+pub unsafe extern "C" fn mcts_search_rust_handle_az(
     handle: i32,
     num_simulations: i32,
     c_puct: f64,
     batch_size: i32,
-    num_workers: i32,
-    eval_fn: Option<mcts_rs::EvalFn>,
+    az_handle: i32,
     output_buf: *mut c_char,
     output_size: i32,
 ) -> i32 {
@@ -496,77 +444,16 @@ pub unsafe extern "C" fn mcts_search_rust_handle_parallel(
         Some(Some(g)) => g,
         _ => return -1,
     };
-    let result = mcts_rs::mcts_search_parallel_core(
-        game,
-        num_simulations,
-        c_puct,
-        batch_size,
-        eval_fn,
-        num_workers as usize,
+    let model = match get_az_model(az_handle) {
+        Some(m) => m,
+        None => return -2,
+    };
+    let result = mcts_rs::mcts_search_core_az(
+        game, num_simulations, c_puct, batch_size, model,
     );
     write_output(output_buf, output_size, &result);
     0
 }
-
-// ═══════════════════════════════════════════════════════════
-// ONNX Runtime: disabled by default (Python callback is faster)
-// Enable with: cargo build --release --features ort
-// ═══════════════════════════════════════════════════════════
-#[cfg(feature = "ort")]
-mod ffi_ort {
-    use std::ffi::CStr;
-    use std::os::raw::c_char;
-    use std::sync::OnceLock;
-    use crate::net_infer::NetInfer;
-    use crate::mcts_rs;
-
-    static ORT_MODEL: OnceLock<NetInfer> = OnceLock::new();
-
-    #[no_mangle]
-    pub unsafe extern "C" fn ort_init(model_path: *const c_char) -> i32 {
-        let path = match CStr::from_ptr(model_path).to_str() {
-            Ok(s) => s,
-            Err(_) => return -1,
-        };
-        let model = NetInfer::new(path);
-        let _ = ORT_MODEL.set(model);
-        0
-    }
-
-    #[no_mangle]
-    pub unsafe extern "C" fn mcts_search_rust_handle_parallel_ort(
-        handle: i32, num_simulations: i32, c_puct: f64, batch_size: i32,
-        num_workers: i32, output_buf: *mut c_char, output_size: i32,
-    ) -> i32 {
-        let model = match ORT_MODEL.get() { Some(m) => m, None => return -2 };
-        let game = match crate::GAMES.get(handle as usize) {
-            Some(Some(g)) => g, _ => return -1,
-        };
-        let result = mcts_rs::mcts_search_parallel_core_ort(
-            game, num_simulations, c_puct, batch_size, model, num_workers as usize,
-        );
-        crate::write_output(output_buf, output_size, &result);
-        0
-    }
-
-    #[no_mangle]
-    pub unsafe extern "C" fn mcts_search_rust_handle_ort(
-        handle: i32, num_simulations: i32, c_puct: f64, batch_size: i32,
-        output_buf: *mut c_char, output_size: i32,
-    ) -> i32 {
-        let model = match ORT_MODEL.get() { Some(m) => m, None => return -2 };
-        let game = match crate::GAMES.get(handle as usize) {
-            Some(Some(g)) => g, _ => return -1,
-        };
-        let result = mcts_rs::mcts_search_core_ort(
-            game, num_simulations, c_puct, batch_size, model,
-        );
-        crate::write_output(output_buf, output_size, &result);
-        0
-    }
-}
-
-// ─── Alpha-Beta Search FFI ────────────────────────────────────
 
 const MAX_AB_SEARCHES: usize = 64;
 static mut AB_SEARCHES: Vec<Option<crate::alphabeta_rs::AlphaBetaSearch>> = Vec::new();
