@@ -1,0 +1,9 @@
+# Normalize to LF for all text files
+* text=auto eol=lf
+
+# Specific binary file types
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff2 binary
+*.dll binary
