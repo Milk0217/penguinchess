@@ -122,11 +122,15 @@ pub struct SearchConfig {
     pub tt_size: usize,
     pub lmr_moves: u8,
     pub lmr_depth: u8,
+    pub nnue_order_depth: u8, // max depth for NNUE move ordering (0=root only, 1=shallow, 3=full)
 }
 
 impl Default for SearchConfig {
     fn default() -> Self {
-        Self { max_depth: 6, time_limit_ms: 0, tt_size: 1 << 20, lmr_moves: 3, lmr_depth: 1 }
+        Self {
+            max_depth: 6, time_limit_ms: 0, tt_size: 1 << 20,
+            lmr_moves: 3, lmr_depth: 1, nnue_order_depth: 3,
+        }
     }
 }
 
@@ -220,23 +224,15 @@ impl AlphaBetaSearch {
     }
 
     fn nnue_ordering_depth(&self, state: &GameState) -> u8 {
-        // Tactical positions (high stakes, many moves) → deeper NNUE ordering
-        // Calm positions → shallower NNUE ordering for speed
-
-        // Check for high-value hexes still available
-        let has_high_value = state.board.cells.iter()
-            .any(|c| c.state == crate::board::HexState::Active && c.points >= 3);
-
-        // Check piece count — more pieces = more tactical
+        let base = self.config.nnue_order_depth;
+        if base == 0 { return 0; }
+        // Dynamically reduce for calm positions
         let pieces_alive = state.pieces.iter().filter(|p| p.alive).count();
-
-        if has_high_value && pieces_alive >= 4 {
-            3  // Full tactical: NNUE at depth ≤ 3
-        } else if pieces_alive >= 3 {
-            2  // Moderate: NNUE at depth ≤ 2
-        } else {
-            1  // Endgame: NNUE at root only (depth ≤ 1)
-        }
+        let has_high = state.board.cells.iter()
+            .any(|c| c.state == crate::board::HexState::Active && c.points >= 3);
+        if has_high && pieces_alive >= 4 { base }
+        else if pieces_alive >= 3 { base.min(2) }
+        else { 1u8.min(base) }
     }
 
     fn order_moves(&self, state: &GameState, legal: &[usize], tt_best: Option<usize>, node_depth: u8)

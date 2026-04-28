@@ -64,7 +64,7 @@ def generate_selfplay_data(
 ) -> list[dict]:
     """
     Generate training data using Rust Alpha-Beta search for move selection.
-    Uses PenguinChessCore for game loop and feature recording.
+    Labels are AB search scores (self-distillation), not game outcomes.
     """
     def _play_game(seed: int) -> list[dict]:
         core = PenguinChessCore(seed=seed).reset(seed=seed)
@@ -78,42 +78,46 @@ def generate_selfplay_data(
                 break
 
             if core.phase == 'placement':
-                # Placement: one-step (highest immediate value)
+                # Placement: one-step, label = immediate reward
                 best_action = legal[0]
-                best_score = -1e9
+                best_reward = -1e9
                 for a in legal:
                     snap = core.get_snapshot()
                     _, reward, _, _ = core.step(a)
                     core.restore_snapshot(snap)
-                    if reward > best_score:
-                        best_score = reward
+                    if reward > best_reward:
+                        best_reward = reward
                         best_action = a
                 action = best_action
+                search_score = best_reward  # 1-3 points, not great but only 6 steps
             else:
-                # Movement: Rust Alpha-Beta search
+                # Movement: Rust Alpha-Beta search returns minimax score
                 state_json = _core_to_json(core)
                 result = ab_handle.search(state_json, max_depth=max_depth)
                 if 'error' in result:
-                    action = legal[0]  # fallback
+                    action = legal[0]
+                    search_score = 0.0
                 else:
                     action = result.get('best_action', legal[0])
+                    search_score = result.get('score', 0.0)
 
-            game_data.append((sparse, dense, player))
+            game_data.append((sparse, dense, player, search_score))
             _, _, terminated, _ = core.step(action)
             if terminated or core.phase == 'gameover':
                 break
 
+        # Final outcome (for placement positions that had weak labels)
         s1, s2 = core.players_scores
-        if s1 > s2:
-            outcome = 1
-        elif s2 > s1:
-            outcome = -1
-        else:
-            outcome = 0
+        if s1 > s2: final_outcome = 1.0
+        elif s2 > s1: final_outcome = -1.0
+        else: final_outcome = 0.0
 
         records = []
-        for sparse, dense, player in game_data:
-            value = outcome if player == 0 else -outcome
+        for i, (sparse, dense, player, score) in enumerate(game_data):
+            if i < 6:  # placement: use game outcome
+                value = final_outcome if player == 0 else -final_outcome
+            else:  # movement: use AB search score (self-distillation)
+                value = score
             records.append({
                 'sparse': sparse,
                 'dense': dense.tolist(),
@@ -250,6 +254,7 @@ def main():
     ab_handle = ffi_ab_create(json.dumps({
         'max_depth': args.depth, 'time_limit_ms': 0,
         'tt_size': args.tt_size, 'lmr_moves': 3, 'lmr_depth': 1,
+        'nnue_order_depth': 2,  # shallow NNUE ordering for speed
     }))
     ok = ab_handle.set_weights(model.state_dict())
     print(f"Rust AB handle created, weights: {ok}")
