@@ -63,38 +63,85 @@ def _setup_logging(log_file: str | None):
         sys.stdout = _Tee(log_file)
         sys.stderr = sys.stdout
 
+# ───── 安全的 torch.save ─────
+_SAVE_RETRIES = 2
+
+def _safe_save(obj, path: str, label: str = "") -> bool:
+    """安全的 torch.save，失败时给出清晰的错误信息，含重试。"""
+    for attempt in range(1, _SAVE_RETRIES + 1):
+        try:
+            torch.save(obj, path)
+            return True
+        except Exception as e:
+            err = str(e)
+            sz = ""
+            try:
+                import shutil
+                _, _, free = shutil.disk_usage(os.path.dirname(path) or ".")
+                free_gb = free / (1024**3)
+                sz = f" 磁盘剩余: {free_gb:.1f}GB\n"
+            except Exception:
+                pass
+            # 提取关键错误信息（缩短 PyTorch 内部栈）
+            if "PytorchStreamWriter" in err or "inline_container" in err:
+                brief = "文件写入失败（磁盘 I/O 错误或空间不足）"
+            elif "disk" in err.lower() or "space" in err.lower():
+                brief = "磁盘空间不足"
+            elif "permission" in err.lower() or "denied" in err.lower():
+                brief = "文件权限拒绝"
+            else:
+                brief = err[:120]
+            if attempt < _SAVE_RETRIES:
+                print(f"  [!] 保存失败 {label}{path}: {brief}", flush=True)
+                print(f"  {sz}  重试中...", flush=True)
+                time.sleep(2)
+            else:
+                print(f"  [!] 保存失败 {label}{path}: {brief}", flush=True)
+                print(f"  {sz}  [警告] 跳过保存，训练继续。若频繁出现请检查磁盘健康。", flush=True)
+    return False
+
 # ───── 自动重启 ─────
 _MAX_RETRIES = 3
 _RESTART_DELAY = 10  # seconds before retry
 
 def _train_with_restart(**kwargs):
-    """带自动重启的保护壳 —— 中断后自动续训（若 checkpoint 损坏则回退到 best）。"""
+    """带自动重启的保护壳 —— 中断后自动续训。"""
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
             train_alphazero(**kwargs)
-            return  # 成功
+            return
         except KeyboardInterrupt:
             print("\n  KeyboardInterrupt — 训练已停止。")
             return
         except Exception as e:
-            import traceback
-            traceback.print_exc()
             err_str = str(e)
-            print(f"\n  [!] 训练异常中止 (第 {attempt}/{_MAX_RETRIES} 次): {err_str[:120]}")
+            # 精炼错误信息
+            if "PytorchStreamWriter" in err_str or "inline_container" in err_str:
+                brief = "模型保存失败（文件写入错误） — 磁盘满或文件系统异常"
+            elif "out of memory" in err_str.lower() or "CUDA out of memory" in err_str:
+                brief = "GPU 显存不足（OOM） — 减小 batch_size 或网络尺寸"
+            elif "No space left" in err_str:
+                import shutil
+                _, _, free = shutil.disk_usage(".")
+                brief = f"磁盘空间不足 — 剩余 {free/1024**3:.1f}GB，需释放空间"
+            else:
+                brief = err_str[:200]
+            print(f"\n  [!] 训练异常中止 (第 {attempt}/{_MAX_RETRIES} 次)", flush=True)
+            print(f"  [!] 原因: {brief}", flush=True)
             if attempt < _MAX_RETRIES:
-                # 检查 checkpoint 是否损坏
                 _arch = kwargs.get("network_name", "xl")
                 _cp = MODELS_DIR / "alphazero" / f"alphazero_{_arch}_checkpoint.pth"
                 if _cp.exists():
                     try:
                         torch.load(_cp, map_location="cpu", weights_only=False)
                     except Exception:
-                        print(f"  [!] checkpoint 文件损坏，已删除，将回退到 best.pth")
+                        print(f"  [!] checkpoint 损坏，已清除。回退到 best 模型。", flush=True)
                         _cp.unlink(missing_ok=True)
-                print(f"  将在 {_RESTART_DELAY}s 后自动重启...")
+                print(f"  将在 {_RESTART_DELAY}s 后自动重启...", flush=True)
                 time.sleep(_RESTART_DELAY)
             else:
-                print("  [!] 已达最大重试次数，放弃。")
+                print("  [!] 已达最大重试次数（3/3），放弃。保留最新 checkpoint 供手动恢复。", flush=True)
+                print("  [!] 恢复命令: uv run python -m penguinchess.ai.train_alphazero --resume <checkpoint_path> --iterations <剩余>", flush=True)
                 raise
 
 MODELS_DIR = Path(__file__).parent.parent.parent / "models"
@@ -656,17 +703,17 @@ def train_alphazero(
         tb_writer.add_scalar("performance/win_rate", win_rate, iteration)
         tb_writer.add_scalar("performance/draw_rate", draw_rate, iteration)
 
-        # 每 5 迭代保存 checkpoint（不含 optimizer, ~1.2GB, 保存间隔减少 I/O 开销）
+        # 每 5 迭代保存 checkpoint
         if iteration % 5 == 0:
             arch_tag = net.arch_name
             cp_path = str(ALPHAZERO_DIR / f"alphazero_{arch_tag}_checkpoint.pth")
-            torch.save({
+            _safe_save({
                 "iteration": iteration,
                 "model_state": net.state_dict(),
                 "best_state": best_state,
                 "best_iter": best_iter,
                 "best_win_rate": best_win_rate,
-            }, cp_path)
+            }, cp_path, "[checkpoint] ")
 
         # 更新训练状态（供前端仪表盘使用）
         _update_ts(
@@ -682,7 +729,7 @@ def train_alphazero(
         if iteration % 10 == 0:
             arch_tag = net.arch_name
             iter_path = str(ALPHAZERO_DIR / f"alphazero_{arch_tag}_iter_{iteration}.pth")
-            torch.save(net.state_dict(), iter_path)
+            _safe_save(net.state_dict(), iter_path, f"[iter_{iteration}] ")
             # 注册迭代模型（无论胜率是否 > 55%，都让玩家能看到）
             try:
                 from penguinchess.model_registry import register_model as _reg_iter
@@ -730,11 +777,11 @@ def train_alphazero(
                 best_win_rate = wr
                 arch_tag = net.arch_name
                 best_path = str(ALPHAZERO_DIR / f"alphazero_{arch_tag}_best.pth")
-                torch.save(best_state, best_path)
+                _safe_save(best_state, best_path, "[best] ")
 
                 # 保存迭代特定副本并注册（排位用迭代号，不用 "best"）
                 iter_path = str(ALPHAZERO_DIR / f"alphazero_{arch_tag}_iter_{iteration}.pth")
-                torch.save(best_state, iter_path)
+                _safe_save(best_state, iter_path, f"[best.{iteration}] ")
                 try:
                     from penguinchess.model_registry import register_model, update_evaluation
                     iter_id = f"az_{arch_tag}_iter_{iteration}"
@@ -754,7 +801,7 @@ def train_alphazero(
     # ----- 训练结束：保存最终模型并注册 -----
     arch_tag = net.arch_name
     final_path = str(ALPHAZERO_DIR / f"alphazero_{arch_tag}_final.pth")
-    torch.save(net.state_dict(), final_path)
+    _safe_save(net.state_dict(), final_path, "[final] ")
     # 注册最终模型
     try:
         from penguinchess.model_registry import register_model as _reg_final
