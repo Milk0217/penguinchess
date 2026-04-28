@@ -140,7 +140,7 @@ pub extern "C" fn api_version() -> i32 {
 // Stateful Game API — 游戏状态留在 Rust 内存，避免 JSON 序列化整个状态
 // =============================================================================
 
-const MAX_GAMES: usize = 64;
+const MAX_GAMES: usize = 1024;
 static mut GAMES: Vec<Option<GameState>> = Vec::new();
 
 /// 初始化状态槽（第一次使用时）

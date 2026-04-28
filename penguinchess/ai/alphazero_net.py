@@ -489,16 +489,15 @@ class AlphaZeroResNetConfigurable(AlphaZeroResNet):
 
 class AlphaZeroResNetXL(AlphaZeroResNetConfigurable):
     """
-    Ultra-wide ResNet: 8K hidden dim, 4 residual blocks.
-    ~320M params, ~4.5GB GPU memory (fp16 AMP training).
+    Large ResNet: 8K hidden dim, 3 residual blocks.
+    ~447M params, ~6GB GPU memory (fp16 AMP training).
 
-    **Training is ~100x slower than standard ResNet.**
-    Estimated: 1-2 hours per iteration.
+    Estimated: 20-30s per step, ~30 min per iteration.
     """
     arch_name = "resnet_xl"
 
     def __init__(self, obs_dim: int = 206, action_dim: int = 60):
-        super().__init__(obs_dim, action_dim, hidden_dim=8192, num_blocks=4)
+        super().__init__(obs_dim, action_dim, hidden_dim=8192, num_blocks=2)
 
 
 class AlphaZeroResNetLarge(AlphaZeroResNetConfigurable):
@@ -538,12 +537,11 @@ def detect_net_arch(state_dict) -> type:
         fc_in_w = state_dict.get("fc_in.weight")
         if fc_in_w is not None:
             h = fc_in_w.shape[0]
-            num_blocks = sum(1 for k in state_dict if k.endswith(".0.weight") and "res_blocks" in k)
             if h >= 8192:
-                return AlphaZeroResNetXL
+                return AlphaZeroResNetXL  # 447M params
             elif h >= 1024:
-                return AlphaZeroResNetLarge
-            return AlphaZeroResNet
+                return AlphaZeroResNetLarge  # 3M params
+            return AlphaZeroResNet  # 550K params
         return AlphaZeroResNet
 
     # Legacy ResNet classes

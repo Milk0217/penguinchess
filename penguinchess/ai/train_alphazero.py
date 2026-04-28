@@ -29,7 +29,7 @@ import torch.optim as optim
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from penguinchess.ai.mcts_core import select_action
-from penguinchess.ai.alphazero_net import AlphaZeroNet, AlphaZeroResNet, AlphaZeroResNetLarge, detect_net_arch
+from penguinchess.ai.alphazero_net import AlphaZeroNet, AlphaZeroResNet, AlphaZeroResNetLarge, AlphaZeroResNetXL, detect_net_arch
 from penguinchess.rust_core import RustCore
 from penguinchess.rust_ffi import get_engine, mcts_search_rust_handle, mcts_search_rust_handle_parallel
 from penguinchess._compat import ensure_utf8_stdout
@@ -314,6 +314,7 @@ def train_alphazero(
     game_workers: int = 8,
     auto_eval: bool = False,
     auto_eval_episodes: int = 200,
+    network_name: str = "large",
 ):
     """AlphaZero 自对弈训练主循环。"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -325,11 +326,16 @@ def train_alphazero(
     # 配置摘要
     total_sims = num_simulations * parallel_workers
     
-    # 默认使用 ResNetLarge（新训练），resume 时自动检测架构
-    _resume_net_class = AlphaZeroResNetLarge
+    # 网络选择
+    _net_map = {
+        "large": (AlphaZeroResNetLarge, "AlphaZeroResNetLarge (3.0M params)"),
+        "resnet": (AlphaZeroResNet, "AlphaZeroResNet (550K params)"),
+        "xl": (AlphaZeroResNetXL, "AlphaZeroResNetXL (447M params, ~6GB 训练)"),
+    }
+    _net_cls, _net_label = _net_map.get(network_name, (AlphaZeroResNetLarge, "AlphaZeroResNetLarge (3.0M params)"))
 
     config_lines = [
-        f" 网络:    AlphaZeroResNetLarge (2.2M params)",
+        f" 网络:    {_net_label}",
         f" 设备:    {str(device).upper()}",
         f" 配置:    games={games_per_iter}×{game_workers}并行, sims={num_simulations}×{parallel_workers}={total_sims}总",
         f"          eval_sims={eval_simulations}, eval_interval={eval_interval}",
@@ -346,7 +352,7 @@ def train_alphazero(
         net.load_state_dict(state)
         print(f" 续训: {resume} ({NetClass.__name__})")
     else:
-        net = AlphaZeroResNetLarge().to(device)
+        net = _net_cls().to(device)
         if resume:
             print(f" 模型不存在: {resume}")
         else:
@@ -637,6 +643,8 @@ if __name__ == "__main__":
                         help="评估间隔迭代数（默认 10）")
     parser.add_argument("--eval-games", type=int, default=200,
                         help="评估局数（默认 200）")
+    parser.add_argument("--network", type=str, default="large",
+                        help="网络架构: large/resnet/xl (默认 large)")
     parser.add_argument("--batch-size", type=int, default=512, help="训练批次大小（默认 512）")
     parser.add_argument("--lr", type=float, default=1e-3, help="学习率")
     parser.add_argument("--parallel-workers", type=int, default=2,
@@ -664,4 +672,5 @@ if __name__ == "__main__":
         game_workers=args.game_workers,
         auto_eval=args.auto_eval,
         auto_eval_episodes=args.auto_eval_episodes,
+        network_name=args.network,
     )
