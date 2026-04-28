@@ -4,6 +4,29 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 const PIECE_IDS: [i32; 6] = [4, 6, 8, 5, 7, 9];
+const EVAL_BATCH_STRIDE: usize = 75; // 8 sparse + 66 dense + 1 stm
+
+pub type EvalBatchFn = unsafe extern "C" fn(
+    data: *const f32,   // (batch_size × EVAL_BATCH_STRIDE) flat array
+    batch_size: i32,
+    scores_out: *mut f32,
+) -> i32;
+
+static mut EVAL_CALLBACK: Option<EvalBatchFn> = None;
+
+pub fn set_eval_callback(cb: EvalBatchFn) {
+    unsafe { EVAL_CALLBACK = Some(cb); }
+}
+
+fn encode_for_batch(state: &GameState, buf: &mut [f32]) {
+    let sparse = extract_sparse(state);
+    for i in 0..8 {
+        buf[i] = if i < sparse.len() { sparse[i] as f32 } else { -1.0 };
+    }
+    let dense = extract_dense(state);
+    buf[8..74].copy_from_slice(&dense);
+    buf[74] = state.current_player as f32;
+}
 
 pub fn extract_sparse(state: &GameState) -> Vec<usize> {
     let mut features = Vec::with_capacity(6);
@@ -152,46 +175,121 @@ impl AlphaBetaSearch {
     }
 
     fn evaluate(&self, state: &GameState) -> f32 {
+        // Try callback first (CUDA accelerated)
+        unsafe {
+            if let Some(cb) = EVAL_CALLBACK {
+                let mut buf = [0.0f32; EVAL_BATCH_STRIDE];
+                encode_for_batch(state, &mut buf);
+                let mut score = 0.0f32;
+                cb(buf.as_ptr(), 1, &mut score as *mut f32);
+                return score;
+            }
+        }
+        // Fallback: Rust NNUE
         let sparse = extract_sparse(state);
         let dense = extract_dense(state);
         crate::nnue_rs::nnue_evaluate(&sparse, &dense, state.current_player, &self.weights)
+    }
+
+    fn batch_evaluate(&self, states: &[&GameState]) -> Vec<f32> {
+        let n = states.len();
+        if n == 0 { return vec![]; }
+
+        // Try callback
+        unsafe {
+            if let Some(cb) = EVAL_CALLBACK {
+                let mut batch = vec![0.0f32; n * EVAL_BATCH_STRIDE];
+                for (i, state) in states.iter().enumerate() {
+                    encode_for_batch(state, &mut batch[i * EVAL_BATCH_STRIDE..(i + 1) * EVAL_BATCH_STRIDE]);
+                }
+                let mut scores = vec![0.0f32; n];
+                cb(batch.as_ptr(), n as i32, scores.as_mut_ptr());
+                return scores;
+            }
+        }
+        // Fallback: sequential Rust NNUE
+        states.iter().map(|s| {
+            let sparse = extract_sparse(s);
+            let dense = extract_dense(s);
+            crate::nnue_rs::nnue_evaluate(&sparse, &dense, s.current_player, &self.weights)
+        }).collect()
     }
 
     fn is_terminal(state: &GameState) -> bool {
         state.terminated || state.get_legal_actions().is_empty()
     }
 
-    fn order_moves(&self, state: &GameState, legal: &[usize], tt_best: Option<usize>)
+    fn nnue_ordering_depth(&self, state: &GameState) -> u8 {
+        // Tactical positions (high stakes, many moves) → deeper NNUE ordering
+        // Calm positions → shallower NNUE ordering for speed
+
+        // Check for high-value hexes still available
+        let has_high_value = state.board.cells.iter()
+            .any(|c| c.state == crate::board::HexState::Active && c.points >= 3);
+
+        // Check piece count — more pieces = more tactical
+        let pieces_alive = state.pieces.iter().filter(|p| p.alive).count();
+
+        if has_high_value && pieces_alive >= 4 {
+            3  // Full tactical: NNUE at depth ≤ 3
+        } else if pieces_alive >= 3 {
+            2  // Moderate: NNUE at depth ≤ 2
+        } else {
+            1  // Endgame: NNUE at root only (depth ≤ 1)
+        }
+    }
+
+    fn order_moves(&self, state: &GameState, legal: &[usize], tt_best: Option<usize>, node_depth: u8)
         -> Vec<(usize, f32, bool)>
     {
         if legal.is_empty() { return vec![]; }
         if legal.len() == 1 { return vec![(legal[0], 0.0, false)]; }
 
+        // NNUE-based ordering: expensive, only for shallow nodes
+        let nnue_depth = self.nnue_ordering_depth(state);
+        if node_depth <= nnue_depth {
+            let mut children: Vec<(usize, GameState, f32, bool)> = Vec::with_capacity(legal.len());
+            for &a in legal {
+                let mut child = state.clone();
+                let (r, t) = child.step(a);
+                children.push((a, child, r, t));
+            }
+            let child_refs: Vec<&GameState> = children.iter().map(|(_, s, _, _)| s).collect();
+            let evals = self.batch_evaluate(&child_refs);
+            let mut scored: Vec<(usize, f32, bool)> = children.iter().zip(evals.iter())
+                .map(|((a, child, r, t), ev)| {
+                    (*a, r + if *t { Self::terminal_value(child) } else { *ev }, *t)
+                }).collect();
+            scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            return scored;
+        }
+
+        // Fast heuristic ordering for deep nodes
         let mut scored: Vec<(usize, f32, bool)> = Vec::with_capacity(legal.len());
 
+        // TT best move first (if any)
         if let Some(tbm) = tt_best {
             if legal.contains(&tbm) {
                 let mut snap = state.clone();
                 let (r, t) = snap.step(tbm);
-                let ev = self.evaluate(&snap);
-                scored.push((tbm, r + if t { Self::terminal_value(&snap) } else { ev }, t));
+                scored.push((tbm, r + if t { Self::terminal_value(&snap) } else { 0.0 }, t));
             }
         }
 
+        // Score remaining moves by reward + heuristic
+        let alive_before = state.pieces.iter().filter(|p| p.alive).count();
+        let mut heur: Vec<(usize, f32, bool)> = Vec::with_capacity(legal.len());
         for &a in legal {
             if Some(a) == tt_best { continue; }
             let mut snap = state.clone();
             let (r, t) = snap.step(a);
-            let ev = self.evaluate(&snap);
-            scored.push((a, r + if t { Self::terminal_value(&snap) } else { ev }, t));
+            let alive_after = snap.pieces.iter().filter(|p| p.alive).count();
+            let pieces_killed = alive_before - alive_after;
+            let extra = pieces_killed as f32 * 10.0;
+            heur.push((a, r + extra, t));
         }
-
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        if let Some(tbm) = tt_best {
-            if let Some(pos) = scored.iter().position(|x| x.0 == tbm) {
-                if pos != 0 { let entry = scored.remove(pos); scored.insert(0, entry); }
-            }
-        }
+        heur.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.extend(heur);
         scored
     }
 
@@ -219,7 +317,7 @@ impl AlphaBetaSearch {
             return (val, None);
         }
 
-        let ordered = self.order_moves(state, &legal, tt_best);
+        let ordered = self.order_moves(state, &legal, tt_best, depth);
         let mut best_action = ordered[0].0;
         let mut best_score = f32::NEG_INFINITY;
         let mut flag = TTFlag::Upper;
@@ -275,7 +373,7 @@ impl AlphaBetaSearch {
             return SearchResult { best_action: legal[0], score: 0.0, nodes_searched: 1, depth_reached: 0, time_ms: 0 };
         }
 
-        let ordered = self.order_moves(state, &legal, None);
+        let ordered = self.order_moves(state, &legal, None, 0); // root: depth 0 → NNUE ordering
         let mut best_action = ordered[0].0;
         let mut best_score = 0.0f32;
         let mut depth_reached = 0u8;
