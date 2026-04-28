@@ -60,7 +60,8 @@ def generate_games(
     
     for g in range(num_games):
         seed = seed_offset + worker * 10000 + g
-        core = PenguinChessCore(seed=seed).reset()
+        core = PenguinChessCore(seed=seed + worker * 10000 + g)
+        core.reset(seed=seed + worker * 10000 + g)
         
         # Store features for each step
         game_features = []
@@ -136,7 +137,8 @@ def generate_games_mcts(
             engine = get_engine()
             core = RustCore(engine=engine).reset(seed_offset + worker * 10000 + g)
         else:
-            core = PenguinChessCore(seed=seed_offset + worker * 10000 + g).reset()
+            core = PenguinChessCore(seed=seed_offset + worker * 10000 + g)
+            core.reset(seed=seed_offset + worker * 10000 + g)
         
         game_features = []
         players = []
@@ -435,7 +437,8 @@ def _eval_vs_random(model: NNUE, episodes: int = 100) -> float:
     wins = 0
     total = 0
     for ep in range(episodes):
-        core = PenguinChessCore(seed=ep * 1000).reset()
+        core = PenguinChessCore(seed=ep * 1000)
+        core.reset(seed=ep * 1000)
         done = False
         while not done and core.phase != 'gameover':
             legal = core.get_legal_actions()
