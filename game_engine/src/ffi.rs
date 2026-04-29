@@ -469,6 +469,86 @@ fn get_ab_search(handle: i32) -> Option<&'static mut crate::alphabeta_rs::AlphaB
     }
 }
 
+// ─── NNUE Training Data Generation ──────────────────────────
+
+const NNUE_RECORD_FLOATS: usize = 73;
+
+#[no_mangle]
+pub unsafe extern "C" fn ffi_generate_nnue_data(
+    num_games: i32, seed_offset: i32, output_path: *const c_char,
+) -> i32 {
+    use crate::alphabeta_rs::{extract_sparse, extract_dense};
+    use crate::board::Board;
+    use crate::rules::{GameState, generate_sequence};
+    use rand::Rng;
+
+    let path = match std::ffi::CStr::from_ptr(output_path).to_str() {
+        Ok(s) => s, _ => return -1,
+    };
+    let mut file = match std::fs::File::create(path) {
+        Ok(f) => f, _ => return -2,
+    };
+
+    let mut buf: Vec<u8> = Vec::with_capacity(8 + (num_games as usize) * 70 * NNUE_RECORD_FLOATS * 4);
+    let count_pos = buf.len();
+    buf.extend_from_slice(&(0u64).to_le_bytes());
+    let mut total_written: u64 = 0;
+    let mut rng = rand::thread_rng();
+
+    for g in 0..num_games {
+        let seed = (seed_offset + g) as u64;
+        let board = Board::new(&generate_sequence(seed));
+        let mut core = GameState::new(board);
+        let mut game_states: Vec<GameState> = Vec::new();
+
+        // Placement phase (6 moves)
+        for _ in 0..6 {
+            let legal = core.get_legal_actions();
+            if legal.is_empty() { break; }
+            game_states.push(core.clone());
+            let idx = rng.gen_range(0..legal.len());
+            core.step(legal[idx]);
+            if core.terminated { break; }
+        }
+
+        // Movement phase
+        while !core.terminated {
+            let legal = core.get_legal_actions();
+            if legal.is_empty() { break; }
+            game_states.push(core.clone());
+            let idx = rng.gen_range(0..legal.len());
+            core.step(legal[idx]);
+            if core.episode_steps > 200 { break; }
+        }
+
+        let final_outcome: f32 = {
+            let s1 = core.scores[0] as f32;
+            let s2 = core.scores[1] as f32;
+            if s1 > s2 { 1.0 } else if s2 > s1 { -1.0 } else { 0.0 }
+        };
+
+        for state in &game_states {
+            let sparse = extract_sparse(state);
+            let dense = extract_dense(state);
+            let outcome = if state.current_player == 0 { final_outcome } else { -final_outcome };
+
+            for i in 0..6 {
+                let val: i32 = if i < sparse.len() { sparse[i] as i32 } else { -1 };
+                buf.extend_from_slice(&val.to_le_bytes());
+            }
+            for &v in &dense { buf.extend_from_slice(&v.to_le_bytes()); }
+            buf.extend_from_slice(&outcome.to_le_bytes());
+            total_written += 1;
+        }
+    }
+
+    // Update position count at start of file
+    let cb = total_written.to_le_bytes();
+    for (i, &b) in cb.iter().enumerate() { buf[count_pos + i] = b; }
+    let _ = std::io::Write::write_all(&mut file, &buf);
+    0
+}
+
 fn write_ab_json(output_buf: *mut c_char, output_size: i32, result: &str) {
     let bytes = result.as_bytes();
     let n = (bytes.len() + 1).min(output_size as usize);
