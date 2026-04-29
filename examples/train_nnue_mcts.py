@@ -122,11 +122,20 @@ def self_play_game(model: NNUEMCTSModel, native_mcts: NNUEMCTSNative,
 
 def train_model(model: NNUEMCTSModel, data: list[dict], epochs: int = 30,
                 batch_size: int = 256, lr: float = 1e-3, device: str = 'cuda',
-                out_path: str | None = None) -> NNUEMCTSModel:
-    """Train NNUEMCTS with combined policy + value loss."""
-    split = int(len(data) * 0.8)
-    train_loader = DataLoader(MCTSGameDataset(data[:split]), batch_size=batch_size, shuffle=True, collate_fn=collate_mcts)
-    val_loader = DataLoader(MCTSGameDataset(data[split:]), batch_size=batch_size * 2, shuffle=False, collate_fn=collate_mcts)
+                out_path: str | None = None, max_samples: int = 10000) -> NNUEMCTSModel:
+    """Train NNUEMCTS with combined policy + value loss.
+    
+    If data is larger than max_samples, randomly sample a subset.
+    """
+    import random as _rnd
+    train_data = data
+    if len(data) > max_samples:
+        train_data = _rnd.sample(data, max_samples)
+        print(f'    Sampled {len(train_data)}/{len(data)} for training')
+
+    split = int(len(train_data) * 0.8)
+    train_loader = DataLoader(MCTSGameDataset(train_data[:split]), batch_size=batch_size, shuffle=True, collate_fn=collate_mcts)
+    val_loader = DataLoader(MCTSGameDataset(train_data[split:]), batch_size=batch_size * 2, shuffle=False, collate_fn=collate_mcts)
     model = model.to(device).train()
     optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
@@ -198,7 +207,7 @@ def main():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--iters', type=int, default=10)
-    parser.add_argument('--games', type=int, default=200)
+    parser.add_argument('--games', type=int, default=500)
     parser.add_argument('--sims', type=int, default=200)
     parser.add_argument('--epochs', type=int, default=30)
     parser.add_argument('--batch-size', type=int, default=512)
@@ -206,6 +215,7 @@ def main():
     parser.add_argument('--resume', type=str, default='models/nnue/nnue_gen_2.pt')
     parser.add_argument('--out-dir', type=str, default='models/nnue_mcts')
     parser.add_argument('--workers', type=int, default=4)
+    parser.add_argument('--max-replay', type=int, default=200000)
     args = parser.parse_args()
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -231,17 +241,26 @@ def main():
     best_wr = 0.0
     engine = get_engine()
 
+    # Create one native MCTS engine, reuse across iterations
+    native_sd_init = {k: v.cpu() for k, v in model.state_dict().items()}
+    native_mcts = NNUEMCTSNative(native_sd_init)
+
+    # Replay buffer: accumulate all training data
+    replay_buffer: list = []
+
     for it in range(args.iters):
         print(f"\n{'='*50}")
         print(f'Iteration {it+1}/{args.iters}')
         print(f"{'='*50}")
-        print(f'  Self-play: {args.games} games x {args.sims} sims...')
+        print(f'  Self-play: {args.games} games x {args.sims} sims (replay buffer: {len(replay_buffer)})...')
         t0 = time.time()
+
+        # Update weights for current model state
+        cur_sd = {k: v.cpu() for k, v in model.state_dict().items()}
+        native_mcts.update_weights(cur_sd)
 
         # Parallel self-play
         all_data = []
-        native_sd = {k: v.cpu() for k, v in model.state_dict().items()}
-        native_mcts = NNUEMCTSNative(native_sd)
 
         def _play(seed):
             return self_play_game(model, native_mcts, num_sims=args.sims, seed=seed)
@@ -260,10 +279,20 @@ def main():
         elapsed = time.time() - t0
         print(f'  {len(all_data)} positions in {elapsed:.0f}s ({elapsed/args.games:.1f}s/game)')
 
-        print(f'  Training {args.epochs} epochs...')
-        model = train_model(model, all_data, epochs=args.epochs,
+        # Accumulate into replay buffer
+        replay_buffer.extend(all_data)
+        if len(replay_buffer) > args.max_replay:
+            import random as _rnd
+            _rnd.shuffle(replay_buffer)
+            replay_buffer = replay_buffer[:args.max_replay]
+            print(f'  Replay buffer trimmed to {len(replay_buffer)}')
+
+        print(f'  Training {args.epochs} epochs on {len(replay_buffer)} positions...')
+        max_samp = min(10000 + it * 2000, 50000)  # grow sample cap over iterations
+        model = train_model(model, replay_buffer, epochs=args.epochs,
                             batch_size=args.batch_size, lr=args.lr, device=device,
-                            out_path=str(out_dir / f'nnue_mcts_iter_{it+1}.pt'))
+                            out_path=str(out_dir / f'nnue_mcts_iter_{it+1}.pt'),
+                            max_samples=max_samp)
 
         print(f'  Evaluating vs Random (30 games)...')
         wr = evaluate_model(model, native_mcts, num_games=30, num_sims=max(100, args.sims // 2))

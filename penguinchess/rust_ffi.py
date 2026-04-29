@@ -590,13 +590,32 @@ class NNUEMCTSNative:
         fc2p_b = model_state['fc2p.bias'].cpu().numpy().ravel() if 'fc2p.bias' in model_state else np.zeros(60, dtype=np.float32)
 
         flat = np.concatenate([ft_w, ft_b, fc1_w, fc1_b, fc2v_w, fc2v_b, fc2p_w, fc2p_b]).astype(np.float32)
+        self.set_weights(flat)
+
+    def set_weights(self, flat: np.ndarray):
+        """Update weights on existing handle."""
+        import numpy as np
         ptr = flat.ctypes.data_as(POINTER(c_float))
         out2 = create_string_buffer(1024)
-        rc2 = eng._lib.nnue_mcts_set_weights(
+        rc2 = self._engine._lib.nnue_mcts_set_weights(
             c_int32(self._handle), ptr, c_int32(len(flat)), out2, c_int32(1024))
         result2 = json.loads(out2.value.decode('utf-8')) if out2.value else {}
         if not result2.get('ok', False):
             raise RuntimeError(f"nnue_mcts_set_weights failed: {result2}")
+
+    def update_weights(self, model_state: dict):
+        """Build weight array from state dict and update."""
+        import numpy as np
+        ft_w = model_state['ft.weight'].cpu().numpy().ravel()
+        ft_b = model_state['ft.bias'].cpu().numpy().ravel() if 'ft.bias' in model_state else np.zeros(64, dtype=np.float32)
+        fc1_w = model_state['fc1.weight'].cpu().numpy().ravel()
+        fc1_b = model_state['fc1.bias'].cpu().numpy().ravel()
+        fc2v_w = model_state['fc2v.weight'].cpu().numpy().ravel() if 'fc2v.weight' in model_state else np.zeros(256, dtype=np.float32)
+        fc2v_b = model_state['fc2v.bias'].cpu().numpy().ravel() if 'fc2v.bias' in model_state else np.zeros(1, dtype=np.float32)
+        fc2p_w = model_state['fc2p.weight'].cpu().numpy().ravel() if 'fc2p.weight' in model_state else np.zeros(256*60, dtype=np.float32)
+        fc2p_b = model_state['fc2p.bias'].cpu().numpy().ravel() if 'fc2p.bias' in model_state else np.zeros(60, dtype=np.float32)
+        flat = np.concatenate([ft_w, ft_b, fc1_w, fc1_b, fc2v_w, fc2v_b, fc2p_w, fc2p_b]).astype(np.float32)
+        self.set_weights(flat)
 
     def search(self, game_handle: int, num_simulations: int = 200, c_puct: float = 1.4) -> dict:
         """Run Rust-native NNUE MCTS. Returns visit count dict."""
@@ -611,6 +630,17 @@ class NNUEMCTSNative:
         if not raw:
             return {}
         return json.loads(raw.decode('utf-8'))
+
+    def free(self):
+        """Release Rust-side handle."""
+        self._engine._lib.nnue_mcts_set_weights(
+            c_int32(self._handle), POINTER(c_float)(), c_int32(0),
+            create_string_buffer(1024), c_int32(1024))
+        self._handle = -1
+
+    def __del__(self):
+        if self._handle >= 0:
+            self.free()
 
 
 # =============================================================================
