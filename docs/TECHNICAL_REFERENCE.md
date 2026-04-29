@@ -24,6 +24,7 @@
 15. [AVX2 SIMD 优化](#15-avx2-simd-优化)
 16. [FFI 架构](#16-ffi-架构)
 17. [自蒸馏训练](#17-自蒸馏训练)
+18. [IID（Internal Iterative Deepening）](#18-iid)
 
 ---
 
@@ -851,3 +852,57 @@ NNUE 使用 Alpha-Beta 搜索的评分作为训练标签，而非终局胜负结
 - `examples/train_nnue_selfplay.py` — 自蒸馏训练
 - `penguinchess/ai/nnue_train.py` — NNUE 训练工具
 - `game_engine/src/ffi.rs` — `ffi_generate_nnue_data` (Rust 数据生成)
+
+---
+
+## 18. IID（Internal Iterative Deepening）
+
+### 概述
+
+内部迭代加深（IID）：当搜索树中某个深度节点在置换表中没有命中时，先做一次**浅层搜索**来填充 TT，为完整深度搜索提供走法排序信息。
+
+与第 9 节的"迭代加深"不同：
+- **迭代加深**：根节点逐层加深（D1→D2→D3...），为下一层提供 PV
+- **IID**：搜索树内部节点在 TT 缺失时做浅搜（depth/2），为本层提供排序
+
+### 触发条件
+
+```rust
+tt_best.is_none() && depth >= 4 && !is_pv && !terminal
+```
+
+- `tt_best.is_none()`：该局面没有 TT 最佳走法
+- `depth >= 4`：深度足够才有必要（浅层搜索代价低）
+- `!is_pv`：PV 节点已有上一层的走法信息
+
+### 算法
+
+```rust
+// IID: 对当前局面做浅层搜索（深度减 2）
+let iid_target = max(depth - 2, 1);
+let mut clone = state.clone();
+negamax(&mut clone, iid_target, -beta, -alpha, false);
+
+// 从 TT 中获取最佳走法（现在应该有了）
+tt_best = get_best_move(state).or(tt_best);
+```
+
+**注意**：IID 在 CLONED 状态上运行，不修改原始 `state`。
+
+### 为什么需要
+
+在深层搜索（depth ≥ 8）中，TT 缺失的频率增加，因为：
+
+| 节点深度 | TT 命中率 | 无 IID 排序 | 有 IID 排序 |
+|---------|-----------|------------|------------|
+| 1-3 | >90% | TT best available | — |
+| 4-5 | ~70% | 历史+杀着 | TT best |
+| **6-8** | **~40%** | 纯启发式 | **TT best ✅** |
+| 9+ | <30% | 几乎随机 | TT best ✅ |
+
+IID 的代价是一次浅层搜索（约 `O(b^(d/2))` 节点），但收益是**更好的排序 → 更多裁剪**。在深度 8+ 时，收益远超代价。
+
+### 实现位置
+
+`alphabeta_rs.rs` — `SearchContext::negamax()` 中 `Internal Iterative Deepening` 注释块
+
