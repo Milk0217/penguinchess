@@ -33,15 +33,22 @@ class MCTSGameDataset(Dataset):
     def __len__(self): return len(self.data)
     def __getitem__(self, idx):
         d = self.data[idx]
-        return d['sparse'], d['dense'], d['policy'], d['value']
+        return d['sparse'], d['dense'], d['policy'], d['value'], d['player']
 
 
 def collate_mcts(batch):
-    sparse = [b[0] for b in batch]
+    """Vectorized batch collation: pad sparse to (B,6), return stm_players."""
+    B = len(batch)
+    sparse = torch.zeros(B, 6, dtype=torch.long)
+    for i, b in enumerate(batch):
+        feat = b[0]  # list of ints
+        if feat:
+            sparse[i, :len(feat)] = torch.tensor(feat, dtype=torch.long)
     dense = torch.stack([torch.from_numpy(b[1]) for b in batch]).float()
     policy = torch.stack([torch.from_numpy(b[2]) for b in batch]).float()
-    value = torch.tensor([b[3] for b in batch]).float()
-    return sparse, dense, policy, value
+    value = torch.tensor([b[3] for b in batch], dtype=torch.float)
+    stm = torch.tensor([b[4] for b in batch], dtype=torch.long)
+    return sparse, dense, policy, value, stm
 
 
 def make_nnue_eval_fn(model: NNUEMCTSModel, device: str = 'cuda'):
@@ -121,7 +128,7 @@ def self_play_game(model: NNUEMCTSModel, native_mcts: NNUEMCTSNative,
 
 
 def train_model(model: NNUEMCTSModel, data: list[dict], epochs: int = 30,
-                batch_size: int = 256, lr: float = 1e-3, device: str = 'cuda',
+                batch_size: int = 4096, lr: float = 1e-3, device: str = 'cuda',
                 out_path: str | None = None, max_samples: int = 10000) -> NNUEMCTSModel:
     """Train NNUEMCTS with combined policy + value loss.
     
@@ -139,27 +146,47 @@ def train_model(model: NNUEMCTSModel, data: list[dict], epochs: int = 30,
     model = model.to(device).train()
     optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
+    scaler = torch.amp.GradScaler(device) if device == 'cuda' else None
     best_val = float('inf')
     best_state = model.state_dict().copy()
 
     for epoch in range(epochs):
         model.train()
         tr_loss = 0.0
-        for sparse, dense, policy_tgt, value_tgt in train_loader:
-            dense, policy_tgt, value_tgt = dense.to(device), policy_tgt.to(device), value_tgt.to(device)
-            logits, values = model.forward(sparse, dense)
-            loss = F.cross_entropy(logits, policy_tgt) + 0.5 * F.mse_loss(values, value_tgt)
-            optimizer.zero_grad(); loss.backward()
-            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
+        for sparse, dense, policy_tgt, value_tgt, stm in train_loader:
+            dense = dense.to(device, non_blocking=True)
+            policy_tgt = policy_tgt.to(device, non_blocking=True)
+            value_tgt = value_tgt.to(device, non_blocking=True)
+            stm = stm.to(device, non_blocking=True)
+            sparse = sparse.to(device, non_blocking=True)
+
+            if scaler:
+                with torch.amp.autocast(device):
+                    logits, values = model.forward(sparse, dense, stm)
+                    loss = F.cross_entropy(logits, policy_tgt) + 0.5 * F.mse_loss(values, value_tgt)
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                logits, values = model.forward(sparse, dense, stm)
+                loss = F.cross_entropy(logits, policy_tgt) + 0.5 * F.mse_loss(values, value_tgt)
+                optimizer.zero_grad(); loss.backward()
+                nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
             tr_loss += loss.item()
 
         model.eval()
         val_loss = 0.0
         with torch.no_grad():
-            for sparse, dense, policy_tgt, value_tgt in val_loader:
-                dense, policy_tgt, value_tgt = dense.to(device), policy_tgt.to(device), value_tgt.to(device)
-                logits, values = model.forward(sparse, dense)
+            for sparse, dense, policy_tgt, value_tgt, stm in val_loader:
+                dense = dense.to(device, non_blocking=True)
+                policy_tgt = policy_tgt.to(device, non_blocking=True)
+                value_tgt = value_tgt.to(device, non_blocking=True)
+                stm = stm.to(device, non_blocking=True)
+                sparse = sparse.to(device, non_blocking=True)
+                logits, values = model.forward(sparse, dense, stm)
                 val_loss += (F.cross_entropy(logits, policy_tgt) + 0.5 * F.mse_loss(values, value_tgt)).item()
 
         tr_loss /= max(1, len(train_loader)); val_loss /= max(1, len(val_loader))
@@ -210,7 +237,7 @@ def main():
     parser.add_argument('--games', type=int, default=500)
     parser.add_argument('--sims', type=int, default=200)
     parser.add_argument('--epochs', type=int, default=30)
-    parser.add_argument('--batch-size', type=int, default=512)
+    parser.add_argument('--batch-size', type=int, default=4096)
     parser.add_argument('--lr', type=float, default=5e-4)
     parser.add_argument('--resume', type=str, default='models/nnue/nnue_gen_2.pt')
     parser.add_argument('--out-dir', type=str, default='models/nnue_mcts')

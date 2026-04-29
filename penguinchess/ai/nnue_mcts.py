@@ -47,34 +47,63 @@ class NNUEMCTSModel(nn.Module):
     def ft_bias(self) -> torch.Tensor:
         return self.ft.bias
 
-    def shared_trunk(self, sparse_batch: list[list[int]], dense_batch: torch.Tensor,
-                     stm_players: Optional[list[int]] = None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def shared_trunk(self, sparse_batch, dense_batch: torch.Tensor,
+                     stm_players=None):
         """
         Shared trunk: FT → CReLU → FC1 → CReLU → (policy_head, value_head)
-        Returns: (policy_logits_60, value_1, hidden_256) for debugging
+        Accepts: sparse_batch as (B, 6) padded tensor OR list of lists.
         """
-        B = dense_batch.shape[0]
         device = dense_batch.device
         ft_w = self.ft_weight_gather
         ft_b = self.ft_bias
+
+        # Convert list of lists to padded tensor if needed
+        if isinstance(sparse_batch, list):
+            B = dense_batch.shape[0]
+            padded = torch.zeros(B, 6, dtype=torch.long, device=device)
+            for i, sp in enumerate(sparse_batch):
+                if sp:
+                    padded[i, :len(sp)] = torch.tensor(sp, dtype=torch.long, device=device)
+            sparse_batch = padded
+
+        B, _ = sparse_batch.shape
+
         if stm_players is None:
-            stm_players = [0] * B
+            stm_players = torch.zeros(B, dtype=torch.long, device=device)
+        elif isinstance(stm_players, list):
+            stm_players = torch.tensor(stm_players, dtype=torch.long, device=device)
 
-        stm_idx = torch.zeros(B, 3, dtype=torch.long, device=device)
-        nstm_idx = torch.zeros(B, 3, dtype=torch.long, device=device)
-        for i in range(B):
-            sp = sparse_batch[i]
-            if not sp: continue
-            stm = stm_players[i]
-            si = ni = 0
-            for f in sp:
-                is_p1 = f < P1_FEATURE_CUTOFF
-                is_stm = (stm == 0 and is_p1) or (stm == 1 and not is_p1)
-                if is_stm and si < 3: stm_idx[i, si] = f; si += 1
-                elif not is_stm and ni < 3: nstm_idx[i, ni] = f; ni += 1
+        # Vectorized: compute stm/nstm masks from padded sparse tensor
+        is_p1 = sparse_batch < P1_FEATURE_CUTOFF  # (B, 6)
+        stm_mask = (stm_players[:, None] == 0) & is_p1 | (stm_players[:, None] == 1) & ~is_p1
+        is_valid = sparse_batch >= 0
+        nstm_mask = ~stm_mask & is_valid  # opponent features
 
-        acc_stm = ft_w[stm_idx].sum(dim=1) + ft_b
-        acc_nstm = ft_w[nstm_idx].sum(dim=1) + ft_b
+        # Rank features within each sample (0, 1, 2, ...)
+        stm_rank = stm_mask.cumsum(dim=1).float() - 1.0
+        stm_rank[~stm_mask] = 999.0
+        nstm_rank = nstm_mask.cumsum(dim=1).float() - 1.0
+        nstm_rank[~nstm_mask] = 999.0
+
+        # Select first 3 features per player (sorted by rank)
+        _, stm_idx_sorted = stm_rank.sort(dim=1)
+        _, nstm_idx_sorted = nstm_rank.sort(dim=1)
+
+        stm_idx = torch.gather(sparse_batch, 1, stm_idx_sorted[:, :3])
+        nstm_idx = torch.gather(sparse_batch, 1, nstm_idx_sorted[:, :3])
+
+        # Zero out invalid indices (rank >= 3 or no valid feature)
+        stm_rank_top3 = stm_rank.gather(1, stm_idx_sorted[:, :3])
+        nstm_rank_top3 = nstm_rank.gather(1, nstm_idx_sorted[:, :3])
+        stm_idx[stm_rank_top3 >= 3.0] = 0
+        nstm_idx[nstm_rank_top3 >= 3.0] = 0
+        stm_idx[stm_rank_top3 < 0] = 0
+        nstm_idx[nstm_rank_top3 < 0] = 0
+
+        # Feature Transformer gather (B, 3, ft_dim) → sum → (B, ft_dim)
+        acc_stm = ft_w[stm_idx.clamp(min=0)].sum(dim=1) + ft_b
+        acc_nstm = ft_w[nstm_idx.clamp(min=0)].sum(dim=1) + ft_b
+
         h = torch.cat([F.relu(acc_stm), F.relu(acc_nstm), dense_batch], dim=-1)
         h = F.relu(self.fc1(h))
 
