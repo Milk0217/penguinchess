@@ -43,6 +43,16 @@ fn node_by_path<'a>(root: &'a mut MCTSNode, path: &[usize]) -> &'a mut MCTSNode 
 // 编码观测：将 GameState 编码为 Flat float 数组 (206 dims)
 // =============================================================================
 
+fn encode_nnue_obs(state: &GameState, buf: &mut Vec<f32>) {
+    let sparse = crate::alphabeta_rs::extract_sparse(state);
+    for i in 0..8 {
+        buf.push(if i < sparse.len() { sparse[i] as f32 } else { -1.0 });
+    }
+    let dense = crate::alphabeta_rs::extract_dense(state);
+    buf.extend_from_slice(&dense);
+    buf.push(state.current_player as f32);
+}
+
 fn encode_obs(state: &GameState, buf: &mut Vec<f32>) {
     // board: 60 cells × [q/8, r/8, value/3]
     for cell in &state.board.cells {
@@ -117,13 +127,19 @@ fn mcts_search_core(
     c_puct: f64,
     batch_size: i32,
     eval_fn: Option<EvalFn>,
+    nnue_mode: bool,
 ) -> String {
     let mut root = MCTSNode::new(0.0);
     let bs = batch_size.max(1) as usize;
+    let obs_dim_val = if nnue_mode { 75usize } else { 206usize };
 
     // ----- Pre-expand root with Dirichlet noise -----
-    let mut root_obs = Vec::with_capacity(obs_dim());
-    encode_obs(state, &mut root_obs);
+    let mut root_obs = Vec::with_capacity(obs_dim_val);
+    if nnue_mode {
+        encode_nnue_obs(state, &mut root_obs);
+    } else {
+        encode_obs(state, &mut root_obs);
+    }
     let legal_root = state.get_legal_actions();
 
     if legal_root.is_empty() {
@@ -149,8 +165,8 @@ fn mcts_search_core(
     let mut pending_states: Vec<GameState> = vec![];
     let mut pending_legal: Vec<Vec<usize>> = vec![];
     let mut pending_paths: Vec<Vec<usize>> = vec![];
-    let mut obs_buf: Vec<f32> = Vec::with_capacity(bs * obs_dim());
-    let mut out_buf: Vec<f32> = Vec::with_capacity(bs * out_dim());
+    let mut obs_buf: Vec<f32> = Vec::with_capacity(bs * obs_dim_val);
+    let mut out_buf: Vec<f32> = Vec::with_capacity(bs * 61);
 
     for _ in 0..num_simulations.max(1) {
         let mut state_clone = state.clone();
@@ -187,13 +203,13 @@ fn mcts_search_core(
             pending_paths.push(path);
             if pending_states.len() >= bs {
                 flush_batch_obs(&mut root, &mut pending_states, &mut pending_legal,
-                                &mut pending_paths, eval_fn, &mut obs_buf, &mut out_buf);
+                                &mut pending_paths, eval_fn, &mut obs_buf, &mut out_buf, nnue_mode);
             }
         }
     }
     if !pending_states.is_empty() {
         flush_batch_obs(&mut root, &mut pending_states, &mut pending_legal,
-                        &mut pending_paths, eval_fn, &mut obs_buf, &mut out_buf);
+                        &mut pending_paths, eval_fn, &mut obs_buf, &mut out_buf, nnue_mode);
     }
 
     let mut out = serde_json::Map::new();
@@ -212,6 +228,7 @@ unsafe fn mcts_search_internal(
     eval_fn: Option<EvalFn>,
     output_buf: *mut c_char,
     output_size: i32,
+    nnue_mode: bool,
 ) -> i32 {
     let input = match std::ffi::CStr::from_ptr(state_json).to_str() {
         Ok(s) => s,
@@ -222,7 +239,8 @@ unsafe fn mcts_search_internal(
         Err(_) => return -1,
     };
     state.board.rebuild_index_for_json();
-    let result = mcts_search_core(&state, num_simulations, c_puct, batch_size, eval_fn);
+
+    let result = mcts_search_core(&state, num_simulations, c_puct, batch_size, eval_fn, nnue_mode);
     write_output(output_buf, output_size, &result);
     0
 }
@@ -239,7 +257,7 @@ pub unsafe extern "C" fn mcts_search_rust(
     output_size: i32,
 ) -> i32 {
     mcts_search_internal(state_json, num_simulations, c_puct, batch_size,
-                         eval_fn, output_buf, output_size)
+                         eval_fn, output_buf, output_size, false)
 }
 
 /// Handle-based MCTS search: read state from GAMES[handle], run search.
@@ -251,8 +269,9 @@ pub unsafe fn mcts_search_on_handle(
     c_puct: f64,
     batch_size: i32,
     eval_fn: Option<EvalFn>,
+    nnue_mode: bool,
 ) -> String {
-    mcts_search_core(state, num_simulations, c_puct, batch_size, eval_fn)
+    mcts_search_core(state, num_simulations, c_puct, batch_size, eval_fn, nnue_mode)
 }
 
 // =============================================================================
@@ -269,13 +288,19 @@ fn flush_batch_obs(
     eval_fn: Option<EvalFn>,
     obs_buf: &mut Vec<f32>,
     out_buf: &mut Vec<f32>,
+    nnue_obs: bool,
 ) {
     let n = states.len();
     obs_buf.clear();
     for state in states.iter() {
-        encode_obs(state, obs_buf);
+        if nnue_obs {
+            encode_nnue_obs(state, obs_buf);
+        } else {
+            encode_obs(state, obs_buf);
+        }
     }
-    debug_assert_eq!(obs_buf.len(), n * obs_dim());
+    let obs_dim = if nnue_obs { 75usize } else { 206usize };
+    debug_assert_eq!(obs_buf.len(), n * obs_dim);
 
     if let Some(f) = eval_fn {
         out_buf.clear();
@@ -455,7 +480,7 @@ pub fn mcts_search_parallel_core(
     num_workers: usize,
 ) -> String {
     if num_workers <= 1 {
-        return mcts_search_core(state, num_simulations, c_puct, batch_size, eval_fn);
+        return mcts_search_core(state, num_simulations, c_puct, batch_size, eval_fn, false);
     }
 
     let sims_per = std::cmp::max(1, num_simulations / num_workers as i32);
@@ -468,7 +493,7 @@ pub fn mcts_search_parallel_core(
         for _ in 0..num_workers {
             let state_clone = base_state.clone();
             handles.push(s.spawn(move || {
-                mcts_search_core(&state_clone, sims_per, c_puct, batch_size, eval_fn)
+                mcts_search_core(&state_clone, sims_per, c_puct, batch_size, eval_fn, false)
             }));
         }
 

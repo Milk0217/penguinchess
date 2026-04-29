@@ -85,6 +85,19 @@ class RustEngine:
             ]
             self._lib.ffi_ab_generate_random_data.restype = c_int64
 
+        # NNUE MCTS (75-dim obs, Python eval callback)
+        try:
+            self._lib.mcts_search_nnue_handle
+        except AttributeError:
+            pass
+        else:
+            self._lib.mcts_search_nnue_handle.argtypes = [
+                c_int32, c_int32, c_double, c_int32,
+                CFUNCTYPE(c_int32, POINTER(c_float), c_int32, POINTER(c_float), c_int32),
+                POINTER(c_char), c_int32,
+            ]
+            self._lib.mcts_search_nnue_handle.restype = c_int32
+
         self._lib.api_version.restype = c_int32
 
         self._buf_size = 65536  # 64KB buffer
@@ -585,6 +598,80 @@ class AlphaBetaSearchHandle:
             out, c_int32(buf_size))
         result_str = out.value.decode('utf-8') if out.value else '{}'
         return json.loads(result_str)
+
+
+def mcts_search_nnue_handle(
+    handle: int,
+    nnue_eval_fn,
+    num_simulations: int = 200,
+    c_puct: float = 1.4,
+    batch_size: int = 32,
+) -> dict:
+    """
+    MCTS search using NNUE eval callback (75-dim obs).
+    Uses Rust GameState handle for zero-copy.
+
+    Args:
+        handle: RustStatefulGame handle
+        nnue_eval_fn: callable(sparse_batch, dense_batch, stm_list) -> (logits_60, values_1)
+        num_simulations: MCTS simulations
+        c_puct: exploration constant
+        batch_size: batch size for NN evaluation
+
+    Returns:
+        action_counts dict: {action: visit_count}
+    """
+    import numpy as np
+    import numpy.ctypeslib as npct
+
+    engine = get_engine()
+
+    @EVAL_FN
+    def evaluate_fn(obs_ptr, batch_size, output_ptr, output_capacity):
+        try:
+            n = batch_size
+            obs_np = npct.as_array(obs_ptr, shape=(n, 75)).copy()
+            sparse_raw = obs_np[:, :8].astype(np.int64)
+            dense = obs_np[:, 8:74]
+            stm_list = [int(x) for x in obs_np[:, 74]]
+            sparse_batch = [[int(x) for x in row if x >= 0] for row in sparse_raw]
+
+            logits, values = nnue_eval_fn(sparse_batch, dense, stm_list)
+
+            out = np.zeros((n, 61), dtype=np.float32)
+            out[:, :60] = logits
+            out[:, 60] = values
+
+            out_ptr = npct.as_array(output_ptr, shape=(n * 61,))
+            out_ptr[:] = out.ravel()
+            return 0
+        except Exception as e:
+            print(f"[NNUE MCTS eval error] {e}")
+            import traceback; traceback.print_exc()
+            return -1
+
+    result_buf = create_string_buffer(1_048_576)
+    try:
+        code = engine._lib.mcts_search_nnue_handle(
+            c_int32(handle),
+            c_int32(num_simulations),
+            c_double(c_puct),
+            c_int32(batch_size),
+            evaluate_fn,
+            result_buf,
+            c_int32(1_048_576),
+        )
+        if code != 0:
+            raise RuntimeError(f"NNUE MCTS returned error code: {code}")
+    except Exception as e:
+        raise RuntimeError(f"NNUE MCTS failed: {e}")
+
+    raw = result_buf.value
+    if not raw:
+        return {}
+    return json.loads(raw.decode("utf-8"))
+
+
 
     def free(self):
         if self._handle >= 0:
