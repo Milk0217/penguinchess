@@ -111,6 +111,19 @@ class RustEngine:
             self._lib.mcts_search_nnue_native.argtypes = [c_int32, c_int32, c_int32, c_double, POINTER(c_char), c_int32]
             self._lib.mcts_search_nnue_native.restype = c_int32
 
+        # MCTS tree reuse
+        try:
+            self._lib.nnue_mcts_tree_init
+        except AttributeError:
+            pass
+        else:
+            self._lib.nnue_mcts_tree_init.argtypes = [c_int32, c_int32, c_int32, c_double, POINTER(c_char), c_int32]
+            self._lib.nnue_mcts_tree_init.restype = c_int32
+            self._lib.nnue_mcts_tree_step.argtypes = [c_int32, c_int32, c_int32, c_double, POINTER(c_char), c_int32]
+            self._lib.nnue_mcts_tree_step.restype = c_int32
+            self._lib.nnue_mcts_tree_free.argtypes = [c_int32]
+            self._lib.nnue_mcts_tree_free.restype = c_int32
+
         self._lib.api_version.restype = c_int32
 
         self._buf_size = 65536  # 64KB buffer
@@ -641,6 +654,53 @@ class NNUEMCTSNative:
     def __del__(self):
         if self._handle >= 0:
             self.free()
+
+
+# =============================================================================
+# MCTS Tree Reuse — 子树在 Rust 侧持久化，跨步骤复用
+# =============================================================================
+
+class MCTSTreeReuse:
+    """Handle for Rust-side MCTS tree that persists across game steps."""
+
+    def __init__(self, game_handle: int, model_native: NNUEMCTSNative,
+                 num_simulations: int = 200, c_puct: float = 1.4):
+        self._engine = get_engine()
+        buf = create_string_buffer(1_048_576)
+        rc = self._engine._lib.nnue_mcts_tree_init(
+            c_int32(game_handle), c_int32(model_native._handle),
+            c_int32(num_simulations), c_double(c_puct),
+            buf, c_int32(1_048_576))
+        if rc != 0:
+            raise RuntimeError(f"nnue_mcts_tree_init failed: {rc}")
+        self._handle = 0  # tree reuse handle is implicit
+        self._c_puct = c_puct
+        self._raw = buf.value
+
+    @property
+    def _tree_handle(self) -> int:
+        # The tree is stored at index 0 in MCTS_TREES (one per game)
+        return 0
+
+    def step(self, action: int, additional_sims: int = 30) -> dict:
+        """Step game, reuse tree, run additional sims. Returns visit counts."""
+        buf = create_string_buffer(1_048_576)
+        rc = self._engine._lib.nnue_mcts_tree_step(
+            c_int32(self._tree_handle), c_int32(action),
+            c_int32(additional_sims), c_double(self._c_puct),
+            buf, c_int32(1_048_576))
+        if rc != 0:
+            raise RuntimeError(f"nnue_mcts_tree_step failed: {rc}")
+        self._raw = buf.value
+        raw = buf.value
+        if not raw: return {}
+        return json.loads(raw.decode('utf-8'))
+
+    def free(self):
+        self._engine._lib.nnue_mcts_tree_free(c_int32(self._tree_handle))
+
+    def __del__(self):
+        self.free()
 
 
 # =============================================================================

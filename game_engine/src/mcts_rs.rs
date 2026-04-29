@@ -14,15 +14,15 @@ pub type EvalFn = extern "C" fn(*const f32, i32, *mut f32, i32) -> i32;
 const DIRICHLET_ALPHA: f64 = 0.15;
 const DIRICHLET_EPS: f64 = 0.25;
 
-struct MCTSNode {
-    visits: u32,
-    total_value: f64,
-    prior: f64,
-    children: HashMap<usize, MCTSNode>,
+pub(crate) struct MCTSNode {
+    pub(crate) visits: u32,
+    pub(crate) total_value: f64,
+    pub(crate) prior: f64,
+    pub(crate) children: HashMap<usize, MCTSNode>,
 }
 
 impl MCTSNode {
-    fn new(prior: f64) -> Self {
+    pub(crate) fn new(prior: f64) -> Self {
         MCTSNode { visits: 0, total_value: 0.0, prior, children: HashMap::new() }
     }
     fn ucb(&self, parent_visits: u32, c_puct: f64) -> f64 {
@@ -796,4 +796,92 @@ pub fn mcts_search_parallel_core_ort(
             .collect();
         serde_json::to_string(&out_map).unwrap_or_default()
     })
+}
+
+// ─── Tree Reuse ───────────────────────────────────────────────
+
+pub struct MCTSReuseTree {
+    pub state: GameState,
+    pub root: MCTSNode,
+    pub model_handle: i32,
+}
+
+pub fn mcts_build_tree(
+    state: &GameState, num_simulations: i32, c_puct: f64,
+    model: &crate::nnue_rs::NNUEMCTSWeights,
+) -> (GameState, MCTSNode) {
+    let mut root = MCTSNode::new(0.0);
+    let legal = state.get_legal_actions();
+    if legal.is_empty() { return (state.clone(), root); }
+    let sp = crate::alphabeta_rs::extract_sparse(state);
+    let de = crate::alphabeta_rs::extract_dense(state);
+    let (logits_60, _) = crate::nnue_rs::nnue_evaluate_mcts(&sp, &de, state.current_player, model);
+    let policy = masked_softmax(&logits_60, &legal);
+    let noise = sample_dirichlet(DIRICHLET_ALPHA, 60);
+    for &a in &legal { root.children.insert(a, MCTSNode::new((1.0 - DIRICHLET_EPS) * policy[a] + DIRICHLET_EPS * noise[a])); }
+    for _ in 0..num_simulations.max(1) {
+        let mut sc = state.clone(); let mut path = vec![];
+        loop {
+            let pv = { let n = node_by_path(&mut root, &path); if n.children.is_empty() { break; } n.visits.max(1) };
+            let best = { let n = node_by_path(&mut root, &path); let mut rng = rand::thread_rng();
+                n.children.iter().map(|(a, c)| (*a, c.ucb(pv, c_puct) + rng.gen::<f64>() * 1e-12)).max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap()).map(|(a, _)| a).unwrap() };
+            sc.step(best); path.push(best);
+            if sc.terminated { break; }
+        }
+        let legal = sc.get_legal_actions();
+        if sc.terminated { backup(&mut root, &path, terminal_value(&sc)); }
+        else if !legal.is_empty() {
+            let sp = crate::alphabeta_rs::extract_sparse(&sc);
+            let de = crate::alphabeta_rs::extract_dense(&sc);
+            let (logits, val) = crate::nnue_rs::nnue_evaluate_mcts(&sp, &de, sc.current_player, model);
+            let lp = masked_softmax(&logits, &legal);
+            for &a in &legal { node_by_path(&mut root, &path).children.entry(a).or_insert(MCTSNode::new(lp[a])); }
+            backup(&mut root, &path, val as f64);
+        }
+    }
+    (state.clone(), root)
+}
+
+pub fn mcts_search_on_root(
+    state: &GameState, root: &mut MCTSNode, num_simulations: i32, c_puct: f64,
+    model: &crate::nnue_rs::NNUEMCTSWeights,
+) {
+    if root.children.is_empty() {
+        let legal = state.get_legal_actions();
+        if !legal.is_empty() {
+            let sp = crate::alphabeta_rs::extract_sparse(state);
+            let de = crate::alphabeta_rs::extract_dense(state);
+            let (logits_60, _) = crate::nnue_rs::nnue_evaluate_mcts(&sp, &de, state.current_player, model);
+            let policy = masked_softmax(&logits_60, &legal);
+            for &a in &legal { root.children.entry(a).or_insert(MCTSNode::new(policy[a])); }
+        }
+    }
+    for _ in 0..num_simulations.max(1) {
+        let mut sc = state.clone(); let mut path = vec![];
+        loop {
+            let pv = { let n = node_by_path(root, &path); if n.children.is_empty() { break; } n.visits.max(1) };
+            let best = { let n = node_by_path(root, &path); let mut rng = rand::thread_rng();
+                n.children.iter().map(|(a, c)| (*a, c.ucb(pv, c_puct) + rng.gen::<f64>() * 1e-12)).max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap()).map(|(a, _)| a).unwrap() };
+            sc.step(best); path.push(best);
+            if sc.terminated { break; }
+        }
+        let legal = sc.get_legal_actions();
+        if sc.terminated { backup(root, &path, terminal_value(&sc)); }
+        else if !legal.is_empty() {
+            let sp = crate::alphabeta_rs::extract_sparse(&sc);
+            let de = crate::alphabeta_rs::extract_dense(&sc);
+            let (logits, val) = crate::nnue_rs::nnue_evaluate_mcts(&sp, &de, sc.current_player, model);
+            let lp = masked_softmax(&logits, &legal);
+            for &a in &legal { node_by_path(root, &path).children.entry(a).or_insert(MCTSNode::new(lp[a])); }
+            backup(root, &path, val as f64);
+        }
+    }
+}
+
+pub fn tree_to_visits_json(root: &MCTSNode) -> String {
+    let mut out = serde_json::Map::new();
+    for (a, c) in &root.children {
+        out.insert(a.to_string(), serde_json::Value::Number(serde_json::Number::from(c.visits)));
+    }
+    serde_json::to_string(&out).unwrap_or_default()
 }

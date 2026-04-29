@@ -552,6 +552,100 @@ pub unsafe extern "C" fn mcts_search_nnue_native(
     write_output(output_buf, output_size, &result);
     0
 }
+
+// ─── MCTS Tree Reuse ──────────────────────────────────────────
+
+use std::collections::HashMap;
+const MAX_MCTS_TREES: usize = 64;
+static mut MCTS_TREES: Vec<Option<mcts_rs::MCTSReuseTree>> = Vec::new();
+
+/// Initialize MCTS tree for a game (runs first search batch).
+#[no_mangle]
+pub unsafe extern "C" fn nnue_mcts_tree_init(
+    game_handle: i32,
+    model_handle: i32,
+    num_simulations: i32,
+    c_puct: f64,
+    output_buf: *mut c_char,
+    output_size: i32,
+) -> i32 {
+    let game = match GAMES.get(game_handle as usize) {
+        Some(Some(g)) => g,
+        _ => { write_ab_json(output_buf, output_size, r#"{"error":"bad game"}"#); return -1; }
+    };
+    let model = match NNUE_MCTS_MODELS.get(model_handle as usize) {
+        Some(Some(m)) => m,
+        _ => { write_ab_json(output_buf, output_size, r#"{"error":"bad model"}"#); return -2; }
+    };
+
+    if MCTS_TREES.is_empty() {
+        for _ in 0..MAX_MCTS_TREES { MCTS_TREES.push(None); }
+    }
+
+    let mut handle = -1i32;
+    for i in 0..MAX_MCTS_TREES {
+        if MCTS_TREES[i].is_none() { handle = i as i32; break; }
+    }
+    if handle < 0 { write_ab_json(output_buf, output_size, r#"{"error":"no slots"}"#); return -3; }
+
+    let (state_clone, root) = mcts_rs::mcts_build_tree(game, num_simulations, c_puct, model);
+    MCTS_TREES[handle as usize] = Some(mcts_rs::MCTSReuseTree { state: state_clone, root, model_handle });
+
+    let visits = mcts_rs::tree_to_visits_json(&MCTS_TREES[handle as usize].as_ref().unwrap().root);
+    write_ab_json(output_buf, output_size, &visits);
+    0
+}
+
+/// Step the game, reuse tree, continue search.
+#[no_mangle]
+pub unsafe extern "C" fn nnue_mcts_tree_step(
+    tree_handle: i32,
+    action: i32,
+    additional_sims: i32,
+    c_puct: f64,
+    output_buf: *mut c_char,
+    output_size: i32,
+) -> i32 {
+    let tree = match MCTS_TREES.get_mut(tree_handle as usize) {
+        Some(Some(t)) => t,
+        _ => { write_ab_json(output_buf, output_size, r#"{"error":"bad handle"}"#); return -1; }
+    };
+
+    let model = match NNUE_MCTS_MODELS.get(tree.model_handle as usize) {
+        Some(Some(m)) => m,
+        _ => { write_ab_json(output_buf, output_size, r#"{"error":"bad model"}"#); return -2; }
+    };
+
+    // Step the game
+    tree.state.step(action as usize);
+
+    // Reuse child as new root
+    if let Some(child) = tree.root.children.remove(&(action as usize)) {
+        tree.root = child;
+    } else {
+        tree.root = mcts_rs::MCTSNode::new(0.0);
+    }
+
+    // Additional simulations on the new root
+    mcts_rs::mcts_search_on_root(
+        &mut tree.state, &mut tree.root, additional_sims, c_puct, model);
+
+    let visits = mcts_rs::tree_to_visits_json(&tree.root);
+    write_ab_json(output_buf, output_size, &visits);
+    0
+}
+
+/// Free MCTS tree handle.
+#[no_mangle]
+pub unsafe extern "C" fn nnue_mcts_tree_free(
+    tree_handle: i32,
+) -> i32 {
+    if tree_handle >= 0 && (tree_handle as usize) < MAX_MCTS_TREES {
+        MCTS_TREES[tree_handle as usize] = None;
+    }
+    0
+}
+
 const MAX_AB_SEARCHES: usize = 64;
 static mut AB_SEARCHES: Vec<Option<crate::alphabeta_rs::AlphaBetaSearch>> = Vec::new();
 

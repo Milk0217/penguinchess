@@ -10,7 +10,7 @@ Pipeline:
 Usage:
     uv run python examples/train_nnue_mcts.py --iters 10 --games 100 --sims 200
 """
-import os, sys, time, json, math, random
+import os, sys, time, json, random, random
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -24,7 +24,7 @@ from penguinchess.ai.nnue import FT_DIM, HIDDEN_DIM
 from penguinchess.ai.nnue_mcts import NNUEMCTSModel
 from penguinchess.ai.sparse_features import state_to_features
 from penguinchess.rust_ffi import (
-    get_engine, mcts_search_nnue_handle, RustStatefulGame, NNUEMCTSNative,
+    get_engine, RustStatefulGame, NNUEMCTSNative,
 )
 
 
@@ -66,14 +66,10 @@ def make_nnue_eval_fn(model: NNUEMCTSModel, device: str = 'cuda'):
 
 def self_play_game(model: NNUEMCTSModel, native_mcts: NNUEMCTSNative,
                    num_sims: int = 200, seed: int = 42) -> list[dict]:
-    """
-    Play one self-play game using Rust MCTS with NNUE evaluation.
-    """
     core = PenguinChessCore(seed=seed).reset(seed=seed)
     game_data = []
-
     engine = get_engine()
-    rgame = RustStatefulGame(engine, seed + 9999)
+    rgame = RustStatefulGame(engine, seed)
 
     for step in range(200):
         if core._terminated: break
@@ -83,27 +79,23 @@ def self_play_game(model: NNUEMCTSModel, native_mcts: NNUEMCTSNative,
         sparse, dense = state_to_features(core)
         player = core.current_player
 
-        # Rust-native NNUE MCTS
+        # Rust-native NNUE MCTS (simple, no tree reuse)
         action_counts = native_mcts.search(
             rgame.handle, num_simulations=num_sims, c_puct=1.4)
 
         # MCTS visit distribution as policy target
         visit_counts = np.zeros(60, dtype=np.float32)
         for a_str, count in action_counts.items():
-            a = int(str(a_str))  # Rust returns string keys
-            if a < 60:
-                visit_counts[a] = count
-        if visit_counts.sum() > 0:
-            policy_target = visit_counts / visit_counts.sum()
-        else:
-            policy_target = np.ones(60) / 60
+            a = int(str(a_str))
+            if a < 60: visit_counts[a] = count
+        policy_target = visit_counts / visit_counts.sum() if visit_counts.sum() > 0 else np.ones(60) / 60
 
         game_data.append({
             'sparse': sparse, 'dense': dense.astype(np.float32),
             'policy': policy_target, 'player': player,
         })
 
-        # Select action from MCTS = most visited
+        # Select most visited action
         if not action_counts:
             action = legal[0] if legal else None
         else:
@@ -111,7 +103,7 @@ def self_play_game(model: NNUEMCTSModel, native_mcts: NNUEMCTSNative,
 
         if action in legal:
             core.step(action)
-            rgame.step(action)
+            rgame.step(action)  # sync Rust game
         elif legal:
             core.step(legal[0])
             rgame.step(legal[0])
@@ -202,20 +194,19 @@ def train_model(model: NNUEMCTSModel, data: list[dict], epochs: int = 30,
 
 
 def evaluate_model(model: NNUEMCTSModel, native_mcts: NNUEMCTSNative,
-                   num_games: int = 30, num_sims: int = 100) -> float:
-    """Evaluate model vs Random using Rust-native NNUE MCTS."""
+                   num_games: int = 30, num_sims: int = 100,
+                   workers: int = 4) -> float:
+    """Evaluate model vs Random using Rust-native NNUE MCTS (parallel)."""
     model.eval()
     engine = get_engine()
-    wins = 0
 
-    for g in range(num_games):
+    def _eval_game(g):
         seed = g * 9973 + 42
         core = PenguinChessCore(seed=seed).reset(seed=seed)
-        rgame = RustStatefulGame(engine, seed + 9999)
+        rgame = RustStatefulGame(engine, seed)
         for _ in range(6):
             leg = core.get_legal_actions()
-            if leg:
-                a = random.choice(leg); core.step(a); rgame.step(a)
+            if leg: a = random.choice(leg); core.step(a); rgame.step(a)
         while not core._terminated and core._episode_steps < 200:
             legal = core.get_legal_actions()
             if not legal: break
@@ -226,7 +217,12 @@ def evaluate_model(model: NNUEMCTSModel, native_mcts: NNUEMCTSNative,
                 action = random.choice(legal)
             if action in legal: core.step(action); rgame.step(action)
             elif legal: core.step(legal[0]); rgame.step(legal[0])
-        if core.players_scores[0] > core.players_scores[1]: wins += 1
+        return 1 if core.players_scores[0] > core.players_scores[1] else 0
+
+    wins = 0
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for r in pool.map(_eval_game, range(num_games)):
+            wins += r
     return wins / num_games
 
 
@@ -235,7 +231,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--iters', type=int, default=10)
     parser.add_argument('--games', type=int, default=500)
-    parser.add_argument('--sims', type=int, default=200)
+    parser.add_argument('--sims', type=int, default=100)
     parser.add_argument('--epochs', type=int, default=30)
     parser.add_argument('--batch-size', type=int, default=4096)
     parser.add_argument('--lr', type=float, default=5e-4)
