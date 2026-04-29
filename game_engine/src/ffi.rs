@@ -479,6 +479,79 @@ pub unsafe extern "C" fn mcts_search_nnue_handle(
     0
 }
 
+const MAX_NNUE_MCTS: usize = 64;
+static mut NNUE_MCTS_MODELS: Vec<Option<crate::nnue_rs::NNUEMCTSWeights>> = Vec::new();
+
+/// Create an NNUE MCTS model handle (no weights loaded yet).
+#[no_mangle]
+pub unsafe extern "C" fn nnue_mcts_create(
+    output_buf: *mut c_char, output_size: i32,
+) -> i32 {
+    if NNUE_MCTS_MODELS.is_empty() {
+        for _ in 0..MAX_NNUE_MCTS { NNUE_MCTS_MODELS.push(None); }
+    }
+    let mut handle = -1i32;
+    for i in 0..MAX_NNUE_MCTS {
+        if NNUE_MCTS_MODELS[i].is_none() {
+            NNUE_MCTS_MODELS[i] = Some(crate::nnue_rs::NNUEMCTSWeights::new_empty());
+            handle = i as i32; break;
+        }
+    }
+    let result = format!(r#"{{"handle":{}}}"#, handle);
+    write_ab_json(output_buf, output_size, &result);
+    0
+}
+
+/// Set NNUEMCTS weights from flat float array.
+#[no_mangle]
+pub unsafe extern "C" fn nnue_mcts_set_weights(
+    handle: i32, data: *const f32, count: i32,
+    output_buf: *mut c_char, output_size: i32,
+) -> i32 {
+    let model = match NNUE_MCTS_MODELS.get_mut(handle as usize) {
+        Some(Some(m)) => m,
+        _ => { write_ab_json(output_buf, output_size, r#"{"error":"bad handle"}"#); return -1; }
+    };
+    let flat = std::slice::from_raw_parts(data, count as usize);
+    if flat.len() < 360 * 64 + 64 + 194 * 256 + 256 + 256 + 1 + 256 * 60 + 60 {
+        write_ab_json(output_buf, output_size, r#"{"error":"short weights"}"#); return -3;
+    }
+    let mut off = 0;
+    // ft_weight (360,64) row-major
+    model.ft_weight.copy_from_slice(&flat[off..off + 360 * 64]); off += 360 * 64;
+    model.ft_bias.copy_from_slice(&flat[off..off + 64]); off += 64;
+    // fc1_weight_t (194,256) — already transposed
+    model.fc1_weight_t.copy_from_slice(&flat[off..off + 194 * 256]); off += 194 * 256;
+    model.fc1_bias.copy_from_slice(&flat[off..off + 256]); off += 256;
+    // fc2v_weight (256,1)
+    model.fc2v_weight.copy_from_slice(&flat[off..off + 256]); off += 256;
+    model.fc2v_bias.copy_from_slice(&flat[off..off + 1]); off += 1;
+    // fc2p_weight_row (256,60)
+    model.fc2p_weight_row.copy_from_slice(&flat[off..off + 256 * 60]); off += 256 * 60;
+    model.fc2p_bias.copy_from_slice(&flat[off..off + 60]);
+    write_ab_json(output_buf, output_size, r#"{"ok":true}"#);
+    0
+}
+
+/// NNUE-MCTS search: Rust-native, no Python callback.
+#[no_mangle]
+pub unsafe extern "C" fn mcts_search_nnue_native(
+    game_handle: i32, model_handle: i32,
+    num_simulations: i32, c_puct: f64,
+    output_buf: *mut c_char, output_size: i32,
+) -> i32 {
+    let game = match GAMES.get(game_handle as usize) {
+        Some(Some(g)) => g, _ => return -1,
+    };
+    let model = match NNUE_MCTS_MODELS.get(model_handle as usize) {
+        Some(Some(m)) => m, _ => return -2,
+    };
+    let result = mcts_rs::mcts_search_core_nnue(
+        game, num_simulations, c_puct, model,
+    );
+    write_output(output_buf, output_size, &result);
+    0
+}
 const MAX_AB_SEARCHES: usize = 64;
 static mut AB_SEARCHES: Vec<Option<crate::alphabeta_rs::AlphaBetaSearch>> = Vec::new();
 

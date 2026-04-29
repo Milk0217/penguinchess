@@ -24,8 +24,7 @@ from penguinchess.ai.nnue import FT_DIM, HIDDEN_DIM
 from penguinchess.ai.nnue_mcts import NNUEMCTSModel
 from penguinchess.ai.sparse_features import state_to_features
 from penguinchess.rust_ffi import (
-    get_engine, mcts_search_nnue_handle, RustStatefulGame,
-    CFUNCTYPE, POINTER, c_float, c_int32, create_string_buffer,
+    get_engine, mcts_search_nnue_handle, RustStatefulGame, NNUEMCTSNative,
 )
 
 
@@ -58,18 +57,16 @@ def make_nnue_eval_fn(model: NNUEMCTSModel, device: str = 'cuda'):
     return eval_fn
 
 
-def self_play_game(model: NNUEMCTSModel, num_sims: int = 200,
-                   seed: int = 42, temp: float = 1.0) -> list[dict]:
+def self_play_game(model: NNUEMCTSModel, native_mcts: NNUEMCTSNative,
+                   num_sims: int = 200, seed: int = 42) -> list[dict]:
     """
     Play one self-play game using Rust MCTS with NNUE evaluation.
     """
     core = PenguinChessCore(seed=seed).reset(seed=seed)
     game_data = []
-    nnue_eval = make_nnue_eval_fn(model)
 
-    # Create Rust stateful game for MCTS
     engine = get_engine()
-    rgame = RustStatefulGame(engine, seed)
+    rgame = RustStatefulGame(engine, seed + 9999)
 
     for step in range(200):
         if core._terminated: break
@@ -79,11 +76,9 @@ def self_play_game(model: NNUEMCTSModel, num_sims: int = 200,
         sparse, dense = state_to_features(core)
         player = core.current_player
 
-        # Rust MCTS with NNUE eval
-        action_counts = mcts_search_nnue_handle(
-            rgame.handle, nnue_eval,
-            num_simulations=num_sims, c_puct=1.4, batch_size=32,
-        )
+        # Rust-native NNUE MCTS
+        action_counts = native_mcts.search(
+            rgame.handle, num_simulations=num_sims, c_puct=1.4)
 
         # MCTS visit distribution as policy target
         visit_counts = np.zeros(60, dtype=np.float32)
@@ -170,18 +165,17 @@ def train_model(model: NNUEMCTSModel, data: list[dict], epochs: int = 30,
     return model
 
 
-def evaluate_model(model: NNUEMCTSModel, num_games: int = 30,
-                   num_sims: int = 100, device: str = 'cuda') -> float:
-    """Evaluate model vs Random using Rust MCTS."""
-    model.to(device).eval()
+def evaluate_model(model: NNUEMCTSModel, native_mcts: NNUEMCTSNative,
+                   num_games: int = 30, num_sims: int = 100) -> float:
+    """Evaluate model vs Random using Rust-native NNUE MCTS."""
+    model.eval()
     engine = get_engine()
-    nnue_eval = make_nnue_eval_fn(model)
     wins = 0
 
     for g in range(num_games):
         seed = g * 9973 + 42
         core = PenguinChessCore(seed=seed).reset(seed=seed)
-        rgame = RustStatefulGame(engine, seed)
+        rgame = RustStatefulGame(engine, seed + 9999)
         for _ in range(6):
             leg = core.get_legal_actions()
             if leg:
@@ -190,7 +184,7 @@ def evaluate_model(model: NNUEMCTSModel, num_games: int = 30,
             legal = core.get_legal_actions()
             if not legal: break
             if core.current_player == 0:
-                ac = mcts_search_nnue_handle(rgame.handle, nnue_eval, num_simulations=num_sims, c_puct=1.4, batch_size=32)
+                ac = native_mcts.search(rgame.handle, num_simulations=num_sims, c_puct=1.4)
                 action = max(int(k) for k in ac.keys()) if ac else random.choice(legal)
             else:
                 action = random.choice(legal)
@@ -246,10 +240,11 @@ def main():
 
         # Parallel self-play
         all_data = []
-        nnue_eval = make_nnue_eval_fn(model)
+        native_sd = {k: v.cpu() for k, v in model.state_dict().items()}
+        native_mcts = NNUEMCTSNative(native_sd)
 
         def _play(seed):
-            return self_play_game(model, num_sims=args.sims, seed=seed, temp=1.0)
+            return self_play_game(model, native_mcts, num_sims=args.sims, seed=seed)
 
         with ThreadPoolExecutor(max_workers=args.workers) as pool:
             futs = [pool.submit(_play, it * 10000 + i) for i in range(args.games)]
@@ -271,7 +266,7 @@ def main():
                             out_path=str(out_dir / f'nnue_mcts_iter_{it+1}.pt'))
 
         print(f'  Evaluating vs Random (30 games)...')
-        wr = evaluate_model(model, num_games=30, num_sims=max(100, args.sims // 2), device=device)
+        wr = evaluate_model(model, native_mcts, num_games=30, num_sims=max(100, args.sims // 2))
         print(f'  Win rate: {wr*100:.1f}%')
         if wr > best_wr:
             best_wr = wr

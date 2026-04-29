@@ -98,6 +98,19 @@ class RustEngine:
             ]
             self._lib.mcts_search_nnue_handle.restype = c_int32
 
+        # NNUE native MCTS (Rust inference, no Python callback)
+        try:
+            self._lib.nnue_mcts_create
+        except AttributeError:
+            pass
+        else:
+            self._lib.nnue_mcts_create.argtypes = [POINTER(c_char), c_int32]
+            self._lib.nnue_mcts_create.restype = c_int32
+            self._lib.nnue_mcts_set_weights.argtypes = [c_int32, POINTER(c_float), c_int32, POINTER(c_char), c_int32]
+            self._lib.nnue_mcts_set_weights.restype = c_int32
+            self._lib.mcts_search_nnue_native.argtypes = [c_int32, c_int32, c_int32, c_double, POINTER(c_char), c_int32]
+            self._lib.mcts_search_nnue_native.restype = c_int32
+
         self._lib.api_version.restype = c_int32
 
         self._buf_size = 65536  # 64KB buffer
@@ -546,6 +559,58 @@ def ffi_ab_init_eval_callback(model: 'NNUE', device: str = 'cuda') -> bool:
     rc = lib.ffi_ab_set_eval_callback(_eval_batch)
     _ab_eval_callback = _eval_batch  # Keep reference
     return rc == 0
+
+
+# =============================================================================
+# NNUE MCTS Native (Rust inference, no Python callback)
+# =============================================================================
+
+class NNUEMCTSNative:
+    """Handle for Rust-native NNUE MCTS (no Python eval callback)."""
+
+    def __init__(self, model_state: dict):
+        import numpy as np
+        eng = get_engine()
+        buf = create_string_buffer(1024)
+        rc = eng._lib.nnue_mcts_create(buf, c_int32(1024))
+        result = json.loads(buf.value.decode('utf-8')) if buf.value else {}
+        self._handle = result.get('handle', -1)
+        if self._handle < 0:
+            raise RuntimeError(f"nnue_mcts_create failed: {result}")
+        self._engine = eng
+
+        # Build flat weights from state dict
+        ft_w = model_state['ft.weight'].cpu().numpy().ravel()
+        ft_b = model_state['ft.bias'].cpu().numpy().ravel() if 'ft.bias' in model_state else np.zeros(64, dtype=np.float32)
+        fc1_w = model_state['fc1.weight'].cpu().numpy().ravel()
+        fc1_b = model_state['fc1.bias'].cpu().numpy().ravel()
+        fc2v_w = model_state['fc2v.weight'].cpu().numpy().ravel() if 'fc2v.weight' in model_state else np.zeros(256, dtype=np.float32)
+        fc2v_b = model_state['fc2v.bias'].cpu().numpy().ravel() if 'fc2v.bias' in model_state else np.zeros(1, dtype=np.float32)
+        fc2p_w = model_state['fc2p.weight'].cpu().numpy().ravel() if 'fc2p.weight' in model_state else np.zeros(256*60, dtype=np.float32)
+        fc2p_b = model_state['fc2p.bias'].cpu().numpy().ravel() if 'fc2p.bias' in model_state else np.zeros(60, dtype=np.float32)
+
+        flat = np.concatenate([ft_w, ft_b, fc1_w, fc1_b, fc2v_w, fc2v_b, fc2p_w, fc2p_b]).astype(np.float32)
+        ptr = flat.ctypes.data_as(POINTER(c_float))
+        out2 = create_string_buffer(1024)
+        rc2 = eng._lib.nnue_mcts_set_weights(
+            c_int32(self._handle), ptr, c_int32(len(flat)), out2, c_int32(1024))
+        result2 = json.loads(out2.value.decode('utf-8')) if out2.value else {}
+        if not result2.get('ok', False):
+            raise RuntimeError(f"nnue_mcts_set_weights failed: {result2}")
+
+    def search(self, game_handle: int, num_simulations: int = 200, c_puct: float = 1.4) -> dict:
+        """Run Rust-native NNUE MCTS. Returns visit count dict."""
+        result_buf = create_string_buffer(1_048_576)
+        rc = self._engine._lib.mcts_search_nnue_native(
+            c_int32(game_handle), c_int32(self._handle),
+            c_int32(num_simulations), c_double(c_puct),
+            result_buf, c_int32(1_048_576))
+        if rc != 0:
+            raise RuntimeError(f"NNUE MCTS native returned error: {rc}")
+        raw = result_buf.value
+        if not raw:
+            return {}
+        return json.loads(raw.decode('utf-8'))
 
 
 # =============================================================================

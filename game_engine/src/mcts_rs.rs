@@ -562,6 +562,73 @@ fn flush_batch_obs_ort(
     paths.clear();
 }
 
+/// NNUE-MCTS using Rust-native inference (no Python callback).
+pub fn mcts_search_core_nnue(
+    state: &GameState,
+    num_simulations: i32,
+    c_puct: f64,
+    model: &crate::nnue_rs::NNUEMCTSWeights,
+) -> String {
+    let mut root = MCTSNode::new(0.0);
+    let legal_root = state.get_legal_actions();
+    if legal_root.is_empty() { return "{}".to_string(); }
+
+    let sparse = crate::alphabeta_rs::extract_sparse(state);
+    let dense = crate::alphabeta_rs::extract_dense(state);
+    let (logits_60, _root_val) = crate::nnue_rs::nnue_evaluate_mcts(
+        &sparse, &dense, state.current_player, model);
+    let policy = masked_softmax(&logits_60, &legal_root);
+    let noise = sample_dirichlet(DIRICHLET_ALPHA, 60);
+    for &a in &legal_root {
+        let noisy_prior = (1.0 - DIRICHLET_EPS) * policy[a] + DIRICHLET_EPS * noise[a];
+        root.children.insert(a, MCTSNode::new(noisy_prior));
+    }
+
+    for _ in 0..num_simulations.max(1) {
+        let mut state_clone = state.clone();
+        let mut path: Vec<usize> = vec![];
+        loop {
+            let parent_visits = {
+                let n = node_by_path(&mut root, &path);
+                if n.children.is_empty() { break; }
+                n.visits.max(1)
+            };
+            let best = {
+                let n = node_by_path(&mut root, &path);
+                let mut rng = rand::thread_rng();
+                n.children.iter()
+                    .map(|(a, child)| (a, child.ucb(parent_visits, c_puct) + rng.gen::<f64>() * 1e-12))
+                    .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+                    .map(|(a, _)| *a).unwrap()
+            };
+            state_clone.step(best);
+            path.push(best);
+            if state_clone.terminated { break; }
+        }
+        let legal = state_clone.get_legal_actions();
+        if state_clone.terminated {
+            backup(&mut root, &path, terminal_value(&state_clone));
+        } else if !legal.is_empty() {
+            let sparse = crate::alphabeta_rs::extract_sparse(&state_clone);
+            let dense = crate::alphabeta_rs::extract_dense(&state_clone);
+            let (logits, val) = crate::nnue_rs::nnue_evaluate_mcts(
+                &sparse, &dense, state_clone.current_player, model);
+            let leaf_policy = masked_softmax(&logits, &legal);
+            for &a in &legal {
+                node_by_path(&mut root, &path).children.entry(a)
+                    .or_insert(MCTSNode::new(leaf_policy[a]));
+            }
+            backup(&mut root, &path, val as f64);
+        }
+    }
+
+    let mut out = serde_json::Map::new();
+    for (a, c) in &root.children {
+        out.insert(a.to_string(), serde_json::Value::Number(serde_json::Number::from(c.visits)));
+    }
+    serde_json::to_string(&out).unwrap_or_default()
+}
+
 #[cfg(feature = "ort")]
 pub fn mcts_search_core_ort(
     state: &GameState,
