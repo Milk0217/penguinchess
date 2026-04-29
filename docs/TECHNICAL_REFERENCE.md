@@ -25,6 +25,7 @@
 16. [FFI 架构](#16-ffi-架构)
 17. [自蒸馏训练](#17-自蒸馏训练)
 18. [IID（Internal Iterative Deepening）](#18-iid)
+19. [MCTS + NNUE（AlphaZero 风格训练）](#19-mcts--nnuealphazero-风格训练)
 
 ---
 
@@ -955,4 +956,136 @@ IID 的代价是一次浅层搜索（约 `O(b^(d/2))` 节点），但收益是**
 ### 实现位置
 
 `alphabeta_rs.rs` — `SearchContext::negamax()` 中 `Internal Iterative Deepening` 注释块
+
+---
+
+## 19. MCTS + NNUE（AlphaZero 风格训练）
+
+### 概述
+
+将 NNUE 的稀疏特征 + 增量累积器与 AlphaZero 的 MCTS 训练相结合。NNUE 模型同时产出**走法概率（policy）**和**局面评分（value）**，MCTS 搜索以这两个信号为指导。
+
+### 架构
+
+```
+                    MCTS 搜索
+              ┌──────────────────┐
+              │  Selection: UCB  │
+              │  Expansion: NNUE | policy  ←  先验概率
+              │  Backup: NNUE   | value   ←  局面评分
+              └──────────────────┘
+                       │
+              ┌────────┴────────┐
+              ▼                 ▼
+        Policy Target      Value Target
+        (访问次数分布)       (搜索结果)
+              │                 │
+              └────────┬────────┘
+                       ▼
+              NNUE 模型训练
+         L = CE(policy) + MSE(value)
+```
+
+### NNUE 网络（带策略头）
+
+```
+Sparse Features (360-dim)        Dense Features (66-dim)
+        │                                │
+        ▼                                │
+Feature Transformer (360→64)             │
+  增量累积器 (stm + nstm)                │
+        │                                │
+        ▼                                ▼
+   CReLU(stm_acc || nstm_acc)      ──── concat ──── → 194-dim
+                             │
+                             ▼
+                    FC1 (194→256) + CReLU
+                             │
+              ┌──────────────┼──────────────┐
+              ▼              ▼              ▼
+        Value Head       Policy Head
+        FC2v (256→1)     FC2p (256→60)
+        + tanh           + softmax
+```
+
+| 组件 | 输出 | 范围 | 损失函数 |
+|------|------|------|---------|
+| Shared trunk (FT + FC1) | 256-dim 隐藏 | — | — |
+| Policy head | 60 logits | ℝ | CrossEntropy(softmax, visit_counts) |
+| Value head | 1 个标量 | [-1, 1] | MSE(search_value) |
+
+### MCTS 集成
+
+MCTS 的每个节点评估调用 NNUE 模型：
+
+```python
+def evaluate_node(state):
+    policy_logits, value = nnue_mcts.forward(state)
+    return policy_logits, value
+```
+
+| MCTS 阶段 | NNUE 作用 |
+|-----------|----------|
+| Selection | policy 作为 UCB 先验概率 |
+| Expansion | policy 初始化子节点概率 |
+| Leaf eval | value 作为叶子节点评估 |
+| Backup | value 反向传播更新父节点 |
+
+### UCB 公式（同 AlphaZero）
+
+```python
+ucb_score = Q(s,a) + C_PUCT * P(s,a) * sqrt(N(s)) / (1 + N(s,a))
+```
+
+- `Q(s,a)`：搜索到的平均价值
+- `P(s,a)`：NNUE policy head 输出的先验概率
+- `N(s,a)`：子节点访问次数
+- `C_PUCT = 1.4`
+
+### 训练损失函数
+
+每个位置（来自 MCTS 自对弈）：
+
+```python
+pi = visit_counts / sum(visit_counts)  # MCTS 策略目标
+z = game_result  # ±1 胜负目标
+
+policy_loss = -sum(pi * log(p_pred))  # CrossEntropy
+value_loss = (z - v_pred) ** 2          # MSE
+loss = policy_loss + 0.5 * value_loss   # 联合损失
+```
+
+### 与 AB+NNUE 对比
+
+| 维度 | AB+NNUE (当前) | MCTS+NNUE (新) |
+|------|---------------|----------------|
+| 模型输出 | value 1 个数字 | **policy 60 + value 1** |
+| 信号 | 搜索评分 | **搜索评分 + 策略分布** |
+| 搜索 | Alpha-Beta | MCTS |
+| 训练效率 | 低（只有价值） | **高（策略+价值）** |
+| vs Random 预期 | 77% (瓶颈) | **~95%** |
+| 数据生成速度 | 快（Rust 原生） | 慢（MCTS 需更多模拟） |
+| 搜索对齐 | 评分 → 搜索 | 搜索 → 训练 → 更好的搜索 |
+
+### 训练流程
+
+```
+Iteration N:
+  1. 加载 NNUEMCTS 模型
+  2. Self-play: MCTS 搜索（NNUE 评估）× 200 局
+     记录 (state, visit_counts, result)
+  3. 训练: 从 replay buffer 采样
+     loss = CE(policy, visit_counts) + MSE(value, result)
+     SGD 更新 NNUEMCTS 权重
+  4. 评估: vs 前代 / vs Random
+     如果 win_rate > 0.55 → 保存为 best
+```
+
+### 实现位置（规划）
+
+- `penguinchess/ai/nnue_mcts.py` — NNUEMCTS 模型（NNUE + 策略头）
+- `examples/train_nnue_mcts.py` — 训练脚本
+- `game_engine/src/nnue_rs.rs` — Rust 推理（需扩展策略头）
+- `game_engine/src/ffi.rs` — FFI 接口（需新 eval callback）
+
 
