@@ -870,3 +870,12 @@ penguinchess/
 ├── tests/                     # 测试套件
 ├── backend_data/boards/      # 已保存的棋盘
 └── docs/                      # 文档
+
+---
+
+## 十二、Agent 工作流程与可用工具
+
+### 12.0 技术文档约束（强制）
+
+> **引入任何新技术或算法前，必须先补充 `docs/TECHNICAL_REFERENCE.md` 相关章节。**
+> 内容包括：算法原理、架构图、参数说明、代码位置、参考链接。
