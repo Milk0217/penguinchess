@@ -154,11 +154,12 @@ pub struct SearchConfig {
     pub lmr_moves: u8, pub lmr_depth: u8, pub nnue_order_depth: u8,
     pub num_threads: u8,
     pub null_move: bool,
+    pub root_split: bool, // true = divide root moves among threads, false = Lazy SMP
 }
 
 impl Default for SearchConfig {
     fn default() -> Self {
-        Self { max_depth: 6, time_limit_ms: 0, tt_size: 1 << 20, lmr_moves: 3, lmr_depth: 1, nnue_order_depth: 2, num_threads: 1, null_move: true }
+        Self { max_depth: 6, time_limit_ms: 0, tt_size: 1 << 20, lmr_moves: 3, lmr_depth: 1, nnue_order_depth: 2, num_threads: 1, null_move: true, root_split: false }
     }
 }
 
@@ -285,7 +286,15 @@ impl<'a> SearchContext<'a> {
         if self.is_time_up() { return (self.evaluate(state), None); }
 
         if let Some((sc, bm)) = self.tt.lookup(state, depth_remaining, alpha, beta) { return (sc, Some(bm)); }
-        let tt_best = self.tt.get_best_move(state);
+        let mut tt_best = self.tt.get_best_move(state);
+        // ── Internal Iterative Deepening ──
+        // If TT miss at deep non-PV node, do a shallow search to get ordering info.
+        if tt_best.is_none() && depth_remaining >= 4 && !is_pv && !Self::is_terminal(state) {
+            let iid_target = (depth_remaining - 2).max(1);
+            let mut clone = state.clone();
+            self.negamax(&mut clone, iid_target, depth_from_root + 1, -beta, -alpha, false);
+            tt_best = self.tt.get_best_move(state).or(tt_best);
+        }
 
         if Self::is_terminal(state) || depth_remaining == 0 {
             let val = if state.terminated { Self::terminal_value(state) } else { self.evaluate(state) };
@@ -324,7 +333,11 @@ impl<'a> SearchContext<'a> {
                 let (sc, _) = self.negamax(state, depth_remaining - 1, depth_from_root + 1, -beta, -alpha, true);
                 child.reward + (-sc)
             } else if depth_remaining > 2 && i >= self.config.lmr_moves as usize {
-                let r = (depth_remaining - 1).saturating_sub(self.config.lmr_depth).max(1);
+                let base_r = self.config.lmr_depth as u32;
+                // More aggressive reduction for very late moves at deep depths
+                let extra_r = if depth_remaining >= 6 && i >= 8 { 1u32 } else { 0u32 };
+                let reduction = (base_r + extra_r).min((depth_remaining.saturating_sub(2)) as u32);
+                let r = (depth_remaining - 1).saturating_sub(reduction as u8).max(1);
                 let (mut sc, _) = self.negamax(state, r, depth_from_root + 1, -alpha - 1e-10, -alpha, false);
                 sc = -sc;
                 if sc > alpha && sc < beta {
@@ -413,8 +426,76 @@ impl AlphaBetaSearch {
             let tt = SharedTT::new(self.config.tt_size);
             let mut ctx = SearchContext::new(&tt, &self.weights, &self.config, 0);
             ctx.search_root(state)
+        } else if self.config.root_split {
+            self.search_root_split(state)
         } else {
             self.search_lazy_smp(state)
+        }
+    }
+
+    /// Root-level parallelism: divide root moves among threads.
+    /// Each thread has its OWN TT — no RwLock contention.
+    pub fn search_root_split(&self, state: &GameState) -> SearchResult {
+        let num_threads = self.config.num_threads.max(1) as usize;
+        let start = std::time::Instant::now();
+        let best = AtomicU64::new(pack_move_score(0, f32::NEG_INFINITY));
+
+        // NNUE order all root moves on the calling thread
+        let legal = state.get_legal_actions();
+        if legal.is_empty() {
+            return SearchResult { best_action: 0, score: 0.0, nodes_searched: 0, depth_reached: 0, time_ms: 0 };
+        }
+        if legal.len() == 1 {
+            return SearchResult { best_action: legal[0], score: 0.0, nodes_searched: 1, depth_reached: 0, time_ms: 0 };
+        }
+
+        // Create a temporary context just for root ordering
+        let ord_tt = SharedTT::new(256);
+        let mut ord_ctx = SearchContext::new(&ord_tt, &self.weights, &self.config, 0);
+        let root_children = ord_ctx.order_children(state, &legal, None, 0);
+        let n_children = root_children.len();
+        let children_ref = &root_children;
+
+        std::thread::scope(|s| {
+            for tid in 0..num_threads {
+                let best_ref = &best;
+                s.spawn(move || {
+                    let tt_size = (self.config.tt_size / num_threads).max(64);
+                    let tt = SharedTT::new(tt_size);
+                    let mut ctx = SearchContext::new(&tt, &self.weights, &self.config, tid as u32);
+
+                    for depth in 1..=self.config.max_depth {
+                        if ctx.is_time_up() { break; }
+                        let (alpha, beta) = (-1.0, 1.0);
+
+                        for idx in (tid..n_children).step_by(num_threads) {
+                            if ctx.is_time_up() { break; }
+                            let mut child_state = state.clone();
+                            if let Some(ref cs) = children_ref[idx].child_state {
+                                child_state = cs.clone();
+                            } else {
+                                child_state.step(children_ref[idx].action);
+                            }
+
+                            let (score, _) = ctx.negamax(&mut child_state, depth, 1, alpha, beta, true);
+                            let packed = pack_move_score(children_ref[idx].action, score);
+                            let prev = best_ref.load(Ordering::Relaxed);
+                            if score > unpack_score(prev) {
+                                best_ref.store(packed, Ordering::Relaxed);
+                            }
+                        }
+                    }
+                });
+            }
+        });
+
+        let packed = best.load(Ordering::Relaxed);
+        SearchResult {
+            best_action: unpack_move(packed),
+            score: unpack_score(packed),
+            nodes_searched: 0,
+            depth_reached: self.config.max_depth,
+            time_ms: start.elapsed().as_millis() as u64,
         }
     }
 
