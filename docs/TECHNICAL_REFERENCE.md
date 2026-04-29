@@ -828,9 +828,9 @@ NNUE 使用 Alpha-Beta 搜索的评分作为训练标签，而非终局胜负结
 
 搜索评分提供了**连续的梯度信号**，而非离散的 ±1。模型可从评分中学到"这个局面略好"和"这个局面大优"的区别。
 
-### 数据格式
+### 数据格式（二进制）
 
-二进制文件（Rust 生成，Python 训练）：
+Rust 原生生成（`ffi_ab_generate_random_data`）的二进制文件格式：
 
 ```
 [header: u64 record_count]
@@ -847,11 +847,61 @@ NNUE 使用 Alpha-Beta 搜索的评分作为训练标签，而非终局胜负结
 | 终局胜负（50K 局） | 0.97 | ~70% |
 | 搜索评分（50 局 × depth 2） | **0.12** | ~70% |
 
+### 局限：只有价值信号，没有策略信号
+
+AB+NNUE 自蒸馏的模型只能学到**评分**（value），学不到**策略**（policy）。
+
+| 信号类型 | 内容 | 来源 | 损失函数 |
+|---------|------|------|---------|
+| 价值 Value | 局面评分 ∈[-1, 1] | AB search score | MSE |
+| 策略 Policy | 走法概率分布 | — | — |
+| 策略 Policy | 走法概率分布 | **MCTS** — 访问次数 | **CrossEntropy** |
+
+AB 搜索只返回**一个数字**（最优走法的评分），不返回搜索树中各节点访问的概率。NNUE 只能拟合这个数字，学不到"每个合法走法的相对优劣"。
+
+所以 AB+NNUE 的模型在搜索中仍然是**评分员**——NNUE 说"这个位置好/坏"——但走法选择完全靠 AB 搜索的剪枝逻辑，NNUE 没有提供任何走法倾向。
+
+### Rust 原生数据生成（ffi_ab_generate_random_data）
+
+为了加速数据生成，提供了一个 Rust 原生的函数，完全在 Rust 侧完成数据生成全过程：
+
+```
+Rust: [随机对弈 + AB 搜索评分 + 写入二进制文件]
+  ↑ FFI                                    ↓ Python
+ffi_ab_create + set_weights      训练 NNUE
+  (一次调用)                        (读文件)
+```
+
+**性能对比**（300 局，depth 4，4 workers）：
+
+| 方案 | 时间 | 速度比 |
+|------|------|--------|
+| Python 循环（之前的 train_nnue_selfplay.py） | 64 min | 1x |
+| **Rust 原生**（ffi_ab_generate_random_data） | **8 min** | **8x** |
+
+Rust 版本加速来源：
+1. **无 JSON 序列化**：搜索直接操作 Rust GameState，不经过 JSON
+2. **无 FFI 每步调用**：一次 `ffi_ab_generate_random_data` 做完整个流程
+3. **Rust 内线程并行**：`std::thread::scope` 做游戏级并行，无 GIL
+
 ### 实现位置
 
-- `examples/train_nnue_selfplay.py` — 自蒸馏训练
+- `examples/train_nnue_selfplay.py` — 自蒸馏训练（Python 数据生成）
+- `scripts/train_nnue_rust_data.py` — Rust 原生数据训练脚本
+- `scripts/gen_data_rust.py` — Rust 数据生成示例
 - `penguinchess/ai/nnue_train.py` — NNUE 训练工具
-- `game_engine/src/ffi.rs` — `ffi_generate_nnue_data` (Rust 数据生成)
+- `game_engine/src/ffi.rs` — `ffi_ab_generate_random_data`（Rust 原生数据生成）
+- `penguinchess/rust_ffi.py` — `ffi_ab_generate_random_data` Python 包装
+
+### 现状总结
+
+| 模型 | 数据源 | 信号 | vs Random |
+|------|--------|------|-----------|
+| gen_1 | AB depth 2 自对弈 | value only | 56% |
+| gen_2 | AB depth 4 自对弈 | value only | **77%** | 
+| gen_random | AB depth 4 随机 + 评分 | value only | 63% |
+
+**关键结论**：AB 自蒸馏只能学到价值信号（value），无法提供策略信号（policy）。这是架构性限制，不是数据量问题——gen_2 的 77% 是当前架构的上限。
 
 ---
 
