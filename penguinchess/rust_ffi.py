@@ -74,6 +74,17 @@ class RustEngine:
             ]
             self._lib.mcts_search_rust_handle_parallel.restype = c_int32
 
+        # AB search data generation
+        try:
+            self._lib.ffi_ab_generate_random_data
+        except AttributeError:
+            pass
+        else:
+            self._lib.ffi_ab_generate_random_data.argtypes = [
+                c_int32, c_int32, c_int32, c_int32, c_char_p,
+            ]
+            self._lib.ffi_ab_generate_random_data.restype = c_int64
+
         self._lib.api_version.restype = c_int32
 
         self._buf_size = 65536  # 64KB buffer
@@ -596,6 +607,29 @@ def ffi_ab_create(config_json: str = '{}') -> AlphaBetaSearchHandle:
     if handle < 0:
         raise RuntimeError(f"ffi_ab_create failed: {result.get('error', 'unknown')} (rc={rc})")
     return AlphaBetaSearchHandle(handle, get_engine()._lib)
+
+
+def ffi_ab_generate_random_data(
+    ab_handle: AlphaBetaSearchHandle,
+    num_games: int = 500,
+    seed_offset: int = 0,
+    workers: int = 4,
+    output_path: str = 'data_nnue.bin',
+) -> int:
+    """Generate NNUE training data from random games with AB search labels.
+    
+    Uses Rust-native game stepping + AB search (no Python overhead).
+    Returns number of positions generated.
+    """
+    lib = get_engine()._lib
+    count = lib.ffi_ab_generate_random_data(
+        c_int32(ab_handle._handle),
+        c_int32(num_games),
+        c_int32(seed_offset),
+        c_int32(workers),
+        c_char_p(output_path.encode('utf-8')),
+    )
+    return count
 
 
 # =============================================================================
