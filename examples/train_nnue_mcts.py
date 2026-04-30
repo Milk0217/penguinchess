@@ -145,6 +145,7 @@ def train_model(model: NNUEMCTSModel, data: list[dict], epochs: int = 30,
     for epoch in range(epochs):
         model.train()
         tr_loss = 0.0
+        batch_count = 0
         for sparse, dense, policy_tgt, value_tgt, stm in train_loader:
             dense = dense.to(device, non_blocking=True)
             policy_tgt = policy_tgt.to(device, non_blocking=True)
@@ -152,25 +153,42 @@ def train_model(model: NNUEMCTSModel, data: list[dict], epochs: int = 30,
             stm = stm.to(device, non_blocking=True)
             sparse = sparse.to(device, non_blocking=True)
 
-            if scaler:
-                with torch.amp.autocast(device):
+            try:
+                if scaler:
+                    with torch.amp.autocast(device):
+                        logits, values = model.forward(sparse, dense, stm)
+                        loss = F.cross_entropy(logits, policy_tgt) + 0.5 * F.mse_loss(values, value_tgt)
+                    # NaN detection
+                    if torch.isnan(loss).any() or torch.isinf(loss).any():
+                        print(f'    ⚠ NaN detected in batch, skipping')
+                        continue
+                    scaler.scale(loss).backward()
+                    scaler.unscale_(optimizer)
+                    nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
                     logits, values = model.forward(sparse, dense, stm)
                     loss = F.cross_entropy(logits, policy_tgt) + 0.5 * F.mse_loss(values, value_tgt)
-                scaler.scale(loss).backward()
-                scaler.unscale_(optimizer)
-                nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                logits, values = model.forward(sparse, dense, stm)
-                loss = F.cross_entropy(logits, policy_tgt) + 0.5 * F.mse_loss(values, value_tgt)
-                optimizer.zero_grad(); loss.backward()
-                nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                optimizer.step()
-            tr_loss += loss.item()
+                    if torch.isnan(loss).any() or torch.isinf(loss).any():
+                        print(f'    ⚠ NaN detected, skipping')
+                        continue
+                    optimizer.zero_grad(); loss.backward()
+                    nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    optimizer.step()
+                tr_loss += loss.item()
+                batch_count += 1
+            except RuntimeError as e:
+                if 'out of memory' in str(e).lower() or 'cuda' in str(e).lower():
+                    print(f'    ⚠ CUDA OOM on batch, skipping')
+                    if device == 'cuda':
+                        torch.cuda.empty_cache()
+                    continue
+                raise
 
         model.eval()
         val_loss = 0.0
+        val_count = 0
         with torch.no_grad():
             for sparse, dense, policy_tgt, value_tgt, stm in val_loader:
                 dense = dense.to(device, non_blocking=True)
@@ -179,9 +197,13 @@ def train_model(model: NNUEMCTSModel, data: list[dict], epochs: int = 30,
                 stm = stm.to(device, non_blocking=True)
                 sparse = sparse.to(device, non_blocking=True)
                 logits, values = model.forward(sparse, dense, stm)
-                val_loss += (F.cross_entropy(logits, policy_tgt) + 0.5 * F.mse_loss(values, value_tgt)).item()
+                v = F.cross_entropy(logits, policy_tgt) + 0.5 * F.mse_loss(values, value_tgt)
+                if not torch.isnan(v) and not torch.isinf(v):
+                    val_loss += v.item()
+                    val_count += 1
 
-        tr_loss /= max(1, len(train_loader)); val_loss /= max(1, len(val_loader))
+        tr_loss = tr_loss / max(1, batch_count)
+        val_loss = val_loss / max(1, val_count)
         scheduler.step(val_loss)
         if val_loss < best_val: best_val = val_loss; best_state = model.state_dict().copy()
         if epoch % 5 == 0: print(f'  ep {epoch+1:>3d}/{epochs}  train={tr_loss:.4f}  val={val_loss:.4f}')
@@ -245,6 +267,14 @@ def main():
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Check disk space at startup
+    import shutil
+    total, used, free = shutil.disk_usage(str(out_dir))
+    if free < 500_000_000:  # 500MB minimum
+        print(f'⚠ WARNING: Low disk space ({free/1e9:.1f}GB free).')
+    else:
+        print(f'  Disk: {free/1e9:.1f}GB free, {used/1e9:.1f}GB used')
+
     model = NNUEMCTSModel()
     ckpt_path = out_dir / 'nnue_mcts_checkpoint.pt'
     start_iter = 0
@@ -280,70 +310,143 @@ def main():
     native_sd_init = {k: v.cpu() for k, v in model.state_dict().items()}
     native_mcts = NNUEMCTSNative(native_sd_init)
 
+    # GPU memory management
+    if device == 'cuda':
+        torch.cuda.empty_cache()
+        torch.backends.cudnn.deterministic = False
+        torch.backends.cudnn.benchmark = True
+
+    def _safe_save(obj, path, desc='model'):
+        """Save with friendly error on failure."""
+        for attempt in range(3):
+            try:
+                path = str(path)
+                # Check disk space (10MB minimum)
+                import shutil
+                total, _, free = shutil.disk_usage(Path(path).parent)
+                if free < 10_000_000:
+                    import warnings
+                    warnings.warn(f'Low disk space: {free/1e9:.1f}GB free, skipping save')
+                    return False
+                torch.save(obj, path)
+                return True
+            except (OSError, IOError, RuntimeError) as e:
+                import warnings
+                warnings.warn(f'Save failed (attempt {attempt+1}/3): {e}')
+                if 'disk' in str(e).lower() or 'space' in str(e).lower():
+                    break  # don't retry disk full
+                time.sleep(2)
+        print(f'  ⚠ Failed to save {desc}')
+        return False
+
+    def _safe_save_checkpoint(iteration: int):
+        ckpt = {
+            'model_state': model.state_dict(),
+            'replay_buffer': replay_buffer[:50000],
+            'iteration': iteration,
+            'best_wr': best_wr,
+        }
+        _safe_save(ckpt, ckpt_path, desc=f'checkpoint (iter {iteration})')
+
     for it in range(start_iter, args.iters):
-        print(f"\n{'='*50}")
-        print(f'Iteration {it+1}/{args.iters}')
-        print(f"{'='*50}")
-        print(f'  Self-play: {args.games} games x {args.sims} sims (replay buffer: {len(replay_buffer)})...')
-        t0 = time.time()
+        try:
+            print(f"\n{'='*50}")
+            print(f'Iteration {it+1}/{args.iters}')
+            print(f"{'='*50}")
+            print(f'  Self-play: {args.games} games x {args.sims} sims (replay buffer: {len(replay_buffer)})...')
+            t0 = time.time()
 
-        # Update weights for current model state
-        cur_sd = {k: v.cpu() for k, v in model.state_dict().items()}
-        native_mcts.update_weights(cur_sd)
+            # Update weights for current model state
+            cur_sd = {k: v.cpu() for k, v in model.state_dict().items()}
+            native_mcts.update_weights(cur_sd)
 
-        # Parallel self-play
-        all_data = []
+            # Parallel self-play
+            all_data = []
 
-        def _play(seed):
-            return self_play_game(model, native_mcts, num_sims=args.sims, seed=seed)
+            def _play(seed):
+                """Play one game with retry on Rust panic."""
+                for attempt in range(2):
+                    try:
+                        return self_play_game(model, native_mcts, num_sims=args.sims, seed=seed + attempt * 9999)
+                    except (OSError, RuntimeError) as e:
+                        if attempt == 1:
+                            raise
+                        print(f'    Game {seed} failed, retrying: {e}')
+                return []
 
-        with ThreadPoolExecutor(max_workers=args.workers) as pool:
-            futs = [pool.submit(_play, it * 10000 + i) for i in range(args.games)]
-            for i, f in enumerate(as_completed(futs)):
-                try:
-                    all_data.extend(f.result())
-                except Exception as e:
-                    print(f'  Game {i} failed: {e}')
-                    import traceback; traceback.print_exc()
-                if (i + 1) % 50 == 0:
-                    print(f'  [{i+1}/{args.games}] {len(all_data)} pos')
+            with ThreadPoolExecutor(max_workers=args.workers) as pool:
+                futs = [pool.submit(_play, it * 10000 + i) for i in range(args.games)]
+                for i, f in enumerate(as_completed(futs)):
+                    try:
+                        all_data.extend(f.result())
+                    except (OSError, RuntimeError, Exception) as e:
+                        print(f'  Game {i} failed (skipped): {e}')
+                        import traceback
+                        traceback.print_exc()
+                        if device == 'cuda':
+                            torch.cuda.empty_cache()
+                    if (i + 1) % 50 == 0:
+                        print(f'  [{i+1}/{args.games}] {len(all_data)} pos')
 
-        elapsed = time.time() - t0
-        print(f'  {len(all_data)} positions in {elapsed:.0f}s ({elapsed/args.games:.1f}s/game)')
+            elapsed = time.time() - t0
+            print(f'  {len(all_data)} positions in {elapsed:.0f}s ({elapsed/args.games:.1f}s/game)')
 
-        # Accumulate into replay buffer
-        replay_buffer.extend(all_data)
-        if len(replay_buffer) > args.max_replay:
-            import random as _rnd
-            _rnd.shuffle(replay_buffer)
-            replay_buffer = replay_buffer[:args.max_replay]
-            print(f'  Replay buffer trimmed to {len(replay_buffer)}')
+            if len(all_data) < 100:
+                print(f'  ⚠ Too few positions ({len(all_data)}), skipping training')
+                _safe_save_checkpoint(it + 1)
+                continue
 
-        print(f'  Training {args.epochs} epochs on {len(replay_buffer)} positions...')
-        max_samp = min(10000 + it * 2000, 50000)  # grow sample cap over iterations
-        model = train_model(model, replay_buffer, epochs=args.epochs,
-                            batch_size=args.batch_size, lr=args.lr, device=device,
-                            out_path=str(out_dir / f'nnue_mcts_iter_{it+1}.pt'),
-                            max_samples=max_samp)
+            # Accumulate into replay buffer
+            replay_buffer.extend(all_data)
+            if len(replay_buffer) > args.max_replay:
+                random.shuffle(replay_buffer)
+                replay_buffer = replay_buffer[:args.max_replay]
+                print(f'  Replay buffer trimmed to {len(replay_buffer)}')
 
-        print(f'  Evaluating vs Random (30 games)...')
-        wr = evaluate_model(model, native_mcts, num_games=30, num_sims=max(100, args.sims // 2))
-        print(f'  Win rate: {wr*100:.1f}%')
-        if wr > best_wr:
-            best_wr = wr
-            torch.save({'model_state': model.state_dict(), 'win_rate': wr}, str(out_dir / 'nnue_mcts_best.pt'))
-            print(f'  [NEW BEST] {wr*100:.1f}%')
+            print(f'  Training {args.epochs} epochs on {len(replay_buffer)} positions...')
+            max_samp = min(10000 + it * 2000, 50000)
 
-        # Save checkpoint every 5 iterations (model + replay buffer + iteration)
-        if (it + 1) % 5 == 0 or it == args.iters - 1:
-            ckpt = {
-                'model_state': model.state_dict(),
-                'replay_buffer': replay_buffer[:50000],  # save subset for checkpoint size
-                'iteration': it + 1,
-                'best_wr': best_wr,
-            }
-            torch.save(ckpt, str(ckpt_path))
-            print(f'  Checkpoint saved (iter {it+1})')
+            # Train with OOM recovery
+            model = train_model(model, replay_buffer, epochs=args.epochs,
+                                batch_size=args.batch_size, lr=args.lr, device=device,
+                                out_path=str(out_dir / f'nnue_mcts_iter_{it+1}.pt'),
+                                max_samples=max_samp)
+
+            print(f'  Evaluating vs Random (30 games)...')
+            wr = evaluate_model(model, native_mcts, num_games=30, num_sims=max(100, args.sims // 2))
+            print(f'  Win rate: {wr*100:.1f}%')
+
+            if wr > best_wr:
+                best_wr = wr
+                _safe_save({'model_state': model.state_dict(), 'win_rate': wr},
+                           str(out_dir / 'nnue_mcts_best.pt'), desc='best model')
+                print(f'  [NEW BEST] {wr*100:.1f}%')
+
+            # Save checkpoint every 5 iterations
+            if (it + 1) % 5 == 0 or it == args.iters - 1:
+                _safe_save_checkpoint(it + 1)
+                print(f'  Checkpoint saved (iter {it+1})')
+
+            # Periodic GPU cleanup
+            if device == 'cuda' and (it + 1) % 10 == 0:
+                torch.cuda.empty_cache()
+
+        except KeyboardInterrupt:
+            print(f'\n\nKeyboardInterrupt at iteration {it+1}. Saving checkpoint...')
+            _safe_save_checkpoint(it)
+            print(f'Saved. Resume with: uv run python {__file__} --iters {args.iters} --games {args.games} --workers {args.workers}')
+            sys.exit(0)
+
+        except (OSError, RuntimeError) as e:
+            print(f'\n  ⚠ Iteration {it+1} failed: {e}')
+            import traceback
+            traceback.print_exc()
+            if device == 'cuda':
+                torch.cuda.empty_cache()
+            # Save partial checkpoint and continue
+            _safe_save_checkpoint(it + 1)
+            print(f'  Saved partial checkpoint, continuing...')
+            continue
 
     print(f'\nDone! Best WR: {best_wr*100:.1f}%')
 
