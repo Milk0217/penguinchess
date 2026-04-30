@@ -246,32 +246,41 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     model = NNUEMCTSModel()
-    if args.resume and Path(args.resume).exists():
-        sd = torch.load(args.resume, map_location='cpu', weights_only=False)
-        sd = sd.get('model_state', sd) if isinstance(sd, dict) and 'model_state' in sd else sd
-        model.load_nnue_trunk(sd)
-        print(f'Loaded NNUE trunk from {args.resume}')
-    else:
-        print('Fresh model')
-
-    best_path = out_dir / 'nnue_mcts_best.pt'
-    if best_path.exists():
-        sd = torch.load(str(best_path), map_location='cpu', weights_only=False)
-        sd = sd.get('model_state', sd) if isinstance(sd, dict) and 'model_state' in sd else sd
-        model.load_state_dict(sd, strict=False)
-        print(f'Loaded best from {best_path}')
-
+    ckpt_path = out_dir / 'nnue_mcts_checkpoint.pt'
+    start_iter = 0
     best_wr = 0.0
+    replay_buffer: list = []
+
+    # Load checkpoint if exists
+    if ckpt_path.exists():
+        ckpt = torch.load(str(ckpt_path), map_location='cpu', weights_only=False)
+        model.load_state_dict(ckpt['model_state'], strict=False)
+        replay_buffer = list(ckpt.get('replay_buffer', []))
+        start_iter = ckpt.get('iteration', 0)
+        best_wr = ckpt.get('best_wr', 0.0)
+        print(f'Loaded checkpoint: iter={start_iter}, buffer={len(replay_buffer)}, best_wr={best_wr*100:.1f}%')
+    else:
+        # Load trunk from resume model
+        if args.resume and Path(args.resume).exists():
+            sd = torch.load(args.resume, map_location='cpu', weights_only=False)
+            sd = sd.get('model_state', sd) if isinstance(sd, dict) and 'model_state' in sd else sd
+            model.load_nnue_trunk(sd)
+            print(f'Loaded NNUE trunk from {args.resume}')
+
+        best_path = out_dir / 'nnue_mcts_best.pt'
+        if best_path.exists():
+            sd = torch.load(str(best_path), map_location='cpu', weights_only=False)
+            sd = sd.get('model_state', sd) if isinstance(sd, dict) and 'model_state' in sd else sd
+            model.load_state_dict(sd, strict=False)
+            best_wr = sd.get('win_rate', 0.0) if isinstance(sd, dict) else 0.0
+            print(f'Loaded best from {best_path}')
     engine = get_engine()
 
     # Create one native MCTS engine, reuse across iterations
     native_sd_init = {k: v.cpu() for k, v in model.state_dict().items()}
     native_mcts = NNUEMCTSNative(native_sd_init)
 
-    # Replay buffer: accumulate all training data
-    replay_buffer: list = []
-
-    for it in range(args.iters):
+    for it in range(start_iter, args.iters):
         print(f"\n{'='*50}")
         print(f'Iteration {it+1}/{args.iters}')
         print(f"{'='*50}")
@@ -324,6 +333,17 @@ def main():
             best_wr = wr
             torch.save({'model_state': model.state_dict(), 'win_rate': wr}, str(out_dir / 'nnue_mcts_best.pt'))
             print(f'  [NEW BEST] {wr*100:.1f}%')
+
+        # Save checkpoint every 5 iterations (model + replay buffer + iteration)
+        if (it + 1) % 5 == 0 or it == args.iters - 1:
+            ckpt = {
+                'model_state': model.state_dict(),
+                'replay_buffer': replay_buffer[:50000],  # save subset for checkpoint size
+                'iteration': it + 1,
+                'best_wr': best_wr,
+            }
+            torch.save(ckpt, str(ckpt_path))
+            print(f'  Checkpoint saved (iter {it+1})')
 
     print(f'\nDone! Best WR: {best_wr*100:.1f}%')
 
