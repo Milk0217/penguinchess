@@ -254,11 +254,13 @@ def main():
     parser.add_argument('--iters', type=int, default=10)
     parser.add_argument('--games', type=int, default=500)
     parser.add_argument('--sims', type=int, default=100)
-    parser.add_argument('--epochs', type=int, default=30)
+    parser.add_argument('--epochs', type=int, default=10)
     parser.add_argument('--batch-size', type=int, default=4096)
     parser.add_argument('--lr', type=float, default=5e-4)
-    parser.add_argument('--resume', type=str, default='models/nnue/nnue_gen_2.pt')
-    parser.add_argument('--out-dir', type=str, default='models/nnue_mcts')
+    parser.add_argument('--hidden-dim', type=int, default=512)
+    parser.add_argument('--ft-dim', type=int, default=128)
+    parser.add_argument('--resume', type=str, default='')
+    parser.add_argument('--out-dir', type=str, default='models/nnue_mcts_large')
     parser.add_argument('--workers', type=int, default=4)
     parser.add_argument('--max-replay', type=int, default=200000)
     args = parser.parse_args()
@@ -270,12 +272,12 @@ def main():
     # Check disk space at startup
     import shutil
     total, used, free = shutil.disk_usage(str(out_dir))
-    if free < 500_000_000:  # 500MB minimum
+    if free < 500_000_000:
         print(f'⚠ WARNING: Low disk space ({free/1e9:.1f}GB free).')
     else:
         print(f'  Disk: {free/1e9:.1f}GB free, {used/1e9:.1f}GB used')
 
-    model = NNUEMCTSModel()
+    model = NNUEMCTSModel(hidden_dim=args.hidden_dim, ft_dim=args.ft_dim)
     ckpt_path = out_dir / 'nnue_mcts_checkpoint.pt'
     start_iter = 0
     best_wr = 0.0

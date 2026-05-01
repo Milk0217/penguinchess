@@ -597,9 +597,14 @@ class NNUEMCTSNative:
         ft_b = model_state['ft.bias'].cpu().numpy().ravel() if 'ft.bias' in model_state else np.zeros(64, dtype=np.float32)
         fc1_w = model_state['fc1.weight'].cpu().numpy().ravel()
         fc1_b = model_state['fc1.bias'].cpu().numpy().ravel()
-        fc2v_w = model_state['fc2v.weight'].cpu().numpy().ravel() if 'fc2v.weight' in model_state else np.zeros(256, dtype=np.float32)
+        # Detect dimensions from state dict
+        ft_w = model_state['ft.weight'].cpu().numpy().ravel()
+        ft_dim = model_state['ft.weight'].shape[1]
+        fc1_w = model_state['fc1.weight'].cpu().numpy().ravel()
+        fc1_dim = model_state['fc1.weight'].shape[0]
+        fc2v_w = model_state['fc2v.weight'].cpu().numpy().ravel() if 'fc2v.weight' in model_state else np.zeros(fc1_dim, dtype=np.float32)
         fc2v_b = model_state['fc2v.bias'].cpu().numpy().ravel() if 'fc2v.bias' in model_state else np.zeros(1, dtype=np.float32)
-        fc2p_w = model_state['fc2p.weight'].cpu().numpy().ravel() if 'fc2p.weight' in model_state else np.zeros(256*60, dtype=np.float32)
+        fc2p_w = model_state['fc2p.weight'].cpu().numpy().ravel() if 'fc2p.weight' in model_state else np.zeros(fc1_dim*60, dtype=np.float32)
         fc2p_b = model_state['fc2p.bias'].cpu().numpy().ravel() if 'fc2p.bias' in model_state else np.zeros(60, dtype=np.float32)
 
         flat = np.concatenate([ft_w, ft_b, fc1_w, fc1_b, fc2v_w, fc2v_b, fc2p_w, fc2p_b]).astype(np.float32)
@@ -619,15 +624,19 @@ class NNUEMCTSNative:
     def update_weights(self, model_state: dict):
         """Build weight array from state dict and update."""
         import numpy as np
-        ft_w = model_state['ft.weight'].cpu().numpy().ravel()
-        ft_b = model_state['ft.bias'].cpu().numpy().ravel() if 'ft.bias' in model_state else np.zeros(64, dtype=np.float32)
-        fc1_w = model_state['fc1.weight'].cpu().numpy().ravel()
+        # Detect dimensions from model state dict
+        ft_w = model_state['ft.weight'].cpu().numpy()
+        ft_dim = ft_w.shape[1]  # (360, ft_dim)
+        fc1_w = model_state['fc1.weight'].cpu().numpy()
+        fc1_dim = fc1_w.shape[0]  # (fc1_dim, input_dim)
+        fc2v_w = model_state['fc2v.weight'].cpu().numpy()
+        fc2p_w = model_state['fc2p.weight'].cpu().numpy()
+        fc2p_dim = fc2p_w.shape[1]  # (fc1_dim, 60)
+        ft_b = model_state['ft.bias'].cpu().numpy().ravel() if 'ft.bias' in model_state else np.zeros(ft_dim, dtype=np.float32)
         fc1_b = model_state['fc1.bias'].cpu().numpy().ravel()
-        fc2v_w = model_state['fc2v.weight'].cpu().numpy().ravel() if 'fc2v.weight' in model_state else np.zeros(256, dtype=np.float32)
         fc2v_b = model_state['fc2v.bias'].cpu().numpy().ravel() if 'fc2v.bias' in model_state else np.zeros(1, dtype=np.float32)
-        fc2p_w = model_state['fc2p.weight'].cpu().numpy().ravel() if 'fc2p.weight' in model_state else np.zeros(256*60, dtype=np.float32)
-        fc2p_b = model_state['fc2p.bias'].cpu().numpy().ravel() if 'fc2p.bias' in model_state else np.zeros(60, dtype=np.float32)
-        flat = np.concatenate([ft_w, ft_b, fc1_w, fc1_b, fc2v_w, fc2v_b, fc2p_w, fc2p_b]).astype(np.float32)
+        fc2p_b = model_state['fc2p.bias'].cpu().numpy().ravel() if 'fc2p.bias' in model_state else np.zeros(fc2p_dim, dtype=np.float32)
+        flat = np.concatenate([ft_w.ravel(), ft_b, fc1_w.ravel(), fc1_b, fc2v_w.ravel(), fc2v_b, fc2p_w.ravel(), fc2p_b]).astype(np.float32)
         self.set_weights(flat)
 
     def search(self, game_handle: int, num_simulations: int = 200, c_puct: float = 1.4) -> dict:

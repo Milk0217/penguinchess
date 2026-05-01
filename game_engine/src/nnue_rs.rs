@@ -3,17 +3,26 @@
 ///   360 sparse binary → FT(64) → CReLU(acc_stm || acc_nstm) → concat dense[66]
 ///   → FC1(256) → ReLU → FC2(128) → ReLU → FC3(1) → tanh
 ///
+/// MCTS version (larger):
+///   360 sparse → FT(128) → CReLU → concat dense → FC1(512) → (value:FC1→1, policy:FC1→60)
+///
 /// FC weights stored TRANSPOSED (column-major) for contiguous SIMD access:
 ///   w_t[col * rows + row] = original[row][col]
 
 use serde::{Deserialize, Serialize};
 
+// Value-only NNUE (gen_2, AB search)
 pub const FT_DIM: usize = 64;
 pub const DENSE_DIM: usize = 66;
 pub const FC1_DIM: usize = 256;
 pub const FC2_DIM: usize = 128;
 pub const INPUT_DIM: usize = FT_DIM * 2 + DENSE_DIM; // 194
 pub const P1_CUTOFF: usize = 180;
+
+// MCTS NNUE (larger model)
+pub const MCTS_FT_DIM: usize = 128;
+pub const MCTS_FC1_DIM: usize = 512;
+pub const MCTS_INPUT_DIM: usize = MCTS_FT_DIM * 2 + DENSE_DIM; // 322
 
 // ─── AVX2 helpers (requires target-cpu=native) ────────────────
 
@@ -337,7 +346,7 @@ pub fn evaluate_from_acc(acc: &NNUEAccumulator, dense: &[f32],
     out[0].tanh()
 }
 
-// ─── NNUE MCTS Weights (value + policy heads) ─────────────────
+// ─── NNUE MCTS Weights (value + policy heads) — larger architecture ─
 
 pub const FC2V_DIM: usize = 1;
 pub const FC2P_DIM: usize = 60;
@@ -348,60 +357,60 @@ pub struct NNUEMCTSWeights {
     pub ft_bias: Vec<f32>,
     pub fc1_weight_t: Vec<f32>,
     pub fc1_bias: Vec<f32>,
-    pub fc2v_weight: Vec<f32>,    // (256, 1) row-major
+    pub fc2v_weight: Vec<f32>,    // (MCTS_FC1_DIM, 1) row-major
     pub fc2v_bias: Vec<f32>,
-    pub fc2p_weight_row: Vec<f32>, // (256, 60) row-major for non-SIMD
+    pub fc2p_weight_row: Vec<f32>, // (MCTS_FC1_DIM, 60) row-major
     pub fc2p_bias: Vec<f32>,
 }
 
 impl NNUEMCTSWeights {
     pub fn new_empty() -> Self {
         Self {
-            ft_weight: vec![0.0; 360 * FT_DIM],
-            ft_bias: vec![0.0; FT_DIM],
-            fc1_weight_t: vec![0.0; INPUT_DIM * FC1_DIM],
-            fc1_bias: vec![0.0; FC1_DIM],
-            fc2v_weight: vec![0.0; FC1_DIM],
+            ft_weight: vec![0.0; 360 * MCTS_FT_DIM],
+            ft_bias: vec![0.0; MCTS_FT_DIM],
+            fc1_weight_t: vec![0.0; MCTS_INPUT_DIM * MCTS_FC1_DIM],
+            fc1_bias: vec![0.0; MCTS_FC1_DIM],
+            fc2v_weight: vec![0.0; MCTS_FC1_DIM],
             fc2v_bias: vec![0.0; 1],
-            fc2p_weight_row: vec![0.0; FC1_DIM * FC2P_DIM],
+            fc2p_weight_row: vec![0.0; MCTS_FC1_DIM * FC2P_DIM],
             fc2p_bias: vec![0.0; FC2P_DIM],
         }
     }
 }
 
-/// Fast NNUE MCTS eval: FT → FC1 → [value(1), policy(60)].
+/// Fast MCTS NNUE eval: FT → FC1 → [value(1), policy(60)].
 pub fn nnue_evaluate_mcts(
     sparse: &[usize], dense: &[f32], stm: usize, w: &NNUEMCTSWeights,
 ) -> (Vec<f32>, f32) {
-    let mut h = vec![0.0f32; FC1_DIM];
+    let mut h = vec![0.0f32; MCTS_FC1_DIM];
 
-    // FT accumulation
+    // FT accumulation (uses MCTS_FT_DIM)
     let mut acc_stm = w.ft_bias.clone();
     let mut acc_nstm = w.ft_bias.clone();
     for &idx in sparse {
-        let base = idx * FT_DIM;
+        let base = idx * MCTS_FT_DIM;
         let is_p1 = idx < P1_CUTOFF;
         let target = if (stm == 0 && is_p1) || (stm == 1 && !is_p1) { &mut acc_stm } else { &mut acc_nstm };
-        for i in 0..FT_DIM { target[i] += w.ft_weight[base + i]; }
+        for i in 0..MCTS_FT_DIM { target[i] += w.ft_weight[base + i]; }
     }
 
     // CReLU + concat dense → FC1 + ReLU
-    let mut x = Vec::with_capacity(FT_DIM * 2 + DENSE_DIM);
-    for i in 0..FT_DIM { x.push((acc_stm[i].clamp(0.0, 127.0)) * 2.0 / 127.0 - 1.0); }
-    for i in 0..FT_DIM { x.push((acc_nstm[i].clamp(0.0, 127.0)) * 2.0 / 127.0 - 1.0); }
+    let mut x = Vec::with_capacity(MCTS_FT_DIM * 2 + DENSE_DIM);
+    for i in 0..MCTS_FT_DIM { x.push((acc_stm[i].clamp(0.0, 127.0)) * 2.0 / 127.0 - 1.0); }
+    for i in 0..MCTS_FT_DIM { x.push((acc_nstm[i].clamp(0.0, 127.0)) * 2.0 / 127.0 - 1.0); }
     x.extend_from_slice(dense);
-    matvec_mul_add_t(&w.fc1_weight_t, &x, FC1_DIM, INPUT_DIM, &w.fc1_bias, &mut h);
+    matvec_mul_add_t(&w.fc1_weight_t, &x, MCTS_FC1_DIM, MCTS_INPUT_DIM, &w.fc1_bias, &mut h);
     relu_inplace(&mut h);
 
-    // Value head
+    // Value head: MCTS_FC1_DIM → 1
     let mut val = w.fc2v_bias[0];
-    for i in 0..FC1_DIM { val += h[i] * w.fc2v_weight[i]; }
+    for i in 0..MCTS_FC1_DIM { val += h[i] * w.fc2v_weight[i]; }
     let value = val.tanh();
 
-    // Policy head (row-major: [256×60])
+    // Policy head: MCTS_FC1_DIM → 60 (row-major)
     let mut logits = w.fc2p_bias.clone();
     for i in 0..FC2P_DIM {
-        for j in 0..FC1_DIM {
+        for j in 0..MCTS_FC1_DIM {
             logits[i] += h[j] * w.fc2p_weight_row[j * FC2P_DIM + i];
         }
     }

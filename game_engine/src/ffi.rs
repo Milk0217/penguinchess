@@ -513,21 +513,24 @@ pub unsafe extern "C" fn nnue_mcts_set_weights(
         _ => { write_ab_json(output_buf, output_size, r#"{"error":"bad handle"}"#); return -1; }
     };
     let flat = std::slice::from_raw_parts(data, count as usize);
-    if flat.len() < 360 * 64 + 64 + 194 * 256 + 256 + 256 + 1 + 256 * 60 + 60 {
+    let expected = 360 * crate::nnue_rs::MCTS_FT_DIM + crate::nnue_rs::MCTS_FT_DIM
+        + crate::nnue_rs::MCTS_INPUT_DIM * crate::nnue_rs::MCTS_FC1_DIM + crate::nnue_rs::MCTS_FC1_DIM
+        + crate::nnue_rs::MCTS_FC1_DIM + 1
+        + crate::nnue_rs::MCTS_FC1_DIM * 60 + 60;
+    if flat.len() < expected {
         write_ab_json(output_buf, output_size, r#"{"error":"short weights"}"#); return -3;
     }
     let mut off = 0;
-    // ft_weight (360,64) row-major
-    model.ft_weight.copy_from_slice(&flat[off..off + 360 * 64]); off += 360 * 64;
-    model.ft_bias.copy_from_slice(&flat[off..off + 64]); off += 64;
-    // fc1_weight_t (194,256) — already transposed
-    model.fc1_weight_t.copy_from_slice(&flat[off..off + 194 * 256]); off += 194 * 256;
-    model.fc1_bias.copy_from_slice(&flat[off..off + 256]); off += 256;
-    // fc2v_weight (256,1)
-    model.fc2v_weight.copy_from_slice(&flat[off..off + 256]); off += 256;
+    // ft_weight (360, MCTS_FT_DIM)
+    let ft_sz = 360 * crate::nnue_rs::MCTS_FT_DIM;
+    let fc1_sz = crate::nnue_rs::MCTS_INPUT_DIM * crate::nnue_rs::MCTS_FC1_DIM;
+    model.ft_weight.copy_from_slice(&flat[off..off + ft_sz]); off += ft_sz;
+    model.ft_bias.copy_from_slice(&flat[off..off + crate::nnue_rs::MCTS_FT_DIM]); off += crate::nnue_rs::MCTS_FT_DIM;
+    model.fc1_weight_t.copy_from_slice(&flat[off..off + fc1_sz]); off += fc1_sz;
+    model.fc1_bias.copy_from_slice(&flat[off..off + crate::nnue_rs::MCTS_FC1_DIM]); off += crate::nnue_rs::MCTS_FC1_DIM;
+    model.fc2v_weight.copy_from_slice(&flat[off..off + crate::nnue_rs::MCTS_FC1_DIM]); off += crate::nnue_rs::MCTS_FC1_DIM;
     model.fc2v_bias.copy_from_slice(&flat[off..off + 1]); off += 1;
-    // fc2p_weight_row (256,60)
-    model.fc2p_weight_row.copy_from_slice(&flat[off..off + 256 * 60]); off += 256 * 60;
+    model.fc2p_weight_row.copy_from_slice(&flat[off..off + crate::nnue_rs::MCTS_FC1_DIM * 60]); off += crate::nnue_rs::MCTS_FC1_DIM * 60;
     model.fc2p_bias.copy_from_slice(&flat[off..off + 60]);
     write_ab_json(output_buf, output_size, r#"{"ok":true}"#);
     0
