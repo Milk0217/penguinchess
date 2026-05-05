@@ -11,15 +11,15 @@
 
 use serde::{Deserialize, Serialize};
 
-// Value-only NNUE (gen_2, AB search)
-pub const FT_DIM: usize = 64;
+// Value-only NNUE (gen_2, AB search) — updated to larger dims
+pub const FT_DIM: usize = 128;
 pub const DENSE_DIM: usize = 66;
-pub const FC1_DIM: usize = 256;
-pub const FC2_DIM: usize = 128;
-pub const INPUT_DIM: usize = FT_DIM * 2 + DENSE_DIM; // 194
+pub const FC1_DIM: usize = 512;
+pub const FC2_DIM: usize = 256;
+pub const INPUT_DIM: usize = FT_DIM * 2 + DENSE_DIM; // 322
 pub const P1_CUTOFF: usize = 180;
 
-// MCTS NNUE (larger model)
+// MCTS NNUE (larger model) — same dims now
 pub const MCTS_FT_DIM: usize = 128;
 pub const MCTS_FC1_DIM: usize = 512;
 pub const MCTS_INPUT_DIM: usize = MCTS_FT_DIM * 2 + DENSE_DIM; // 322
@@ -235,22 +235,22 @@ impl NNUEAccumulator {
         self.acc_nstm.copy_from_slice(&weights.ft_bias);
     }
 
-    fn add_ft_weight(dst: &mut [f32; 64], wt_row: &[f32], sign: f32) {
+    fn add_ft_weight(dst: &mut [f32; FT_DIM], wt_row: &[f32], sign: f32) {
         #[cfg(target_arch = "x86_64")]
         unsafe {
             let d = dst.as_mut_ptr();
             let s = wt_row.as_ptr();
             let mut j = 0usize;
             if sign > 0.0 {
-                while j + 8 <= 64 { simd::add_vec(d, s, j); j += 8; }
+                while j + 8 <= FT_DIM { simd::add_vec(d, s, j); j += 8; }
             } else {
-                while j + 8 <= 64 { simd::sub_vec(d, s, j); j += 8; }
+                while j + 8 <= FT_DIM { simd::sub_vec(d, s, j); j += 8; }
             }
-            for i in j..64 { dst[i] += sign * wt_row[i]; }
+            for i in j..FT_DIM { dst[i] += sign * wt_row[i]; }
             return;
         }
         #[cfg(not(target_arch = "x86_64"))]
-        for i in 0..64 { dst[i] += sign * wt_row[i]; }
+        for i in 0..FT_DIM { dst[i] += sign * wt_row[i]; }
     }
 
     pub fn apply_sparse(&mut self, features: &[usize], stm_player: usize, weights: &NNUEWeights) {
@@ -258,7 +258,7 @@ impl NNUEAccumulator {
             let is_p1 = f < P1_CUTOFF;
             let stm = if stm_player == 0 { is_p1 } else { !is_p1 };
             let src = &weights.ft_weight[f * FT_DIM..(f + 1) * FT_DIM];
-            let dst: &mut [f32; 64] = if stm { &mut self.acc_stm } else { &mut self.acc_nstm };
+            let dst: &mut [f32; FT_DIM] = if stm { &mut self.acc_stm } else { &mut self.acc_nstm };
             Self::add_ft_weight(dst, src, 1.0);
         }
     }
@@ -269,14 +269,14 @@ impl NNUEAccumulator {
             let is_p1 = f < P1_CUTOFF;
             let stm = if stm_player == 0 { is_p1 } else { !is_p1 };
             let src = &weights.ft_weight[f * FT_DIM..(f + 1) * FT_DIM];
-            let dst: &mut [f32; 64] = if stm { &mut self.acc_stm } else { &mut self.acc_nstm };
+            let dst: &mut [f32; FT_DIM] = if stm { &mut self.acc_stm } else { &mut self.acc_nstm };
             Self::add_ft_weight(dst, src, -1.0);
         }
         for &f in added {
             let is_p1 = f < P1_CUTOFF;
             let stm = if stm_player == 0 { is_p1 } else { !is_p1 };
             let src = &weights.ft_weight[f * FT_DIM..(f + 1) * FT_DIM];
-            let dst: &mut [f32; 64] = if stm { &mut self.acc_stm } else { &mut self.acc_nstm };
+            let dst: &mut [f32; FT_DIM] = if stm { &mut self.acc_stm } else { &mut self.acc_nstm };
             Self::add_ft_weight(dst, src, 1.0);
         }
     }

@@ -732,13 +732,13 @@ class AlphaBetaSearchHandle:
         import torch
 
         # Build flat weight array
-        ft_weight = model_state['ft.weight'].cpu().numpy().T.ravel()  # (360, 64) row-major
-        ft_bias = model_state['ft.bias'].cpu().numpy().ravel()  # (64,)
-        fc1_w = model_state['fc1.weight'].cpu().numpy().ravel()  # (256, 194)
+        ft_weight = model_state['ft.weight'].cpu().numpy().T.ravel()  # (360, ft_dim) row-major
+        ft_bias = model_state['ft.bias'].cpu().numpy().ravel()
+        fc1_w = model_state['fc1.weight'].cpu().numpy().ravel()  # (fc1_dim, input_dim)
         fc1_b = model_state['fc1.bias'].cpu().numpy().ravel()
-        fc2_w = model_state['fc2.weight'].cpu().numpy().ravel()  # (128, 256)
+        fc2_w = model_state['fc2.weight'].cpu().numpy().ravel()  # (fc2_dim, fc1_dim)
         fc2_b = model_state['fc2.bias'].cpu().numpy().ravel()
-        fc3_w = model_state['fc3.weight'].cpu().numpy().ravel()  # (1, 128)
+        fc3_w = model_state['fc3.weight'].cpu().numpy().ravel()  # (1, fc2_dim)
         fc3_b = model_state['fc3.bias'].cpu().numpy().ravel()
 
         flat = np.concatenate([ft_weight, ft_bias, fc1_w, fc1_b, fc2_w, fc2_b, fc3_w, fc3_b]).astype(np.float32)
