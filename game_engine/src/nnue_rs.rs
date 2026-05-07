@@ -11,12 +11,12 @@
 
 use serde::{Deserialize, Serialize};
 
-// Value-only NNUE (gen_2, AB search) — updated to larger dims
-pub const FT_DIM: usize = 128;
+// Value-only NNUE (gen_2, AB search)
+pub const FT_DIM: usize = 64;
 pub const DENSE_DIM: usize = 66;
-pub const FC1_DIM: usize = 512;
-pub const FC2_DIM: usize = 256;
-pub const INPUT_DIM: usize = FT_DIM * 2 + DENSE_DIM; // 322
+pub const FC1_DIM: usize = 256;
+pub const FC2_DIM: usize = 128;
+pub const INPUT_DIM: usize = FT_DIM * 2 + DENSE_DIM; // 194
 pub const P1_CUTOFF: usize = 180;
 
 // MCTS NNUE (larger model) — same dims now
@@ -211,6 +211,19 @@ impl NNUEWeights {
             && self.fc1_weight_t.len() == INPUT_DIM * FC1_DIM && self.fc1_bias.len() == FC1_DIM
             && self.fc2_weight_t.len() == FC1_DIM * FC2_DIM && self.fc2_bias.len() == FC2_DIM
             && self.fc3_weight_t.len() == FC2_DIM * 1 && self.fc3_bias.len() == 1
+    }
+
+    pub fn flatten(&self) -> Vec<f32> {
+        let mut out = Vec::with_capacity(Self::total_floats());
+        out.extend_from_slice(&self.ft_weight);
+        out.extend_from_slice(&self.ft_bias);
+        out.extend_from_slice(&self.fc1_weight_t);
+        out.extend_from_slice(&self.fc1_bias);
+        out.extend_from_slice(&self.fc2_weight_t);
+        out.extend_from_slice(&self.fc2_bias);
+        out.extend_from_slice(&self.fc3_weight_t);
+        out.extend_from_slice(&self.fc3_bias);
+        out
     }
 }
 

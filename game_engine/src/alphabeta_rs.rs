@@ -150,16 +150,22 @@ struct OrderedChild { action: usize, reward: f32, is_terminal: bool, child_state
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SearchConfig {
-    pub max_depth: u8, pub time_limit_ms: u64, pub tt_size: usize,
-    pub lmr_moves: u8, pub lmr_depth: u8, pub nnue_order_depth: u8,
-    pub num_threads: u8,
+    pub max_depth: u8,
+    pub time_limit_ms: u64,
+    pub tt_size: usize,
+    pub lmr_moves: u8,
+    pub lmr_depth: u8,
+    pub nnue_order_depth: u8,
+    pub root_split: bool,
+    pub num_threads: usize,
     pub null_move: bool,
-    pub root_split: bool, // true = divide root moves among threads, false = Lazy SMP
+    pub reuse: bool,
+    pub epsilon: f32,  // epsilon-greedy exploration for data gen (0.0 = greedy)
 }
 
 impl Default for SearchConfig {
     fn default() -> Self {
-        Self { max_depth: 6, time_limit_ms: 0, tt_size: 1 << 20, lmr_moves: 3, lmr_depth: 1, nnue_order_depth: 2, num_threads: 1, null_move: true, root_split: false }
+        Self { max_depth: 6, time_limit_ms: 0, tt_size: 1 << 20, lmr_moves: 3, lmr_depth: 1, nnue_order_depth: 2, num_threads: 1, null_move: true, root_split: false, reuse: false, epsilon: 0.0 }
     }
 }
 
@@ -409,6 +415,7 @@ impl<'a> SearchContext<'a> {
 pub struct AlphaBetaSearch {
     pub weights: NNUEWeights,
     pub config: SearchConfig,
+    pub persistent_tt: Option<SharedTT>,
 }
 
 fn pack_move_score(mov: usize, score: f32) -> u64 {
@@ -419,12 +426,16 @@ fn unpack_move(packed: u64) -> usize { (packed & 0xFFFF_FFFF) as usize }
 fn unpack_score(packed: u64) -> f32 { f32::from_bits((packed >> 32) as u32) }
 
 impl AlphaBetaSearch {
-    pub fn new(weights: NNUEWeights, config: SearchConfig) -> Self { Self { weights, config } }
+    pub fn new(weights: NNUEWeights, config: SearchConfig) -> Self {
+        Self { weights, config, persistent_tt: None }
+    }
 
-    pub fn search(&self, state: &GameState) -> SearchResult {
+    /// Full search - TT persists across calls if config.reuse is true.
+    pub fn search(&mut self, state: &GameState) -> SearchResult {
+        let tt = self.persistent_tt.get_or_insert_with(|| SharedTT::new(self.config.tt_size));
+        if !self.config.reuse { tt.inner.write().unwrap().new_search(); }
         if self.config.num_threads <= 1 {
-            let tt = SharedTT::new(self.config.tt_size);
-            let mut ctx = SearchContext::new(&tt, &self.weights, &self.config, 0);
+            let mut ctx = SearchContext::new(tt, &self.weights, &self.config, 0);
             ctx.search_root(state)
         } else if self.config.root_split {
             self.search_root_split(state)

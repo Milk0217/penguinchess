@@ -163,7 +163,7 @@ fn alloc_slot(state: GameState) -> i32 {
             }
         }
     }
-    -1 // 满
+    -1
 }
 
 /// Create a new stateful game. Returns handle (i32).
@@ -692,8 +692,7 @@ pub unsafe extern "C" fn ffi_ab_generate_random_data(
     };
     let weights = template.weights.clone();
     let mut gen_config = template.config.clone();
-    gen_config.max_depth = 4; // Fixed depth 4 for data generation
-    // Release mutable borrow
+    // Use config's max_depth (no override)
     drop(template);
 
     let n_workers = workers.max(1) as usize;
@@ -713,7 +712,7 @@ pub unsafe extern "C" fn ffi_ab_generate_random_data(
             s.spawn(move || {
                 let mut search = AlphaBetaSearch::new(w, cfg);
                 let mut rng = rand::thread_rng();
-                let mut buf: Vec<u8> = Vec::with_capacity(my_games * 60 * 292);
+                let mut buf: Vec<u8> = Vec::with_capacity(my_games * 60 * 296);
                 let mut count: u64 = 0;
 
                 for g in 0..my_games {
@@ -733,13 +732,14 @@ pub unsafe extern "C" fn ffi_ab_generate_random_data(
                         for i in 0..6 { buf.extend_from_slice(&(if i < sparse.len() { sparse[i] as i32 } else { -1i32 }).to_le_bytes()); }
                         for &v in &dense { buf.extend_from_slice(&v.to_le_bytes()); }
                         buf.extend_from_slice(&result.score.to_le_bytes());
+                        buf.extend_from_slice(&(state.current_player as i32).to_le_bytes());
                         count += 1;
 
                         let idx = rng.gen_range(0..legal.len());
                         state.step(legal[idx]);
                     }
 
-                    // Movement phase
+                    // Movement phase: AB-guided
                     while !state.terminated && state.episode_steps < 200 {
                         let legal = state.get_legal_actions();
                         if legal.is_empty() { break; }
@@ -750,6 +750,7 @@ pub unsafe extern "C" fn ffi_ab_generate_random_data(
                         for i in 0..6 { buf.extend_from_slice(&(if i < sparse.len() { sparse[i] as i32 } else { -1i32 }).to_le_bytes()); }
                         for &v in &dense { buf.extend_from_slice(&v.to_le_bytes()); }
                         buf.extend_from_slice(&result.score.to_le_bytes());
+                        buf.extend_from_slice(&(state.current_player as i32).to_le_bytes());
                         count += 1;
 
                         let idx = rng.gen_range(0..legal.len());
@@ -774,6 +775,99 @@ pub unsafe extern "C" fn ffi_ab_generate_random_data(
     if let Ok(mut file) = File::create(path) {
         file.write_all(&final_buf).ok();
     }
+    total_count as i64
+}
+
+/// Generate self-play data: uses AB search for both evaluation AND move selection.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_ab_generate_selfplay_data(
+    ab_handle: i32, num_games: i32, seed_offset: i32, workers: i32, output_path: *const c_char,
+) -> i64 {
+    use crate::alphabeta_rs::{extract_sparse, extract_dense, AlphaBetaSearch};
+    use crate::board::Board;
+    use crate::rules::{GameState, generate_sequence};
+    use rand::Rng;
+    use std::fs::File;
+    use std::io::Write;
+
+    let path = match std::ffi::CStr::from_ptr(output_path).to_str() {
+        Ok(s) => s, Err(_) => return -1,
+    };
+    let template = match get_ab_search(ab_handle) {
+        Some(s) => s, None => return -2,
+    };
+    let weights = template.weights.clone();
+    let mut gen_config = template.config.clone();
+    drop(template);
+
+    let n_workers = workers.max(1) as usize;
+    let games_per = (num_games as usize) / n_workers;
+    let remainder = (num_games as usize) % n_workers;
+    let results: std::sync::Mutex<Vec<(Vec<u8>, u64)>> = std::sync::Mutex::new(Vec::new());
+
+    std::thread::scope(|s| {
+        for tid in 0..n_workers {
+            let w = weights.clone();
+            let cfg = gen_config.clone();
+            let my_games = games_per + if tid < remainder { 1 } else { 0 };
+            let result_ref = &results;
+
+            s.spawn(move || {
+                let mut rng = rand::thread_rng();
+                let mut search = AlphaBetaSearch::new(w, cfg);
+                let mut buf: Vec<u8> = Vec::with_capacity(my_games * 60 * 296);
+                let mut count: u64 = 0;
+
+                for g in 0..my_games {
+                    let seed = (seed_offset + g as i32 + tid as i32 * 10000) as u64;
+                    let seq = generate_sequence(seed);
+                    let board = Board::new(&seq);
+                    let mut state = GameState::new(board);
+
+                    // Placement phase: AB-guided (epsilon-greedy)
+                    for _ in 0..6 {
+                        let legal = state.get_legal_actions();
+                        if legal.is_empty() || state.terminated { break; }
+                        let sparse = extract_sparse(&state);
+                        let dense = extract_dense(&state);
+                        let result = search.search(&state);
+                        for i in 0..6 { buf.extend_from_slice(&(if i < sparse.len() { sparse[i] as i32 } else { -1i32 }).to_le_bytes()); }
+                        for &v in &dense { buf.extend_from_slice(&v.to_le_bytes()); }
+                        buf.extend_from_slice(&result.score.to_le_bytes());
+                        buf.extend_from_slice(&(state.current_player as i32).to_le_bytes());
+                        count += 1;
+                        let a = if rng.gen::<f32>() < search.config.epsilon { legal[rng.gen_range(0..legal.len())] } else { result.best_action };
+                        state.step(a);
+                    }
+                    
+                    // Movement phase: AB-guided (epsilon-greedy)
+                    while !state.terminated && state.episode_steps < 200 {
+                        let legal = state.get_legal_actions();
+                        if legal.is_empty() { break; }
+                        let sparse = extract_sparse(&state);
+                        let dense = extract_dense(&state);
+                        let result = search.search(&state);
+                        for i in 0..6 { buf.extend_from_slice(&(if i < sparse.len() { sparse[i] as i32 } else { -1i32 }).to_le_bytes()); }
+                        for &v in &dense { buf.extend_from_slice(&v.to_le_bytes()); }
+                        buf.extend_from_slice(&result.score.to_le_bytes());
+                        buf.extend_from_slice(&(state.current_player as i32).to_le_bytes());
+                        count += 1;
+                        let a = if rng.gen::<f32>() < search.config.epsilon { legal[rng.gen_range(0..legal.len())] } else { result.best_action };
+                        state.step(a);
+                    }
+                }
+                result_ref.lock().unwrap().push((buf, count));
+            });
+        }
+    });
+
+    let merged = results.lock().unwrap();
+    let total_count: u64 = merged.iter().map(|(_, c)| c).sum();
+    let total_size: usize = merged.iter().map(|(b, _)| b.len()).sum();
+    let mut final_buf: Vec<u8> = Vec::with_capacity(8 + total_size);
+    final_buf.extend_from_slice(&total_count.to_le_bytes());
+    for (buf, _) in merged.iter() { final_buf.extend_from_slice(buf); }
+    if let Ok(mut file) = File::create(path) { file.write_all(&final_buf).ok(); }
     total_count as i64
 }
 
@@ -923,5 +1017,43 @@ pub unsafe extern "C" fn ffi_ab_set_eval_callback(cb: Option<crate::alphabeta_rs
     } else {
         -1
     }
+}
+
+/// Run NNUE training. Takes weights (flat in/out), data path, JSON config.
+/// Returns JSON with final_loss, best_loss, epochs.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_nnue_train(
+    weights_flat: *mut f32, weight_count: i32,
+    data_path: *const c_char, config_json: *const c_char,
+    output_buf: *mut c_char, output_size: i32,
+) -> i32 {
+    let path = match CStr::from_ptr(data_path).to_str() { Ok(s) => s, _ => { write_ab_json(output_buf, output_size, r#"{"error":"bad path"}"#); return -1; }};
+    let cjson = match CStr::from_ptr(config_json).to_str() { Ok(s) => s, _ => { write_ab_json(output_buf, output_size, r#"{"error":"bad config"}"#); return -1; }};
+
+    if weight_count as usize != crate::nnue_rs::NNUEWeights::total_floats() {
+        let err = format!(r#"{{"error":"expected {} floats, got {}"}}"#, crate::nnue_rs::NNUEWeights::total_floats(), weight_count);
+        write_ab_json(output_buf, output_size, &err); return -2;
+    }
+    let flat = std::slice::from_raw_parts_mut(weights_flat, weight_count as usize);
+    let mut weights = crate::nnue_rs::NNUEWeights::from_flat(flat);
+    let records = crate::nnue_train::load_records(path);
+
+    let (lr, wd, bs, ep, mn) = match serde_json::from_str::<serde_json::Value>(cjson) {
+        Ok(v) => (
+            v.get("lr").and_then(|x| x.as_f64()).unwrap_or(3e-4) as f32,
+            v.get("wd").and_then(|x| x.as_f64()).unwrap_or(1e-4) as f32,
+            v.get("batch_size").and_then(|x| x.as_u64()).unwrap_or(4096) as usize,
+            v.get("epochs").and_then(|x| x.as_u64()).unwrap_or(50) as usize,
+            v.get("max_norm").and_then(|x| x.as_f64()).unwrap_or(1.0) as f32,
+        ), Err(_) => { write_ab_json(output_buf, output_size, r#"{"error":"bad json"}"#); return -3; }
+    };
+    let cfg = crate::nnue_train::TrainingConfig { learning_rate: lr, weight_decay: wd, batch_size: bs, n_epochs: ep, max_norm: mn };
+    let result = crate::nnue_train::train(&mut weights, &records, &cfg);
+
+    let new_flat = crate::nnue_rs::NNUEWeights::flatten(&weights);
+    for (i, &v) in new_flat.iter().enumerate() { flat[i] = v; }
+    let out = format!(r#"{{"final_loss":{},"best_loss":{},"epochs":{}}}"#, result.epoch_losses.last().unwrap_or(&0.0), result.best_loss, ep);
+    write_ab_json(output_buf, output_size, &out);
+    0
 }
 

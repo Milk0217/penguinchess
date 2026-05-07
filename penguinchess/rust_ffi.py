@@ -85,6 +85,17 @@ class RustEngine:
             ]
             self._lib.ffi_ab_generate_random_data.restype = c_int64
 
+        # Self-play data generation
+        try:
+            self._lib.ffi_ab_generate_selfplay_data
+        except AttributeError:
+            pass
+        else:
+            self._lib.ffi_ab_generate_selfplay_data.argtypes = [
+                c_int32, c_int32, c_int32, c_int32, c_char_p,
+            ]
+            self._lib.ffi_ab_generate_selfplay_data.restype = c_int64
+
         # NNUE MCTS (75-dim obs, Python eval callback)
         try:
             self._lib.mcts_search_nnue_handle
@@ -873,7 +884,29 @@ def ffi_ab_generate_random_data(
     Returns number of positions generated.
     """
     lib = get_engine()._lib
-    count = lib.ffi_ab_generate_random_data(
+    count = lib.ffi_ab_generate_selfplay_data(
+        c_int32(ab_handle._handle),
+        c_int32(num_games),
+        c_int32(seed_offset),
+        c_int32(workers),
+        c_char_p(output_path.encode('utf-8')),
+    )
+    return count
+
+
+def ffi_ab_generate_selfplay_data(
+    ab_handle: 'AlphaBetaSearchHandle',
+    num_games: int = 500,
+    seed_offset: int = 0,
+    workers: int = 4,
+    output_path: str = 'data_nnue.bin',
+) -> int:
+    """Generate NNUE training data from self-play games (AB-guided moves).
+    Uses Rust-native game stepping + AB search for both move selection and labels.
+    Returns number of positions generated.
+    """
+    lib = get_engine()._lib
+    count = lib.ffi_ab_generate_selfplay_data(
         c_int32(ab_handle._handle),
         c_int32(num_games),
         c_int32(seed_offset),
