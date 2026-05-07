@@ -3,8 +3,8 @@ pub mod az_model;
 pub mod board;
 pub mod ffi;
 pub mod mcts_rs;
-pub mod net_infer;
 pub mod nnue_rs;
+pub mod nnue_train;
 pub mod rules;
 
 pub use board::*;
