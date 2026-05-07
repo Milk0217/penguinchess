@@ -1057,3 +1057,38 @@ pub unsafe extern "C" fn ffi_nnue_train(
     0
 }
 
+/// Train NNUE FC layers using Candle (correct Adam). Keeps FT fixed.
+#[no_mangle]
+pub unsafe extern "C" fn ffi_nnue_train_candle(
+    weights_flat: *mut f32, weight_count: i32,
+    data_path: *const c_char, config_json: *const c_char,
+    output_buf: *mut c_char, output_size: i32,
+) -> i32 {
+    let path = match CStr::from_ptr(data_path).to_str() { Ok(s) => s, _ => { write_ab_json(output_buf, output_size, r#"{"error":"bad path"}"#); return -1; }};
+    let cjson = match CStr::from_ptr(config_json).to_str() { Ok(s) => s, _ => { write_ab_json(output_buf, output_size, r#"{"error":"bad config"}"#); return -1; }};
+
+    if weight_count as usize != crate::nnue_rs::NNUEWeights::total_floats() {
+        let err = format!(r#"{{"error":"expected {} floats, got {}"}}"#, crate::nnue_rs::NNUEWeights::total_floats(), weight_count);
+        write_ab_json(output_buf, output_size, &err); return -2;
+    }
+
+    let flat = std::slice::from_raw_parts_mut(weights_flat, weight_count as usize);
+    let mut weights = crate::nnue_rs::NNUEWeights::from_flat(flat);
+    let ft = weights.clone();  // Keep frozen FT
+    let records = crate::nnue_train::load_records(path);
+
+    let v = serde_json::from_str::<serde_json::Value>(cjson).unwrap_or_default();
+    let lr = v.get("lr").and_then(|x| x.as_f64()).unwrap_or(1e-4) as f32;
+    let wd = v.get("wd").and_then(|x| x.as_f64()).unwrap_or(1e-4) as f32;
+    let bs = v.get("batch_size").and_then(|x| x.as_u64()).unwrap_or(4096) as usize;
+    let ep = v.get("epochs").and_then(|x| x.as_u64()).unwrap_or(50) as usize;
+
+    let loss = crate::nnue_candle::train_all(&records, &mut weights, lr, wd, bs, ep);
+
+    let new_flat = crate::nnue_rs::NNUEWeights::flatten(&weights);
+    for (i, &v) in new_flat.iter().enumerate() { flat[i] = v; }
+    let out = format!(r#"{{"final_loss":{},"epochs":{}}}"#, loss, ep);
+    write_ab_json(output_buf, output_size, &out);
+    0
+}
+
