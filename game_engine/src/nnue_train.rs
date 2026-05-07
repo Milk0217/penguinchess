@@ -108,28 +108,29 @@ impl AdamState {
     }
 }
 
-fn adam_apply(w: &mut [f32], g: &[f32], m: &mut [f32], v: &mut [f32], lr: f32, wd: f32, b1: f32, b2: f32, e: f32) {
+fn adam_apply(w: &mut [f32], g: &[f32], m: &mut [f32], v: &mut [f32], lr: f32, wd: f32, b1t: f32, b2t: f32) {
     for i in 0..w.len() {
-        m[i] = b1 * m[i] + (1.0 - b1) * g[i];
-        v[i] = b2 * v[i] + (1.0 - b2) * g[i] * g[i];
-        w[i] -= lr * (m[i] / (1.0 - b1)) / ((v[i] / (1.0 - b2)).sqrt() + e) + lr * wd * w[i];
+        m[i] = 0.9 * m[i] + 0.1 * g[i];
+        v[i] = 0.999 * v[i] + 0.001 * g[i] * g[i];
+        let m_hat = m[i] / (1.0 - b1t);
+        let v_hat = v[i] / (1.0 - b2t);
+        w[i] -= lr * m_hat / (v_hat.sqrt() + 1e-8) + lr * wd * w[i];
     }
 }
 
 pub fn adam_step(w: &mut NNUEWeights, g: &GradientBuffer, a: &mut AdamState, lr: f32, wd: f32) {
     a.t += 1;
-    let b1t = 1.0 / (1.0 - 0.9f32.powi(a.t as i32));
-    let b2t = 1.0 / (1.0 - 0.999f32.powi(a.t as i32));
-    let lr_e = lr * (b2t.sqrt()) / b1t;  // lr * sqrt(1-b2^t) / (1-b1^t)
+    let b1t = 0.9f32.powi(a.t as i32);
+    let b2t = 0.999f32.powi(a.t as i32);
 
-    adam_apply(&mut w.ft_weight, &g.d_ft, &mut a.m_ft, &mut a.v_ft, lr_e, wd, 0.9, 0.999, 1e-8);
-    adam_apply(&mut w.ft_bias, &g.d_ft_b, &mut a.m_ft_b, &mut a.v_ft_b, lr_e, wd, 0.9, 0.999, 1e-8);
-    adam_apply(&mut w.fc1_weight_t, &g.d_fc1_t, &mut a.m_fc1_t, &mut a.v_fc1_t, lr_e, wd, 0.9, 0.999, 1e-8);
-    adam_apply(&mut w.fc1_bias, &g.d_fc1_b, &mut a.m_fc1_b, &mut a.v_fc1_b, lr_e, wd, 0.9, 0.999, 1e-8);
-    adam_apply(&mut w.fc2_weight_t, &g.d_fc2_t, &mut a.m_fc2_t, &mut a.v_fc2_t, lr_e, wd, 0.9, 0.999, 1e-8);
-    adam_apply(&mut w.fc2_bias, &g.d_fc2_b, &mut a.m_fc2_b, &mut a.v_fc2_b, lr_e, wd, 0.9, 0.999, 1e-8);
-    adam_apply(&mut w.fc3_weight_t, &g.d_fc3_t, &mut a.m_fc3_t, &mut a.v_fc3_t, lr_e, wd, 0.9, 0.999, 1e-8);
-    adam_apply(&mut w.fc3_bias, &g.d_fc3_b, &mut a.m_fc3_b, &mut a.v_fc3_b, lr_e, wd, 0.9, 0.999, 1e-8);
+    adam_apply(&mut w.ft_weight, &g.d_ft, &mut a.m_ft, &mut a.v_ft, lr, wd, b1t, b2t);
+    adam_apply(&mut w.ft_bias, &g.d_ft_b, &mut a.m_ft_b, &mut a.v_ft_b, lr, wd, b1t, b2t);
+    adam_apply(&mut w.fc1_weight_t, &g.d_fc1_t, &mut a.m_fc1_t, &mut a.v_fc1_t, lr, wd, b1t, b2t);
+    adam_apply(&mut w.fc1_bias, &g.d_fc1_b, &mut a.m_fc1_b, &mut a.v_fc1_b, lr, wd, b1t, b2t);
+    adam_apply(&mut w.fc2_weight_t, &g.d_fc2_t, &mut a.m_fc2_t, &mut a.v_fc2_t, lr, wd, b1t, b2t);
+    adam_apply(&mut w.fc2_bias, &g.d_fc2_b, &mut a.m_fc2_b, &mut a.v_fc2_b, lr, wd, b1t, b2t);
+    adam_apply(&mut w.fc3_weight_t, &g.d_fc3_t, &mut a.m_fc3_t, &mut a.v_fc3_t, lr, wd, b1t, b2t);
+    adam_apply(&mut w.fc3_bias, &g.d_fc3_b, &mut a.m_fc3_b, &mut a.v_fc3_b, lr, wd, b1t, b2t);
 }
 
 // ─── Training ─────────────────────────────────────────────────
