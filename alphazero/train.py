@@ -19,11 +19,11 @@ from pathlib import Path
 import numpy as np
 import torch, torch.nn as nn, torch.nn.functional as F, torch.optim as optim
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from penguinchess.ai.alphazero_net import AlphaZeroNet, AlphaZeroResNet, AlphaZeroResNetLarge, AlphaZeroResNetXL, detect_net_arch
 from penguinchess.ai.mcts_core import select_action
 from penguinchess.rust_core import RustCore
-from penguinchess.rust_ffi import get_engine, mcts_search_rust_handle_az, ffi_az_create, AZModelHandle
+from penguinchess.rust_ffi import get_engine, mcts_search_rust_handle_az, ffi_az_create, AZModelHandle, AZMCTSReuseTree
 from penguinchess._compat import ensure_utf8_stdout
 from penguinchess.training_status import update_status as _update_ts, clear_status as _clear_ts
 ensure_utf8_stdout()
@@ -233,31 +233,46 @@ def _encode_flat_obs(core) -> np.ndarray:
 # ───── Self-play with Rust MCTS ──────────────────────────────
 
 def self_play_game(
-    az_handle: AZModelHandle,
+    az_handle,
     num_simulations: int = 200,
     temperature: float = 1.0,
     temp_threshold: int = 30,
+    tree_reuse: bool = True,
+    additional_sims: int = 20,
 ) -> list:
-    """Self-play using Rust-native MCTS + AZ evaluation (no Python callback)."""
+    """Self-play using Rust MCTS. With tree_reuse=True, tree is reused across moves."""
     import random
     engine = get_engine()
     seed = random.randint(0, 2**31 - 1)
     core = RustCore(engine=engine, seed=seed).reset(seed=seed)
     game_data = []
 
+    # Build initial tree
+    if tree_reuse:
+        from penguinchess.rust_ffi import AZMCTSReuseTree
+        mcts_tree = AZMCTSReuseTree(
+            engine, core.handle, az_handle,
+            num_simulations=num_simulations, c_puct=3.0,
+            batch_size=min(1024, max(128, num_simulations // 2)),
+        )
+
     for step in range(500):
         t = temperature if step < temp_threshold else 0.1
 
-        raw = mcts_search_rust_handle_az(
-            core.handle, az_handle._handle,
-            num_simulations=num_simulations,
-            c_puct=3.0,
-            batch_size=min(1024, max(128, num_simulations // 2)),
-        )
-        counts = {int(k): v for k, v in raw.items()}
+        if tree_reuse:
+            counts = mcts_tree._raw
+        else:
+            raw = mcts_search_rust_handle_az(
+                core.handle, az_handle._handle,
+                num_simulations=num_simulations,
+                c_puct=3.0,
+                batch_size=min(1024, max(128, num_simulations // 2)),
+            )
+            counts = {int(k): v for k, v in raw.items()}
 
         if not counts:
             game_data = []
+            if tree_reuse: mcts_tree.free()
             core.close()
             return game_data, 2
 
@@ -279,6 +294,7 @@ def self_play_game(
                 policy[legal] = 1.0 / len(legal)
             else:
                 game_data = []
+                if tree_reuse: mcts_tree.free()
                 core.close()
                 return game_data, 2
 
@@ -288,9 +304,16 @@ def self_play_game(
 
         action = select_action(counts, temperature=t)
         _, _, terminated, _ = core.step(action)
+
+        # Tree reuse: move to child, add sims
+        if tree_reuse and not terminated:
+            mcts_tree.step(action, additional_sims=additional_sims, c_puct=3.0,
+                           batch_size=min(1024, max(128, num_simulations // 2)))
+
         if terminated:
             break
 
+    if tree_reuse: mcts_tree.free()
     if core.players_scores[0] > core.players_scores[1]: winner = 0
     elif core.players_scores[1] > core.players_scores[0]: winner = 1
     else: winner = 2
@@ -396,16 +419,26 @@ def main():
         print(f'Iteration {i_iter}/{args.iterations}', flush=True)
         print(f'{"="*50}', flush=True)
         
-        # Self-play with Rust MCTS
+        # Self-play with Rust MCTS (parallel games)
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         iter_data = []
-        for g in range(args.games):
+        game_workers = args.workers
+        
+        def play_one_game(g):
             data, winner = self_play_game(
                 az_handle, num_simulations=args.simulations,
-                temperature=1.0, temp_threshold=30)
-            if data:
-                iter_data.extend(data)
-            if (g + 1) % 50 == 0:
-                print(f'  Games: {g+1}/{args.games} ({len(iter_data)} pos)', flush=True)
+                temperature=1.0, temp_threshold=30,
+                tree_reuse=(args.simulations >= 200), additional_sims=20)
+            return data if data else []
+        
+        with ThreadPoolExecutor(max_workers=game_workers) as pool:
+            futures = [pool.submit(play_one_game, g) for g in range(args.games)]
+            for i, f in enumerate(as_completed(futures)):
+                data = f.result()
+                if data:
+                    iter_data.extend(data)
+                if (i + 1) % 50 == 0:
+                    print(f'  Games: {i+1}/{args.games} ({len(iter_data)} pos)', flush=True)
         
         replay_buffer.extend(iter_data)
         print(f'  {len(iter_data)} positions, buffer={len(replay_buffer)}', flush=True)

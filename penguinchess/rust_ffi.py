@@ -135,6 +135,30 @@ class RustEngine:
             self._lib.nnue_mcts_tree_free.argtypes = [c_int32]
             self._lib.nnue_mcts_tree_free.restype = c_int32
 
+        # AZ MCTS tree reuse (init, step, free, parallel search)
+        try:
+            self._lib.ffi_az_mcts_init
+        except AttributeError:
+            pass
+        else:
+            self._lib.ffi_az_mcts_init.argtypes = [
+                c_int32, c_int32, c_int32, c_double, c_int32,
+                POINTER(c_char), c_int32,
+            ]
+            self._lib.ffi_az_mcts_init.restype = c_int32
+            self._lib.ffi_az_mcts_step.argtypes = [
+                c_int32, c_int32, c_int32, c_int32, c_double, c_int32,
+                POINTER(c_char), c_int32,
+            ]
+            self._lib.ffi_az_mcts_step.restype = c_int32
+            self._lib.ffi_az_mcts_free.argtypes = [c_int32]
+            self._lib.ffi_az_mcts_free.restype = c_int32
+            self._lib.ffi_az_mcts_search_parallel.argtypes = [
+                c_int32, c_int32, c_int32, c_double, c_int32, c_int32,
+                POINTER(c_char), c_int32,
+            ]
+            self._lib.ffi_az_mcts_search_parallel.restype = c_int32
+
         self._lib.api_version.restype = c_int32
 
         self._buf_size = 65536  # 64KB buffer
@@ -1009,6 +1033,68 @@ def ffi_az_create(arch: str = "mlp", layer_info: list = None,
             b_ptr, c_int32(len(biases)))
 
     return AZModelHandle(handle, lib)
+
+
+class AZMCTSReuseTree:
+    """Rust-side AZ MCTS tree with reuse support.
+    
+    First call builds the tree (num_simulations).
+    Subsequent step() calls reuse the child as new root + add sims.
+    """
+    
+    def __init__(self, engine, game_handle: int, az_handle: int,
+                 num_simulations: int = 400, c_puct: float = 3.0, batch_size: int = 128):
+        lib = engine._lib
+        out_buf = create_string_buffer(65536)
+        lib.ffi_az_mcts_init(
+            c_int32(game_handle), c_int32(az_handle._handle),
+            c_int32(num_simulations), c_double(c_puct), c_int32(batch_size),
+            out_buf, c_int32(65536),
+        )
+        result = json.loads(out_buf.value.decode('utf-8')) if out_buf.value else {}
+        self._handle = result.get('handle', -1)
+        self._lib = lib
+        self._az_handle = az_handle._handle
+        self._raw = {int(k): v for k, v in result.get('visits', {}).items()}
+        if self._handle < 0:
+            raise RuntimeError(f"ffi_az_mcts_init failed: {result}")
+    
+    def step(self, action: int, additional_sims: int = 20, c_puct: float = 3.0, batch_size: int = 128):
+        """Reuse tree: move to child node, add simulations, return visit counts."""
+        out_buf = create_string_buffer(65536)
+        self._lib.ffi_az_mcts_step(
+            c_int32(self._handle), c_int32(action), c_int32(self._az_handle),
+            c_int32(additional_sims), c_double(c_puct), c_int32(batch_size),
+            out_buf, c_int32(65536),
+        )
+        raw = out_buf.value.decode('utf-8')
+        self._raw = {int(k): v for k, v in json.loads(raw).items()} if raw else {}
+        return self._raw
+    
+    def free(self):
+        if self._handle >= 0:
+            self._lib.ffi_az_mcts_free(c_int32(self._handle))
+            self._handle = -1
+    
+    def __del__(self):
+        self.free()
+
+
+def _az_mcts_search_parallel(
+    game_handle: int, az_handle: int,
+    num_simulations: int = 400, c_puct: float = 3.0,
+    batch_size: int = 128, num_threads: int = 4,
+) -> dict:
+    """Lazy SMP parallel AZ MCTS search."""
+    lib = get_engine()._lib
+    out_buf = create_string_buffer(65536)
+    lib.ffi_az_mcts_search_parallel(
+        c_int32(game_handle), c_int32(az_handle),
+        c_int32(num_simulations), c_double(c_puct), c_int32(batch_size), c_int32(num_threads),
+        out_buf, c_int32(65536),
+    )
+    raw = out_buf.value.decode('utf-8')
+    return {int(k): v for k, v in json.loads(raw).items()} if raw else {}
 
 
 def mcts_search_rust_handle_az(

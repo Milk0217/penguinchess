@@ -318,6 +318,95 @@ pub unsafe extern "C" fn ffi_az_free(handle: i32) -> i32 {
     } else { -1 }
 }
 
+// ─── AZ MCTS Tree Reuse Handles ───────────────────────────
+
+const MAX_AZ_MCTS_TREES: usize = 128;
+static mut AZ_MCTS_TREES: Vec<Option<(crate::rules::GameState, crate::mcts_rs::MCTSNode)>> = Vec::new();
+
+unsafe fn init_az_mcts_trees() {
+    if AZ_MCTS_TREES.is_empty() {
+        for _ in 0..MAX_AZ_MCTS_TREES { AZ_MCTS_TREES.push(None); }
+    }
+}
+
+unsafe fn get_az_mcts_tree(handle: i32) -> Option<&'static mut (crate::rules::GameState, crate::mcts_rs::MCTSNode)> {
+    if handle < 0 || handle as usize >= MAX_AZ_MCTS_TREES { return None; }
+    AZ_MCTS_TREES[handle as usize].as_mut()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ffi_az_mcts_init(
+    game_handle: i32, az_handle: i32,
+    num_simulations: i32, c_puct: f64, batch_size: i32,
+    output_buf: *mut c_char, output_size: i32,
+) -> i32 {
+    init_az_mcts_trees();
+    let game = match GAMES.get(game_handle as usize) { Some(Some(g)) => g.clone(), _ => return -1 };
+    let model = match get_az_model(az_handle) { Some(m) => m, None => return -2 };
+
+    let (state, root) = crate::mcts_rs::az_mcts_build_tree(&game, num_simulations, c_puct, batch_size, &model);
+    let visits = crate::mcts_rs::tree_to_visits_json(&root);
+
+    for i in 0..MAX_AZ_MCTS_TREES {
+        if AZ_MCTS_TREES[i].is_none() {
+            AZ_MCTS_TREES[i] = Some((state, root));
+            let result = serde_json::json!({"handle": i, "visits": serde_json::from_str::<serde_json::Value>(&visits).ok()});
+            write_output(output_buf, output_size, &serde_json::to_string(&result).unwrap_or_default());
+            return 0;
+        }
+    }
+    -3
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ffi_az_mcts_step(
+    tree_handle: i32, action: i32, az_handle: i32,
+    additional_sims: i32, c_puct: f64, batch_size: i32,
+    output_buf: *mut c_char, output_size: i32,
+) -> i32 {
+    let (state, root) = match get_az_mcts_tree(tree_handle) { Some(t) => t, None => return -1 };
+    let model = match get_az_model(az_handle) { Some(m) => m, None => return -2 };
+
+    // Step the game
+    let legal = state.get_legal_actions();
+    if legal.contains(&(action as usize)) { state.step(action as usize); }
+
+    // Find child node → new root
+    let child = root.children.remove(&(action as usize)).unwrap_or(crate::mcts_rs::MCTSNode::new(0.0));
+    root.children.clear(); // detach all other children from old root
+    *root = child;
+
+    // Run additional simulations on new root
+    if additional_sims > 0 {
+        crate::mcts_rs::az_mcts_search_on_root(state, root, additional_sims, c_puct, batch_size, &model);
+    }
+
+    let visits = crate::mcts_rs::tree_to_visits_json(root);
+    write_output(output_buf, output_size, &visits);
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ffi_az_mcts_free(tree_handle: i32) -> i32 {
+    if tree_handle >= 0 && (tree_handle as usize) < MAX_AZ_MCTS_TREES {
+        AZ_MCTS_TREES[tree_handle as usize] = None;
+        0
+    } else { -1 }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ffi_az_mcts_search_parallel(
+    game_handle: i32, az_handle: i32,
+    num_simulations: i32, c_puct: f64, batch_size: i32, num_threads: i32,
+    output_buf: *mut c_char, output_size: i32,
+) -> i32 {
+    let game = match GAMES.get(game_handle as usize) { Some(Some(g)) => g.clone(), _ => return -1 };
+    let model = match get_az_model(az_handle) { Some(m) => m.clone(), None => return -2 };
+    let result = crate::mcts_rs::mcts_search_core_az_parallel(&game, num_simulations, c_puct, batch_size, num_threads, &model);
+    write_output(output_buf, output_size, &result);
+    0
+}
+
 /// Get legal actions for a stateful game (JSON array).
 #[no_mangle]
 pub unsafe extern "C" fn game_stateful_get_legal(
