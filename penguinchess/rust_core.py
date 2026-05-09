@@ -53,13 +53,14 @@ class RustCore:
         """
         r = self._game.step(action)
         self._sync_state(r)
+        legal = r.get("legal_actions", [])
         info = {
-            "valid_actions": r["legal_actions"],
+            "valid_actions": legal,
             "scores": self._scores,
             "current_player": self._current_player,
             "phase": self._phase,
         }
-        return None, r["reward"], r["terminated"], info
+        return None, r.get("reward", 0), r.get("terminated", False), info
 
     def _sync_state(self, r: dict):
         """从 step 或 get_info 返回值同步缓存的状态。"""

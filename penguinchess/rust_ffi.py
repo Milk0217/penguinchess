@@ -1009,3 +1009,36 @@ def ffi_az_create(arch: str = "mlp", layer_info: list = None,
             b_ptr, c_int32(len(biases)))
 
     return AZModelHandle(handle, lib)
+
+
+def mcts_search_rust_handle_az(
+    game_handle: int,
+    az_handle: int,
+    num_simulations: int = 400,
+    c_puct: float = 3.0,
+    batch_size: int = 128,
+) -> dict:
+    """MCTS search using Rust-native AZ model (no Python callback).
+    
+    Args:
+        game_handle: RustStatefulGame handle
+        az_handle: AZModelHandle._handle (Rust AZ model id)
+        num_simulations: MCTS simulations
+        c_puct: exploration constant
+        batch_size: NN eval batch size
+    
+    Returns:
+        {action: visit_count}
+    """
+    lib = get_engine()._lib
+    out_buf = create_string_buffer(65536)
+    lib.mcts_search_rust_handle_az(
+        c_int32(game_handle),
+        c_int32(num_simulations),
+        c_double(c_puct),
+        c_int32(batch_size),
+        c_int32(az_handle),
+        out_buf, c_int32(65536),
+    )
+    raw = out_buf.value.decode('utf-8')
+    return json.loads(raw) if raw else {}
