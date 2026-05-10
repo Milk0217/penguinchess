@@ -194,6 +194,8 @@ def update_az_weights(az_handle: AZModelHandle, net, device='cpu'):
 
 # ───── Observation encoding ──────────────────────────────────
 
+OBS_DIM = 272
+
 def _encode_flat_obs(core) -> np.ndarray:
     """Encode game state to 272-dim observation vector (206 + 66 dense features)."""
     import json
@@ -241,6 +243,8 @@ def _encode_flat_obs(core) -> np.ndarray:
     flat[271] = s.get('episode_steps', 0) / 500.0
     return flat
 
+
+OBS_DIM = 272
 
 # ───── Self-play with Rust MCTS ──────────────────────────────
 
@@ -354,7 +358,7 @@ def train_on_data(net, replay_buffer, batch_size=4096, epochs=15, lr=1e-3, devic
     n = len(replay_buffer)
     if n < 100: return
     
-    obs = np.zeros((n, 206), dtype=np.float32)
+    obs = np.zeros((n, OBS_DIM), dtype=np.float32)
     policy = np.zeros((n, 60), dtype=np.float32)
     value = np.zeros(n, dtype=np.float32)
     for i, (o, p, v) in enumerate(replay_buffer):
@@ -415,24 +419,30 @@ def main():
     parser.add_argument('--batch-size', type=int, default=4096)
     parser.add_argument('--epochs', type=int, default=15)
     parser.add_argument('--resume', type=str, default='')
-    parser.add_argument('--eval-interval', type=int, default=10)
-    parser.add_argument('--workers', type=int, default=4)
+    parser.add_argument('--eval-interval', type=int, default=5)
+    parser.add_argument('--workers', type=int, default=8)
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
     args = parser.parse_args()
     
     device = args.device
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     
-    # Initialize network
+    # Initialize network with backward compat for 206-dim models
     if args.resume:
         sd = torch.load(args.resume, map_location='cpu', weights_only=True)
         NetClass = detect_net_arch(sd)
-        net = NetClass().to(device)
+        # Detect obs_dim from state_dict
+        fc_key = next((k for k in sd if k.endswith('fc_in.weight') or k.endswith('fc1.weight')), None)
+        if fc_key:
+            obs_dim = sd[fc_key].shape[1]
+            net = NetClass(obs_dim=obs_dim).to(device)
+        else:
+            net = NetClass(obs_dim=OBS_DIM).to(device)
         net.load_state_dict(sd)
-        print(f'Loaded: {args.resume} ({NetClass.__name__})', flush=True)
+        print(f'Loaded: {args.resume} ({NetClass.__name__}, {obs_dim}-dim obs)', flush=True)
     else:
         net = AlphaZeroResNet().to(device)
-        print(f'Fresh: {net.__class__.__name__}', flush=True)
+        print(f'Fresh: {net.__class__.__name__} ({OBS_DIM}-dim obs)', flush=True)
     
     net.train()
     
@@ -486,25 +496,32 @@ def main():
         torch.save(net.state_dict(), it_path)
         print(f'  Saved: {it_path}', flush=True)
         
-        # Periodic evaluation
+        # Periodic evaluation vs Random
         if i_iter % args.eval_interval == 0:
+            import random as _rnd
             from penguinchess.rust_ffi import mcts_search_rust_handle_az
             a_wins = 0
             for ep in range(min(50, args.games)):
                 core = RustCore(engine=get_engine()).reset(ep + 99999)
+                stepped = 0
                 while True:
                     legal = core.get_legal_actions()
                     if not legal: break
-                    raw = mcts_search_rust_handle_az(core.handle, az_handle._handle, num_simulations=args.simulations, c_puct=3.0, batch_size=128)
-                    counts = {int(k): v for k, v in raw.items()}
-                    if not counts: break
-                    action = max(counts, key=counts.__getitem__)
+                    # Alternate between AZ and random
+                    if stepped % 2 == 0:
+                        raw = mcts_search_rust_handle_az(core.handle, az_handle._handle, num_simulations=args.simulations, c_puct=3.0, batch_size=128)
+                        counts = {int(k): v for k, v in raw.items()}
+                        if not counts: break
+                        action = max(counts, key=counts.__getitem__)
+                    else:
+                        action = _rnd.choice(legal) if legal else 0
                     _, _, term, _ = core.step(action)
+                    stepped += 1
                     if term: break
                 if core.players_scores[0] > core.players_scores[1]: a_wins += 1
                 core.close()
             wr = a_wins / 50
-            print(f'  vs Random (50 games): {a_wins}/50 ({wr*100:.0f}%)', flush=True)
+            print(f'  vs Random (50 games, {args.simulations} sims): {a_wins}/50 ({wr*100:.0f}%)', flush=True)
             
             if wr > 0.55 and wr > best_wr:
                 best_wr = wr
