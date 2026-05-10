@@ -96,6 +96,17 @@ class RustEngine:
             ]
             self._lib.ffi_ab_generate_selfplay_data.restype = c_int64
 
+        # AZ-format data generation (Rust-native, 206-dim obs)
+        try:
+            self._lib.ffi_ab_generate_az_data
+        except AttributeError:
+            pass
+        else:
+            self._lib.ffi_ab_generate_az_data.argtypes = [
+                c_int32, c_int32, c_int32, c_int32, c_char_p,
+            ]
+            self._lib.ffi_ab_generate_az_data.restype = c_int64
+
         # NNUE MCTS (75-dim obs, Python eval callback)
         try:
             self._lib.mcts_search_nnue_handle
@@ -798,6 +809,14 @@ class AlphaBetaSearchHandle:
         result_str = out.value.decode('utf-8') if out.value else '{}'
         return json.loads(result_str)
 
+    def free(self):
+        if self._handle >= 0:
+            self._lib.ffi_ab_destroy(c_int32(self._handle))
+            self._handle = -1
+
+    def __del__(self):
+        self.free()
+
 
 def mcts_search_nnue_handle(
     handle: int,
@@ -869,16 +888,6 @@ def mcts_search_nnue_handle(
     if not raw:
         return {}
     return json.loads(raw.decode("utf-8"))
-
-
-
-    def free(self):
-        if self._handle >= 0:
-            self._lib.ffi_ab_destroy(c_int32(self._handle))
-            self._handle = -1
-
-    def __del__(self):
-        self.free()
 
 
 def ffi_ab_create(config_json: str = '{}') -> AlphaBetaSearchHandle:

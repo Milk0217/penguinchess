@@ -35,9 +35,15 @@ impl MCTSNode {
 }
 
 fn node_by_path<'a>(root: &'a mut MCTSNode, path: &[usize]) -> &'a mut MCTSNode {
-    let mut node = root;
-    for &a in path { node = node.children.get_mut(&a).unwrap(); }
-    node
+    let mut node: *mut MCTSNode = root;
+    for &a in path {
+        unsafe {
+            if let Some(n) = (*node).children.get_mut(&a) {
+                node = n as *mut MCTSNode;
+            } else { break; }
+        }
+    }
+    unsafe { &mut *node }
 }
 
 // =============================================================================
@@ -515,7 +521,7 @@ pub fn az_mcts_search_on_root(
         loop {
             let pv = { let n = node_by_path(root, &path); if n.children.is_empty() { break; } n.visits.max(1) };
             let best = { let n = node_by_path(root, &path); let mut rng = rand::thread_rng();
-                n.children.iter().map(|(a, c)| (a, c.ucb(pv, c_puct) + rng.gen::<f64>() * 1e-12)).max_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).map(|(a, _)| *a).unwrap() };
+                n.children.iter().map(|(a, c)| (a, c.ucb(pv, c_puct) + rng.gen::<f64>() * 1e-12)).max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)).map(|(a, _)| *a).unwrap_or(0) };
             sc.step(best); path.push(best);
             if sc.terminated { break; }
         }

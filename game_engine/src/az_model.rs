@@ -87,7 +87,6 @@ pub fn encode_obs(board_cells: &[crate::board::HexCell],
                   current_player: usize, phase: u8) -> [f32; OBS_DIM]
 {
     let mut obs = [0.0f32; OBS_DIM];
-    // Board: 60 hexes × 3 = 180
     for (i, cell) in board_cells.iter().enumerate() {
         if i >= 60 { break; }
         let p = cell.points as f32;
@@ -100,7 +99,6 @@ pub fn encode_obs(board_cells: &[crate::board::HexCell],
         obs[i * 3 + 1] = cell.coord.r as f32 / 8.0;
         obs[i * 3 + 2] = val;
     }
-    // Pieces: 6 pieces × 4 = 24
     for (i, piece) in pieces.iter().enumerate() {
         let base = 180 + i * 4;
         if piece.alive && piece.hex_idx.is_some() {
@@ -113,10 +111,9 @@ pub fn encode_obs(board_cells: &[crate::board::HexCell],
                 }
             }
         } else {
-            obs[base] = -1.0; // dead piece marker
+            obs[base] = -1.0;
         }
     }
-    // Meta
     obs[204] = current_player as f32;
     obs[205] = phase as f32;
     obs

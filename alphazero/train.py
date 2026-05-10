@@ -333,7 +333,12 @@ def self_play_game(
 # ───── Training ──────────────────────────────────────────────
 
 def train_on_data(net, replay_buffer, batch_size=4096, epochs=15, lr=1e-3, device='cuda'):
-    """Train network on replay buffer data."""
+    """Train network on replay buffer data (FIFO, keep last 150K)."""
+    # FIFO truncation: keep only most recent positions
+    MAX_BUFFER = 150000
+    if len(replay_buffer) > MAX_BUFFER:
+        replay_buffer[:] = replay_buffer[-MAX_BUFFER:]
+    
     n = len(replay_buffer)
     if n < 100: return
     
@@ -348,6 +353,10 @@ def train_on_data(net, replay_buffer, batch_size=4096, epochs=15, lr=1e-3, devic
     value_t = torch.from_numpy(value).to(device).unsqueeze(1)
     
     optimizer = optim.Adam(net.parameters(), lr=lr, weight_decay=1e-4)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=5)
+    
+    best_loss = float('inf')
+    best_state = net.state_dict().copy()
     
     for ep in range(epochs):
         perm = torch.randperm(n)
@@ -367,8 +376,18 @@ def train_on_data(net, replay_buffer, batch_size=4096, epochs=15, lr=1e-3, devic
             optimizer.step()
             total_loss += loss.item()
         
+        avg_loss = total_loss / max(1, n // batch_size)
+        scheduler.step(avg_loss)
+        
+        if avg_loss < best_loss:
+            best_loss = avg_loss
+            best_state = net.state_dict().copy()
+        
         if ep % 5 == 0:
-            print(f'  ep {ep+1:>3d}/{epochs}  loss={total_loss/(n/batch_size+1):.4f}', flush=True)
+            lr_now = optimizer.param_groups[0]['lr']
+            print(f'  ep {ep+1:>3d}/{epochs}  loss={avg_loss:.4f}  LR={lr_now:.1e}', flush=True)
+    
+    net.load_state_dict(best_state)
 
 
 # ───── Main Pipeline ─────────────────────────────────────────

@@ -960,6 +960,104 @@ pub unsafe extern "C" fn ffi_ab_generate_selfplay_data(
     total_count as i64
 }
 
+/// Generate self-play data with AZ-format observations (206-dim).
+/// Binary format: n_records(u64) + [obs(206×f32) + action(i32) + outcome(f32) + stm(i32)] × n
+#[no_mangle]
+pub unsafe extern "C" fn ffi_ab_generate_az_data(
+    ab_handle: i32,
+    num_games: i32,
+    seed_offset: i32,
+    workers: i32,
+    output_path: *const c_char,
+) -> i64 {
+    use crate::alphabeta_rs::AlphaBetaSearch;
+    use crate::az_model::encode_obs;
+    use crate::board::Board;
+    use crate::rules::{GameState, Phase, generate_sequence};
+    use rand::Rng;
+    use std::fs::File;
+    use std::io::Write;
+
+    let path = match std::ffi::CStr::from_ptr(output_path).to_str() { Ok(s) => s, _ => return -1 };
+    let search = match AB_SEARCHES.get(ab_handle as usize) {
+        Some(Some(s)) => s,
+        _ => return -2,
+    };
+    let cfg = search.config.clone();
+    let weights = search.weights.clone();
+    drop(search); // release the borrow before using cfg in the closure
+    let nw = workers.max(1) as usize;
+    let mut file = match File::create(path) { Ok(f) => f, _ => return -3 };
+    let mut buf: Vec<u8> = Vec::with_capacity(1_000_000);
+    let count_pos = buf.len();
+    buf.extend_from_slice(&0u64.to_le_bytes()); // placeholder
+    let mut total: u64 = 0;
+
+    std::thread::scope(|s| {
+        let mut handles = Vec::with_capacity(nw);
+        for w in 0..nw {
+            let w_cfg = cfg.clone(); let w_weights = weights.clone();
+            handles.push(s.spawn(move || {
+                let mut search = AlphaBetaSearch::new(w_weights, w_cfg);
+                let mut local_buf: Vec<u8> = Vec::new();
+                let mut local_count: u64 = 0;
+
+                let games_per_worker = num_games / nw as i32;
+                let extra = (num_games % nw as i32) as usize;
+                let start = w as i32 * games_per_worker;
+
+                let n_my_games = games_per_worker + if w < extra { 1 } else { 0 };
+
+                for g in 0..n_my_games {
+                    let seed = (seed_offset + start + g) as u64;
+                    let seq = generate_sequence(seed);
+                    let board = Board::new(&seq);
+                    let mut state = GameState::new(board);
+                    let mut game_states: Vec<(GameState, i32)> = Vec::new();
+
+                    while !state.terminated && state.episode_steps < 200 {
+                        let legal = state.get_legal_actions();
+                        if legal.is_empty() { break; }
+                        game_states.push((state.clone(), -1));
+                        let result = search.search(&state);
+                        let action = result.best_action;
+                        if legal.contains(&action) { state.step(action); }
+                        if let Some(last) = game_states.last_mut() { last.1 = action as i32; }
+                    }
+
+                    let s1 = state.scores[0]; let s2 = state.scores[1];
+                    let outcome: f32 = if s1 > s2 { 1.0 } else if s2 > s1 { -1.0 } else { 0.0 };
+
+                    for (st, act) in &game_states {
+                        let bn = &st.board.cells; let ps = &st.pieces; let cp = st.current_player;
+                        let ph = if st.phase == crate::rules::Phase::Movement { 1u8 } else { 0u8 };
+                        let obs = encode_obs(bn, ps, cp, ph);
+                        for &v in obs.iter() { local_buf.extend_from_slice(&v.to_le_bytes()); }
+                        local_buf.extend_from_slice(&act.to_le_bytes());
+                        let ao = if st.current_player == 0 { outcome } else { -outcome };
+                        local_buf.extend_from_slice(&ao.to_le_bytes());
+                        local_buf.extend_from_slice(&(st.current_player as i32).to_le_bytes());
+                        local_count += 1;
+                    }
+                }
+                (local_buf, local_count)
+            }));
+        }
+
+        for h in handles {
+            if let Ok((lb, lc)) = h.join() {
+                buf.extend_from_slice(&lb);
+                total += lc;
+            }
+        }
+    });
+
+    let cb = total.to_le_bytes();
+    for (i, &b) in cb.iter().enumerate() { buf[count_pos + i] = b; }
+    let _ = file.write_all(&buf);
+    total as i64
+}
+
 fn write_ab_json(output_buf: *mut c_char, output_size: i32, result: &str) {
     let bytes = result.as_bytes();
     let n = (bytes.len() + 1).min(output_size as usize);
