@@ -6,30 +6,12 @@ from penguinchess.rust_ffi import get_engine, ffi_ab_create, POINTER, c_float, c
 import torch.nn as nn, torch.nn.functional as F, torch.optim as optim
 DEVICE='cuda'
 
-REC_BYTES = 206 * 4 + 4 + 4 + 4  # 206×f32 obs + i32 action + f32 outcome + i32 stm = 832 + 4 + 4 + 4 = 844
-
-def gen_az_data(teacher_path, n_games, depth=6, workers=8, tag='az_expert'):
-    """Generate AZ-format data using Rust (fast)."""
-    from penguinchess.ai.nnue import NNUE
-    m=NNUE(); sd=torch.load(teacher_path,map_location='cpu',weights_only=False)
-    sd=sd.get('model_state',sd) if isinstance(sd,dict) and 'model_state' in sd else sd; m.load_state_dict(sd)
-    d={k:v.cpu() for k,v in m.state_dict().items()}
-    h=ffi_ab_create(json.dumps({'max_depth':depth,'tt_size':65536,'null_move':True}))
-    h.set_weights(d)
-    path=f'data/sp_{tag}.bin'
-    eng=get_engine()
-    t0=time.time()
-    cnt=eng._lib.ffi_ab_generate_az_data(c_int32(h._handle),c_int32(n_games),c_int32(0),c_int32(workers),c_char_p(path.encode()))
-    print(f'  Rust gen: {cnt} pos in {time.time()-t0:.0f}s',flush=True)
-    h.free()
-    return path
-
+REC_BYTES = 272 * 4 + 4 + 4 + 4
 def load_az_data(path):
-    """Load AZ-format binary data."""
     raw=open(path,'rb').read()
     n=struct.unpack('<Q',raw[:8])[0]; off=8; recs=[]
     for _ in range(n):
-        obs=np.frombuffer(raw[off:off+824],dtype=np.float32,count=206).copy(); off+=824
+        obs=np.frombuffer(raw[off:off+1088],dtype=np.float32,count=272).copy(); off+=1088
         act=struct.unpack('<i',raw[off:off+4])[0]; off+=4
         out=struct.unpack('<f',raw[off:off+4])[0]; off+=4
         stm=struct.unpack('<i',raw[off:off+4])[0]; off+=4

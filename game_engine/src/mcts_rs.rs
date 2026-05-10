@@ -341,17 +341,19 @@ fn flush_batch_obs_az(
     model: &crate::az_model::AZModelWeights,
 ) {
     let n = states.len();
-    let mut obs_buf = Vec::with_capacity(n * 206);
+    let obs_dim = crate::az_model::OBS_DIM;
+    let mut obs_buf = Vec::with_capacity(n * obs_dim);
 
-    // Encode all states
     for state in states.iter() {
-        encode_obs(state, &mut obs_buf);
+        let bn = &state.board.cells; let ps = &state.pieces; let cp = state.current_player;
+        let ph = if state.phase == Phase::Movement { 1u8 } else { 0u8 };
+        let obs = crate::az_model::encode_obs(bn, ps, cp, ph);
+        obs_buf.extend_from_slice(&obs);
     }
 
-    // Evaluate with Rust AZ model
     for i in 0..n {
-        let mut obs = [0.0f32; 206];
-        obs.copy_from_slice(&obs_buf[i * 206..(i + 1) * 206]);
+        let mut obs = [0.0f32; crate::az_model::OBS_DIM];
+        obs.copy_from_slice(&obs_buf[i * obs_dim..(i + 1) * obs_dim]);
         let (logits, value) = model.forward(&obs);
 
         let legal = &legal_list[i];
@@ -377,15 +379,14 @@ pub fn mcts_search_core_az(
     let mut root = MCTSNode::new(0.0);
     let bs = batch_size.max(1) as usize;
 
-    // Root evaluation with AZ model
-    let mut root_obs = Vec::with_capacity(obs_dim());
-    encode_obs(state, &mut root_obs);
+    // Root evaluation with AZ model (272-dim obs)
+    let bn = &state.board.cells; let ps = &state.pieces; let cp = state.current_player;
+    let ph = if state.phase == Phase::Movement { 1u8 } else { 0u8 };
+    let root_obs = crate::az_model::encode_obs(bn, ps, cp, ph);
     let legal_root = state.get_legal_actions();
     if legal_root.is_empty() { return "{}".to_string(); }
 
-    let mut obs_arr = [0.0f32; 206];
-    for (i, &v) in root_obs.iter().enumerate() { obs_arr[i] = v; }
-    let (root_logits, _root_val) = model.forward(&obs_arr);
+    let (root_logits, _root_val) = model.forward(&root_obs);
     let policy = masked_softmax(&root_logits, &legal_root);
     let noise = sample_dirichlet(DIRICHLET_ALPHA, 60);
     for &a in &legal_root {
@@ -463,11 +464,10 @@ pub fn az_mcts_build_tree(
     let legal_root = state.get_legal_actions();
     if legal_root.is_empty() { return (state.clone(), root); }
 
-    let mut root_obs = Vec::with_capacity(obs_dim());
-    encode_obs(state, &mut root_obs);
-    let mut oa = [0.0f32; 206];
-    for (i, &v) in root_obs.iter().enumerate() { oa[i] = v; }
-    let (rl, _) = model.forward(&oa);
+    let bn = &state.board.cells; let ps = &state.pieces; let cp = state.current_player;
+    let ph = if state.phase == Phase::Movement { 1u8 } else { 0u8 };
+    let root_obs = crate::az_model::encode_obs(bn, ps, cp, ph);
+    let (rl, _) = model.forward(&root_obs);
     let policy = masked_softmax(&rl, &legal_root);
     let noise = sample_dirichlet(DIRICHLET_ALPHA, 60);
     for &a in &legal_root {

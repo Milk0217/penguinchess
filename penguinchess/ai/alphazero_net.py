@@ -55,7 +55,7 @@ class AlphaZeroNet(nn.Module):
     # 架构标记，用于文件名区分和历史记录
     arch_name = "mlp"
 
-    def __init__(self, obs_dim: int = 206, action_dim: int = 60):
+    def __init__(self, obs_dim: int = 272, action_dim: int = 60):
         super().__init__()
         self.obs_dim = obs_dim
         self.action_dim = action_dim
@@ -290,7 +290,7 @@ class _AlphaZeroResNetOriginal(nn.Module):
     # 架构标记，用于文件名区分
     arch_name = "resnet"
 
-    def __init__(self, obs_dim: int = 206, action_dim: int = 60):
+    def __init__(self, obs_dim: int = 272, action_dim: int = 60):
         super().__init__()
         self.obs_dim = obs_dim
         self.action_dim = action_dim
@@ -397,7 +397,7 @@ class _AlphaZeroResNetOriginal(nn.Module):
         self.load_state_dict(torch.load(path, map_location="cpu"))
         self.eval()
 
-    def export_onnx(self, path: str, obs_dim: int = 206):
+    def export_onnx(self, path: str, obs_dim: int = 272):
         """Export to ONNX for Rust-side inference (tract)."""
         self.eval()
         device = next(self.parameters()).device
@@ -435,7 +435,7 @@ class AlphaZeroResNetConfigurable(_AlphaZeroResNetOriginal):
 
     arch_name = "resnet_configurable"
 
-    def __init__(self, obs_dim: int = 206, action_dim: int = 60,
+    def __init__(self, obs_dim: int = 272, action_dim: int = 60,
                  hidden_dim: int = 512, num_blocks: int = 1):
         nn.Module.__init__(self)
         self.obs_dim = obs_dim
@@ -500,7 +500,7 @@ class AlphaZeroResNetXL(AlphaZeroResNetConfigurable):
     """
     arch_name = "resnet_xl"
 
-    def __init__(self, obs_dim: int = 206, action_dim: int = 60):
+    def __init__(self, obs_dim: int = 272, action_dim: int = 60):
         super().__init__(obs_dim, action_dim, hidden_dim=8192, num_blocks=2)
 
 
@@ -511,7 +511,7 @@ class AlphaZeroResNetLarge(AlphaZeroResNetConfigurable):
     """
     arch_name = "resnet_large"
 
-    def __init__(self, obs_dim: int = 206, action_dim: int = 60):
+    def __init__(self, obs_dim: int = 272, action_dim: int = 60):
         super().__init__(obs_dim, action_dim, hidden_dim=1024, num_blocks=1)
 
 
@@ -522,7 +522,7 @@ class AlphaZeroResNet(AlphaZeroResNetConfigurable):
     """
     arch_name = "resnet"
 
-    def __init__(self, obs_dim: int = 206, action_dim: int = 60):
+    def __init__(self, obs_dim: int = 272, action_dim: int = 60):
         super().__init__(obs_dim, action_dim, hidden_dim=512, num_blocks=1)
 
 

@@ -76,17 +76,22 @@ pub fn fold_bn(w: &[f32], b: &[f32],
 
 // ─── Observation encoding ─────────────────────────────────────
 
-pub const OBS_DIM: usize = 206;
+pub const OBS_DIM: usize = 272;
 
-/// Encode a game state to 206-dim observation vector.
-/// Board(180): 60 hex × [q/8, r/8, points/3]
-/// Pieces(24): 6 pieces × [id/10, q/8, r/8, s/8] (dead=-1,0,0,0)
-/// Meta(2):    [current_player, phase]
+/// Encode a game state to 272-dim observation vector.
+/// Dims 0-205: original board/pieces/meta encoding (same as before)
+/// Dims 206-271: NNUE-style dense features
+///   - 206-265: hex point values (60)
+///   - 266-267: scores (2)
+///   - 268: phase (1)
+///   - 269-270: alive piece counts (2)
+///   - 271: steps (1)
 pub fn encode_obs(board_cells: &[crate::board::HexCell],
                   pieces: &[crate::board::Piece],
                   current_player: usize, phase: u8) -> [f32; OBS_DIM]
 {
     let mut obs = [0.0f32; OBS_DIM];
+    // Board: 60 hexes × 3 = 180
     for (i, cell) in board_cells.iter().enumerate() {
         if i >= 60 { break; }
         let p = cell.points as f32;
@@ -99,6 +104,7 @@ pub fn encode_obs(board_cells: &[crate::board::HexCell],
         obs[i * 3 + 1] = cell.coord.r as f32 / 8.0;
         obs[i * 3 + 2] = val;
     }
+    // Pieces: 6 pieces × 4 = 24
     for (i, piece) in pieces.iter().enumerate() {
         let base = 180 + i * 4;
         if piece.alive && piece.hex_idx.is_some() {
@@ -116,6 +122,25 @@ pub fn encode_obs(board_cells: &[crate::board::HexCell],
     }
     obs[204] = current_player as f32;
     obs[205] = phase as f32;
+
+    // ─── Dense features (206-271) ────────────────────────────
+    // Hex raw point values (60)
+    for i in 0..60.min(board_cells.len()) {
+        obs[206 + i] = match board_cells[i].state {
+            crate::board::HexState::Active => board_cells[i].points as f32 / 3.0,
+            _ => 0.0,
+        };
+    }
+    // Scores (2)
+    obs[266] = pieces.iter().filter(|p| p.owner() == 0).map(|p| p.hex_value).sum::<i32>() as f32 / 100.0;
+    obs[267] = pieces.iter().filter(|p| p.owner() == 1).map(|p| p.hex_value).sum::<i32>() as f32 / 100.0;
+    // Phase (1) — redundant with dim 205 but kept for clarity
+    obs[268] = if phase == 1 { 1.0 } else { 0.0 };
+    // Alive counts (2)
+    obs[269] = pieces.iter().filter(|p| p.owner() == 0 && p.alive).count() as f32 / 3.0;
+    obs[270] = pieces.iter().filter(|p| p.owner() == 1 && p.alive).count() as f32 / 3.0;
+    // Steps (1) — not available in encode_obs context, left as 0
+    obs[271] = 0.0;
     obs
 }
 

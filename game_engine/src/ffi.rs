@@ -297,10 +297,11 @@ pub unsafe extern "C" fn ffi_az_evaluate(
 ) -> i32 {
     let model = match get_az_model(handle) { Some(m) => m, None => return -1 };
     let n = n_states as usize;
-    let obs_slice = std::slice::from_raw_parts(obs, n * 206);
+    let obs_dim = crate::az_model::OBS_DIM;
+    let obs_slice = std::slice::from_raw_parts(obs, n * obs_dim);
     for i in 0..n {
-        let mut obs_arr = [0.0f32; 206];
-        obs_arr.copy_from_slice(&obs_slice[i * 206..(i + 1) * 206]);
+        let mut obs_arr = [0.0f32; crate::az_model::OBS_DIM];
+        obs_arr.copy_from_slice(&obs_slice[i * obs_dim..(i + 1) * obs_dim]);
         let (logits, value) = model.forward(&obs_arr);
         for j in 0..60 {
             *logits_out.add(i * 60 + j) = logits[j];
@@ -513,7 +514,7 @@ pub unsafe extern "C" fn mcts_search_rust_handle(
         _ => return -1,
     };
     let result = mcts_rs::mcts_search_on_handle(
-        game, num_simulations, c_puct, batch_size, eval_fn, false,  // AZ mode (206-dim)
+        game, num_simulations, c_puct, batch_size, eval_fn, false,  // AZ mode (272-dim)
     );
     write_output(output_buf, output_size, &result);
     0
@@ -960,8 +961,8 @@ pub unsafe extern "C" fn ffi_ab_generate_selfplay_data(
     total_count as i64
 }
 
-/// Generate self-play data with AZ-format observations (206-dim).
-/// Binary format: n_records(u64) + [obs(206×f32) + action(i32) + outcome(f32) + stm(i32)] × n
+/// Generate self-play data with AZ-format observations (272-dim).
+/// Binary format: n_records(u64) + [obs(272×f32) + action(i32) + outcome(f32) + stm(i32)] × n
 #[no_mangle]
 pub unsafe extern "C" fn ffi_ab_generate_az_data(
     ab_handle: i32,

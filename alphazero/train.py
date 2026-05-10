@@ -195,7 +195,7 @@ def update_az_weights(az_handle: AZModelHandle, net, device='cpu'):
 # ───── Observation encoding ──────────────────────────────────
 
 def _encode_flat_obs(core) -> np.ndarray:
-    """Encode game state to 206-dim observation vector."""
+    """Encode game state to 272-dim observation vector (206 + 66 dense features)."""
     import json
     s = json.loads(core.to_json())
     hexes = s.get('board', {}).get('cells', [])
@@ -204,7 +204,7 @@ def _encode_flat_obs(core) -> np.ndarray:
     cp = s.get('current_player', 0)
     phase = s.get('phase', 'placement')
     
-    flat = np.zeros(206, dtype=np.float32)
+    flat = np.zeros(272, dtype=np.float32)
     for i, cell in enumerate(hexes[:60]):
         val = cell.get('points', 0) if cell.get('state') == 'active' else 0
         c = cell.get('coord', {})
@@ -227,6 +227,18 @@ def _encode_flat_obs(core) -> np.ndarray:
     
     flat[204] = cp
     flat[205] = 1.0 if phase == 'movement' else 0.0
+    
+    # Dense features (206-271)
+    for i, cell in enumerate(hexes[:60]):
+        flat[206 + i] = cell.get('points', 0) / 3.0 if cell.get('state') == 'active' else 0.0
+    flat[266] = scores[0] / 100.0
+    flat[267] = scores[1] / 100.0
+    flat[268] = 1.0 if phase == 'movement' else 0.0
+    p1_alive = sum(1 for p in pieces[:6] if p.get('alive') and p.get('hex_idx') is not None and p.get('id', 0) in (4,6,8))
+    p2_alive = sum(1 for p in pieces[:6] if p.get('alive') and p.get('hex_idx') is not None and p.get('id', 0) in (5,7,9))
+    flat[269] = p1_alive / 3.0
+    flat[270] = p2_alive / 3.0
+    flat[271] = s.get('episode_steps', 0) / 500.0
     return flat
 
 
