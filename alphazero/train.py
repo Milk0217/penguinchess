@@ -14,13 +14,13 @@ Usage:
     uv run python alphazero/train.py --resume models/alphazero/alphazero_resnet_best.pth
 """
 
-import os, sys, math, time, copy, json
+import os, sys, math, time, copy, json, struct
 from pathlib import Path
 import numpy as np
 import torch, torch.nn as nn, torch.nn.functional as F, torch.optim as optim
-
+from ctypes import c_int32, c_char_p
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from penguinchess.ai.alphazero_net import AlphaZeroNet, AlphaZeroResNet, AlphaZeroResNetLarge, AlphaZeroResNetXL, detect_net_arch
+from penguinchess.ai.alphazero_net import AlphaZeroNet, AlphaZeroResNet, AlphaZeroResNet2M, AlphaZeroResNetLarge, AlphaZeroResNetXL, detect_net_arch
 from penguinchess.ai.mcts_core import select_action
 from penguinchess.rust_core import RustCore
 from penguinchess.rust_ffi import get_engine, mcts_search_rust_handle_az, ffi_az_create, AZModelHandle, AZMCTSReuseTree
@@ -165,10 +165,10 @@ def export_mlp_to_rust(state_dict):
 def create_az_handle(net, device='cpu'):
     """Create Rust AZ handle from a PyTorch AlphaZero network."""
     sd = {k: v.to(device) for k, v in net.state_dict().items()}
-    
-    if hasattr(net, 'arch_name') and net.arch_name in ('resnet', 'resnet_large', 'resnet_xl', 'resnet_large', 'resnet_xl'):
+
+    if hasattr(net, 'arch_name') and net.arch_name in ('resnet', 'resnet_large', 'resnet_xl', 'resnet_2m'):
         layer_info, weights, biases, pi, v1, v2 = export_resnet_to_rust(sd)
-        arch_str = net.arch_name.replace('resnet', 'resnet')
+        arch_str = 'resnet'
     else:
         layer_info, weights, biases, pi, v1, v2 = export_mlp_to_rust(sd)
         arch_str = 'mlp'
@@ -246,36 +246,124 @@ def _encode_flat_obs(core) -> np.ndarray:
 
 OBS_DIM = 272
 
+# ───── Value pre-training from AB+NNUE gen_2 ─────────────────
+
+def pretrain_value_from_gen2(net, n_games=1000, depth=6, epochs=30, device='cuda'):
+    """Pre-train AZ model's value head on AB+NNUE gen_2 evaluations.
+    Generates (obs, score) pairs using Rust AB search, trains only value head."""
+    import json
+    from penguinchess.ai.nnue import NNUE
+    from penguinchess.rust_ffi import ffi_ab_create, get_engine
+    
+    # Load gen_2 weights
+    m=NNUE(); sd=torch.load('models/ab_nnue/nnue_gen_2.pt',map_location='cpu',weights_only=False)
+    sd=sd.get('model_state',sd) if isinstance(sd,dict) and 'model_state' in sd else sd; m.load_state_dict(sd)
+    d={k:v.cpu() for k,v in m.state_dict().items()}
+    
+    engine = get_engine()
+    h = ffi_ab_create(json.dumps({'max_depth':depth,'tt_size':65536,'null_move':True}))
+    h.set_weights(d)
+    
+    t0=time.time()
+    path=f'data/sp_value_pretrain.bin'
+    cnt=engine._lib.ffi_ab_generate_az_data(
+        c_int32(h._handle), c_int32(n_games), c_int32(0), c_int32(8), c_char_p(path.encode()))
+    print(f'  Gen: {cnt} pos in {time.time()-t0:.0f}s', flush=True)
+    h.free()
+    
+    # Load data
+    raw=open(path,'rb').read()
+    n=struct.unpack('<Q',raw[:8])[0]; off=8
+    obss=[]; vals=[]
+    for _ in range(min(n,200000)):
+        obs=np.frombuffer(raw[off:off+1088],dtype=np.float32,count=272).copy(); off+=1088
+        _=struct.unpack('<i',raw[off:off+4])[0]; off+=4  # action
+        out=struct.unpack('<f',raw[off:off+4])[0]; off+=4  # score
+        _=struct.unpack('<i',raw[off:off+4])[0]; off+=4  # stm
+        obss.append(obs); vals.append(out)
+    
+    print(f'  {len(obss)} positions loaded', flush=True)
+    ot=torch.from_numpy(np.array(obss)).float().to(device)
+    vt=torch.from_numpy(np.array(vals)).float().unsqueeze(1).to(device)
+    
+    # Freeze policy head, train only value head
+    for name, param in net.named_parameters():
+        if 'policy' in name: param.requires_grad = False
+        else: param.requires_grad = True
+    
+    opt=optim.Adam([p for p in net.parameters() if p.requires_grad], lr=1e-3, weight_decay=1e-4)
+    net.train()
+    bs=min(4096, len(obss))
+    for ep in range(epochs):
+        perm=torch.randperm(len(obss)); tl=0.; tc=0
+        for i in range(0, len(obss), bs):
+            idx=perm[i:i+bs]; o=ot[idx]; v=vt[idx]
+            _,val=net(o)
+            loss=F.mse_loss(val, v)
+            opt.zero_grad(); loss.backward(); torch.nn.utils.clip_grad_norm_(net.parameters(),1.); opt.step()
+            tl+=loss.item(); tc+=1
+        if ep%10==0:
+            net.eval()
+            with torch.no_grad():
+                _,vall=net(ot[:4096]); mse=F.mse_loss(vall, vt[:4096])
+            net.train()
+            print(f'  ep {ep+1:>3d}/{epochs}  loss={tl/tc:.4f}  MSE={mse.item():.4f}', flush=True)
+    
+    # Unfreeze all
+    for p in net.parameters(): p.requires_grad = True
+    return net
+
+
 # ───── Self-play with Rust MCTS ──────────────────────────────
 
 def self_play_game(
     az_handle,
-    num_simulations: int = 200,
+    num_simulations: int = 800,
     temperature: float = 1.0,
     temp_threshold: int = 30,
     tree_reuse: bool = True,
     additional_sims: int = 20,
+    random_open_moves: int = 10,
 ) -> list:
-    """Self-play using Rust MCTS. With tree_reuse=True, tree is reused across moves."""
+    """Self-play using Rust MCTS. First random_open_moves are random to diversify data.
+    With tree_reuse=True, tree is reused across moves after the random opening."""
     import random
     engine = get_engine()
     seed = random.randint(0, 2**31 - 1)
     core = RustCore(engine=engine, seed=seed).reset(seed=seed)
     game_data = []
+    terminated = False
 
-    # Build initial tree
-    if tree_reuse:
-        from penguinchess.rust_ffi import AZMCTSReuseTree
-        mcts_tree = AZMCTSReuseTree(
-            engine, core.handle, az_handle,
-            num_simulations=num_simulations, c_puct=3.0,
-            batch_size=min(1024, max(128, num_simulations // 2)),
-        )
+    # Random opening moves
+    for step in range(random_open_moves):
+        legal = core.get_legal_actions()
+        if not legal:
+            core.close()
+            return [], 2
+        flat_obs = _encode_flat_obs(core)
+        uniform = np.zeros(60, dtype=np.float32)
+        uniform[legal] = 1.0 / len(legal)
+        game_data.append((flat_obs, uniform, core.current_player))
+        action = random.choice(legal)
+        _, _, terminated, _ = core.step(action)
+        if terminated:
+            break
 
-    for step in range(500):
-        t = temperature if step < temp_threshold else 0.1
-
+    # Build MCTS tree at current position (after random opening)
+    if not terminated:
         if tree_reuse:
+            from penguinchess.rust_ffi import AZMCTSReuseTree
+            mcts_tree = AZMCTSReuseTree(
+                engine, core.handle, az_handle,
+                num_simulations=num_simulations, c_puct=3.0,
+                batch_size=min(1024, max(128, num_simulations // 2)),
+            )
+
+    ep_step_count = 0
+    while not terminated and ep_step_count < 500:
+        t = temperature if ep_step_count < temp_threshold else 0.1
+
+        if tree_reuse and 'mcts_tree' in locals():
             counts = mcts_tree._raw
         else:
             raw = mcts_search_rust_handle_az(
@@ -287,12 +375,10 @@ def self_play_game(
             counts = {int(k): v for k, v in raw.items()}
 
         if not counts:
-            game_data = []
-            if tree_reuse: mcts_tree.free()
+            if tree_reuse and 'mcts_tree' in locals(): mcts_tree.free()
             core.close()
             return game_data, 2
 
-        total = sum(counts.values())
         policy = np.zeros(60, dtype=np.float32)
         if t > 0:
             for a, c in counts.items():
@@ -309,27 +395,25 @@ def self_play_game(
             if legal:
                 policy[legal] = 1.0 / len(legal)
             else:
-                game_data = []
-                if tree_reuse: mcts_tree.free()
+                if tree_reuse and 'mcts_tree' in locals(): mcts_tree.free()
                 core.close()
                 return game_data, 2
 
-        # Encode observation
         flat_obs = _encode_flat_obs(core)
         game_data.append((flat_obs, policy, core.current_player))
 
         action = select_action(counts, temperature=t)
         _, _, terminated, _ = core.step(action)
+        ep_step_count += 1
 
-        # Tree reuse: move to child, add sims
-        if tree_reuse and not terminated:
+        if tree_reuse and 'mcts_tree' in locals() and not terminated:
             mcts_tree.step(action, additional_sims=additional_sims, c_puct=3.0,
                            batch_size=min(1024, max(128, num_simulations // 2)))
 
         if terminated:
             break
 
-    if tree_reuse: mcts_tree.free()
+    if tree_reuse and 'mcts_tree' in locals(): mcts_tree.free()
     if core.players_scores[0] > core.players_scores[1]: winner = 0
     elif core.players_scores[1] > core.players_scores[0]: winner = 1
     else: winner = 2
@@ -348,10 +432,10 @@ def self_play_game(
 
 # ───── Training ──────────────────────────────────────────────
 
-def train_on_data(net, replay_buffer, batch_size=4096, epochs=15, lr=1e-3, device='cuda'):
-    """Train network on replay buffer data (FIFO, keep last 150K)."""
+def train_on_data(net, replay_buffer, batch_size=4096, epochs=15, lr=1e-4, device='cuda'):
+    """Train network on replay buffer data (FIFO, keep last 300K)."""
     # FIFO truncation: keep only most recent positions
-    MAX_BUFFER = 150000
+    MAX_BUFFER = 300000
     if len(replay_buffer) > MAX_BUFFER:
         replay_buffer[:] = replay_buffer[-MAX_BUFFER:]
     
@@ -413,7 +497,7 @@ def main():
     parser = argparse.ArgumentParser(description='AlphaZero training (Rust MCTS)')
     parser.add_argument('--iterations', type=int, default=50)
     parser.add_argument('--games', type=int, default=500)
-    parser.add_argument('--simulations', type=int, default=800)
+    parser.add_argument('--simulations', type=int, default=400)
     parser.add_argument('--games-per-iter', type=int, default=200)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--batch-size', type=int, default=4096)
@@ -421,6 +505,7 @@ def main():
     parser.add_argument('--resume', type=str, default='')
     parser.add_argument('--eval-interval', type=int, default=5)
     parser.add_argument('--workers', type=int, default=8)
+    parser.add_argument('--pretrain', action='store_true', help='Pre-train value head on AB+NNUE gen_2')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
     args = parser.parse_args()
     
@@ -441,7 +526,7 @@ def main():
         net.load_state_dict(sd)
         print(f'Loaded: {args.resume} ({NetClass.__name__}, {obs_dim}-dim obs)', flush=True)
     else:
-        net = AlphaZeroResNet().to(device)
+        net = AlphaZeroResNet2M().to(device)
         print(f'Fresh: {net.__class__.__name__} ({OBS_DIM}-dim obs)', flush=True)
     
     net.train()
@@ -450,6 +535,16 @@ def main():
     az_handle = create_az_handle(net, device='cpu')
     print(f'Rust AZ handle created', flush=True)
     
+    # Pre-train value head on gen_2 if requested
+    if args.pretrain:
+        print(f'\n{"="*50}\nValue pre-training from AB+NNUE gen_2\n{"="*50}', flush=True)
+        net = pretrain_value_from_gen2(net, n_games=500, depth=6, epochs=30, device=device)
+        # Re-create Rust handle with pre-trained weights
+        az_handle.free()
+        net.train()
+        az_handle = create_az_handle(net, device='cpu')
+        print(f'Rust AZ handle re-created after pre-training', flush=True)
+
     replay_buffer = []
     best_wr = 0.0
     total_t0 = time.time()
@@ -469,7 +564,8 @@ def main():
             data, winner = self_play_game(
                 az_handle, num_simulations=args.simulations,
                 temperature=1.0, temp_threshold=30,
-                tree_reuse=(args.simulations >= 200), additional_sims=20)
+                tree_reuse=(args.simulations >= 200), additional_sims=20,
+                random_open_moves=0)
             return data if data else []
         
         with ThreadPoolExecutor(max_workers=game_workers) as pool:
@@ -509,7 +605,7 @@ def main():
                     if not legal: break
                     # Alternate between AZ and random
                     if stepped % 2 == 0:
-                        raw = mcts_search_rust_handle_az(core.handle, az_handle._handle, num_simulations=args.simulations, c_puct=3.0, batch_size=128)
+                        raw = mcts_search_rust_handle_az(core.handle, az_handle._handle, num_simulations=800, c_puct=3.0, batch_size=128)
                         counts = {int(k): v for k, v in raw.items()}
                         if not counts: break
                         action = max(counts, key=counts.__getitem__)
@@ -521,7 +617,7 @@ def main():
                 if core.players_scores[0] > core.players_scores[1]: a_wins += 1
                 core.close()
             wr = a_wins / 50
-            print(f'  vs Random (50 games, {args.simulations} sims): {a_wins}/50 ({wr*100:.0f}%)', flush=True)
+            print(f'  vs Random (50 games, 800 sims): {a_wins}/50 ({wr*100:.0f}%)', flush=True)
             
             if wr > 0.55 and wr > best_wr:
                 best_wr = wr

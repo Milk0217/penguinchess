@@ -515,10 +515,23 @@ class AlphaZeroResNetLarge(AlphaZeroResNetConfigurable):
         super().__init__(obs_dim, action_dim, hidden_dim=1024, num_blocks=1)
 
 
+class AlphaZeroResNet2M(AlphaZeroResNetConfigurable):
+    """
+    2M-parameter ResNet: 512 hidden dim, 3 residual blocks.
+    ~2.2M params, ~40MB GPU memory.
+    Default model for AZ MCTS training (replaces 550K ResNet).
+    """
+    arch_name = "resnet_2m"
+
+    def __init__(self, obs_dim: int = 272, action_dim: int = 60):
+        super().__init__(obs_dim, action_dim, hidden_dim=512, num_blocks=3)
+
+
 class AlphaZeroResNet(AlphaZeroResNetConfigurable):
     """
     Standard ResNet: 512 hidden dim, 1 residual block.
     ~550K params, ~25MB GPU memory.
+    Legacy default — use AlphaZeroResNet2M for new training.
     """
     arch_name = "resnet"
 
@@ -544,9 +557,13 @@ def detect_net_arch(state_dict) -> type:
             if h >= 8192:
                 return AlphaZeroResNetXL  # 447M params
             elif h >= 1024:
-                return AlphaZeroResNetLarge  # 3M params
+                return AlphaZeroResNetLarge  # ~4M params
+            # Check num_blocks to distinguish 2M from 550K
+            n_blocks = sum(1 for k in state_dict if k.startswith("res_blocks.") and k.endswith("0.weight"))
+            if n_blocks >= 3:
+                return AlphaZeroResNet2M  # ~2.2M params
             return AlphaZeroResNet  # 550K params
-        return AlphaZeroResNet
+        return AlphaZeroResNet2M
 
     # Legacy ResNet classes (fc1/bn1/fc2/bn2/fc3/bn3 keys)
     if any(k.startswith("fc3.") for k in state_dict.keys()):
