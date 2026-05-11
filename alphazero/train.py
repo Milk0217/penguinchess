@@ -356,7 +356,7 @@ def self_play_game(
             mcts_tree = AZMCTSReuseTree(
                 engine, core.handle, az_handle,
                 num_simulations=num_simulations, c_puct=3.0,
-                batch_size=min(64, max(32, num_simulations // 20)),
+                batch_size=min(128, max(16, num_simulations // 50)),
             )
 
     # Main game loop
@@ -371,7 +371,7 @@ def self_play_game(
                 core.handle, az_handle._handle,
                 num_simulations=num_simulations,
                 c_puct=3.0,
-                batch_size=min(64, max(32, num_simulations // 20)),
+                batch_size=min(128, max(16, num_simulations // 50)),
             )
             counts = {int(k): v for k, v in raw.items()}
 
@@ -450,10 +450,6 @@ def train_on_data(net, replay_buffer, batch_size=4096, epochs=30, lr=3e-4, devic
     n = len(replay_buffer)
     if n < 100: return
     
-    # Age-weighted sampling: newer data (higher index in buffer) gets higher weight
-    age_weights = np.arange(1, n + 1, dtype=np.float32)
-    age_weights /= age_weights.sum()
-    
     obs = np.zeros((n, OBS_DIM), dtype=np.float32)
     policy = np.zeros((n, 60), dtype=np.float32)
     value = np.zeros(n, dtype=np.float32)
@@ -467,7 +463,6 @@ def train_on_data(net, replay_buffer, batch_size=4096, epochs=30, lr=3e-4, devic
     obs_t = torch.from_numpy(obs).to(device)
     policy_t = torch.from_numpy(policy).to(device)
     value_t = torch.from_numpy(value).to(device).unsqueeze(1)
-    age_w_t = torch.from_numpy(age_weights).to(device)
     
     optimizer = optim.Adam(net.parameters(), lr=lr, weight_decay=1e-4)
     
@@ -494,10 +489,8 @@ def train_on_data(net, replay_buffer, batch_size=4096, epochs=30, lr=3e-4, devic
         for pg in optimizer.param_groups:
             pg['lr'] = current_lr
         
-        # Age-weighted sampling: newer experiences sampled more frequently
-        # Use a fresh weighted sample each epoch
-        sample_idx = torch.multinomial(age_w_t, n, replacement=True)
-        perm = sample_idx
+        # Uniform sampling from replay buffer
+        perm = torch.randperm(n)
         total_loss = 0.0
         total_pol_loss = 0.0
         total_val_loss = 0.0
@@ -543,6 +536,122 @@ def train_on_data(net, replay_buffer, batch_size=4096, epochs=30, lr=3e-4, devic
     net.load_state_dict(best_state)
 
 
+# ───── ELO Evaluation vs Historical Models ────────────────────
+
+def _discover_az_models(arch_name, top_k=10):
+    """Find the top_k most recent checkpoints for a given architecture."""
+    import re
+    files = sorted(Path('models/alphazero').glob(f'alphazero_{arch_name}_iter_*.pth'),
+                   key=lambda p: int(re.search(r'iter_(\d+)', p.stem).group(1)))
+    return files[-top_k:]
+
+
+def evaluate_elo_vs_history(net, num_past=10, games_per_pair=20, sims=200):
+    """Evaluate model against N most recent historical AZ checkpoints.
+    Returns (avg_win_rate, elo) or None if insufficient past models."""
+    import random as _rnd, re
+    from penguinchess.rust_ffi import mcts_search_rust_handle_az, get_engine
+    from penguinchess.rust_core import RustCore
+    
+    arch_name = net.arch_name
+    past_files = _discover_az_models(arch_name, top_k=num_past)
+    if len(past_files) < 3:
+        return None
+    
+    # Load past models into handles
+    past_handles = []
+    for pf in past_files:
+        sd = torch.load(pf, map_location='cpu', weights_only=True)
+        NetClass = detect_net_arch(sd)
+        fc_key = next((k for k in sd if k.endswith('fc_in.weight') or k.endswith('fc1.weight')), None)
+        obs_dim = sd[fc_key].shape[1] if fc_key else OBS_DIM
+        m = NetClass(obs_dim=obs_dim)
+        m.load_state_dict(sd)
+        past_handles.append(create_az_handle(m, device='cpu'))
+    
+    # Current model handle
+    current_handle = create_az_handle(net, device='cpu')
+    
+    # Play matches: current vs each past, alternating sides
+    results = []  # (current_wins, current_plays)
+    for ph in past_handles:
+        cw = 0; cp = 0
+        for g in range(games_per_pair):
+            seed = g * 973 + 1911
+            # Game 1: current as P1, past as P2
+            core = RustCore(engine=get_engine()).reset(seed)
+            stepped = 0
+            while True:
+                legal = core.get_legal_actions()
+                if not legal: break
+                h = current_handle if stepped % 2 == 0 else ph
+                raw = mcts_search_rust_handle_az(core.handle, h._handle,
+                    num_simulations=sims, c_puct=3.0, batch_size=32)
+                cnt = {int(k): v for k, v in raw.items() if v > 0}
+                if not cnt: break
+                action = max(cnt, key=cnt.__getitem__)
+                _, _, term, _ = core.step(action); stepped += 1
+                if term: break
+            if core.players_scores[0] > core.players_scores[1]: cw += 1
+            cp += 1
+            core.close()
+            # Game 2: past as P1, current as P2
+            core = RustCore(engine=get_engine()).reset(seed + 500000)
+            stepped = 0
+            while True:
+                legal = core.get_legal_actions()
+                if not legal: break
+                h = ph if stepped % 2 == 0 else current_handle
+                raw = mcts_search_rust_handle_az(core.handle, h._handle,
+                    num_simulations=sims, c_puct=3.0, batch_size=32)
+                cnt = {int(k): v for k, v in raw.items() if v > 0}
+                if not cnt: break
+                action = max(cnt, key=cnt.__getitem__)
+                _, _, term, _ = core.step(action); stepped += 1
+                if term: break
+            if core.players_scores[0] < core.players_scores[1]: cw += 1
+            cp += 1
+            core.close()
+        results.append(cw / cp)
+        
+    for h in past_handles: h.free()
+    current_handle.free()
+    
+    if not results: return None
+    avg_wr = sum(results) / len(results)
+    # Simple ELO: K=32, base 1200, compute from avg win rate
+    # elo = 1200 + 400 * log10(wr / (1-wr))  -- but clip to avoid inf
+    import math
+    safe_wr = max(0.01, min(0.99, avg_wr))
+    elo = 1200 + 400 * math.log10(safe_wr / (1 - safe_wr))
+    return (avg_wr, round(elo, 1))
+
+
+# ───── Auto-resume from best ─────────────────────────────────
+
+def _auto_resume_best(net_class, arch_name, device):
+    """Auto-load the best existing checkpoint if available.
+    Returns (net, obs_dim) or (fresh_net, OBS_DIM)."""
+    best_path = OUT_DIR / f'alphazero_{arch_name}_best.pth'
+    if best_path.exists():
+        sd = torch.load(best_path, map_location='cpu', weights_only=True)
+        fc_key = next((k for k in sd if k.endswith('fc_in.weight') or k.endswith('fc1.weight')), None)
+        obs_dim = sd[fc_key].shape[1] if fc_key else OBS_DIM
+        net = net_class(obs_dim=obs_dim).to(device)
+        net.load_state_dict(sd)
+        print(f'Auto-resumed: {best_path} ({net_class.__name__}, {obs_dim}-dim obs)', flush=True)
+        return net, obs_dim
+    # Check fallback old naming
+    old_path = OUT_DIR / 'alphazero_resnet_2m_best.pth'
+    if old_path.exists():
+        sd = torch.load(old_path, map_location='cpu', weights_only=True)
+        net = net_class(obs_dim=OBS_DIM).to(device)
+        net.load_state_dict(sd)
+        print(f'Auto-resumed: {old_path} ({net_class.__name__})', flush=True)
+        return net, OBS_DIM
+    return None, OBS_DIM
+
+
 # ───── Main Pipeline ─────────────────────────────────────────
 
 def main():
@@ -550,7 +659,7 @@ def main():
     parser = argparse.ArgumentParser(description='AlphaZero training (Rust MCTS)')
     parser.add_argument('--iterations', type=int, default=50)
     parser.add_argument('--games', type=int, default=500)
-    parser.add_argument('--simulations', type=int, default=300)
+    parser.add_argument('--simulations', type=int, default=200)
     parser.add_argument('--games-per-iter', type=int, default=200)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--batch-size', type=int, default=4096)
@@ -580,8 +689,10 @@ def main():
         net.load_state_dict(sd)
         print(f'Loaded: {args.resume} ({NetClass.__name__}, {obs_dim}-dim obs)', flush=True)
     else:
-        net = AlphaZeroResNet2M().to(device)
-        print(f'Fresh: {net.__class__.__name__} ({OBS_DIM}-dim obs)', flush=True)
+        net, obs_dim = _auto_resume_best(AlphaZeroResNet2M, 'resnet_2m', device)
+        if net is None:
+            net = AlphaZeroResNet2M().to(device)
+            print(f'Fresh: {net.__class__.__name__} ({OBS_DIM}-dim obs)', flush=True)
     
     net.train()
     
@@ -601,6 +712,7 @@ def main():
 
     replay_buffer = []
     best_wr = 0.0
+    best_elo = -999.0
     total_t0 = time.time()
     
     for i_iter in range(1, args.iterations + 1):
@@ -659,10 +771,12 @@ def main():
         torch.save(net.state_dict(), it_path)
         print(f'  Saved: {it_path}', flush=True)
         
-        # Periodic evaluation vs Random
+        # Periodic evaluation: ELO vs historical models + vs Random
         if i_iter % args.eval_interval == 0:
             import random as _rnd
             from penguinchess.rust_ffi import mcts_search_rust_handle_az
+            
+            # vs Random baseline
             a_wins = 0
             for ep in range(min(50, args.games)):
                 core = RustCore(engine=get_engine()).reset(ep + 99999)
@@ -670,7 +784,6 @@ def main():
                 while True:
                     legal = core.get_legal_actions()
                     if not legal: break
-                    # Alternate between AZ and random
                     if stepped % 2 == 0:
                         raw = mcts_search_rust_handle_az(core.handle, az_handle._handle, num_simulations=800, c_puct=3.0, batch_size=32)
                         counts = {int(k): v for k, v in raw.items()}
@@ -686,11 +799,21 @@ def main():
             wr = a_wins / 50
             print(f'  vs Random (50 games, 800 sims): {a_wins}/50 ({wr*100:.0f}%)', flush=True)
             
-            if wr > 0.55 and wr > best_wr:
+            # ELO vs historical AZ models
+            elo_result = evaluate_elo_vs_history(net, num_past=10, games_per_pair=10, sims=400)
+            if elo_result is not None:
+                avg_wr, elo = elo_result
+                print(f'  ELO vs history (10 games×10 past): WR={avg_wr*100:.0f}%  ELO={elo:.0f}', flush=True)
+                if elo > best_elo:
+                    best_elo = elo
+                    best_path = OUT_DIR / f'alphazero_{net.arch_name}_best.pth'
+                    torch.save(net.state_dict(), best_path)
+                    print(f'  New best (ELO): {best_path}  ELO={elo:.0f}', flush=True)
+            elif wr > 0.55 and wr > best_wr:
                 best_wr = wr
                 best_path = OUT_DIR / f'alphazero_{net.arch_name}_best.pth'
                 torch.save(net.state_dict(), best_path)
-                print(f'  New best: {best_path}', flush=True)
+                print(f'  New best (vs Random): {best_path}', flush=True)
         
         iter_s = time.time() - t0
         print(f'  Time: {iter_s:.0f}s', flush=True)
