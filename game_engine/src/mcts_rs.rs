@@ -484,7 +484,7 @@ pub fn az_mcts_build_tree(
         loop {
             let pv = { let n = node_by_path(&mut root, &path); if n.children.is_empty() { break; } n.visits.max(1) };
             let best = { let n = node_by_path(&mut root, &path); let mut rng = rand::thread_rng();
-                n.children.iter().map(|(a, c)| (a, c.ucb(pv, c_puct) + rng.gen::<f64>() * 1e-12)).max_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).map(|(a, _)| *a).unwrap() };
+                n.children.iter().map(|(a, c)| (a, c.ucb(pv, c_puct) + rng.gen::<f64>() * 1e-12)).max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)).map(|(a, _)| *a).unwrap_or(0) };
             sc.step(best); path.push(best);
             if sc.terminated { break; }
         }

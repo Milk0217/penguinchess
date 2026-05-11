@@ -726,4 +726,7 @@ def select_action(
         counts = counts ** (1.0 / temperature)
 
     probs = counts / counts.sum()
+    if np.any(np.isnan(probs)) or probs.sum() == 0:
+        # Fallback: uniform over all actions
+        probs = np.ones_like(counts) / len(counts)
     return int(np.random.choice(actions, p=probs))

@@ -435,11 +435,8 @@ def self_play_game(
 
 def train_on_data(net, replay_buffer, batch_size=4096, epochs=30, lr=3e-4, device='cuda',
                   gen2_supervision=False, gen2_model=None):
-    """Train network on replay buffer data with optional gen_2 value supervision."""
-    MAX_BUFFER = 300000
-    if len(replay_buffer) > MAX_BUFFER:
-        replay_buffer[:] = replay_buffer[-MAX_BUFFER:]
-    
+    """Train network on replay buffer data. Keeps ALL data (no FIFO eviction) to
+    preserve high-quality positions from the model's peak performance period."""
     n = len(replay_buffer)
     if n < 100: return
     
@@ -454,9 +451,6 @@ def train_on_data(net, replay_buffer, batch_size=4096, epochs=30, lr=3e-4, devic
     value_t = torch.from_numpy(value).to(device).unsqueeze(1)
     
     optimizer = optim.Adam(net.parameters(), lr=lr, weight_decay=1e-4)
-    # Cosine LR schedule with linear warmup
-    warmup_epochs = min(5, epochs // 6)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs - warmup_epochs, eta_min=1e-5)
     
     best_loss = float('inf')
     best_state = net.state_dict().copy()
@@ -468,11 +462,18 @@ def train_on_data(net, replay_buffer, batch_size=4096, epochs=30, lr=3e-4, devic
             gen2_values = gen2_model(obs_t.to(device))[1]
             gen2_values = gen2_values.cpu()
     
+    warmup_epochs = min(5, epochs // 6)
+    min_lr = 1e-5
+    
     for ep in range(epochs):
-        # Warmup LR
+        # Manual LR: linear warmup → cosine decay (avoids CosineAnnealingLR warmup bug)
         if ep < warmup_epochs:
-            for pg in optimizer.param_groups:
-                pg['lr'] = lr * (ep + 1) / warmup_epochs
+            current_lr = lr * (ep + 1) / warmup_epochs
+        else:
+            progress = (ep - warmup_epochs) / max(1, epochs - warmup_epochs)
+            current_lr = min_lr + 0.5 * (lr - min_lr) * (1.0 + math.cos(progress * math.pi))
+        for pg in optimizer.param_groups:
+            pg['lr'] = current_lr
         
         perm = torch.randperm(n)
         total_loss = 0.0
@@ -500,9 +501,6 @@ def train_on_data(net, replay_buffer, batch_size=4096, epochs=30, lr=3e-4, devic
             total_loss += loss.item()
             total_pol_loss += policy_loss.item()
             total_val_loss += value_loss.item()
-        
-        if ep >= warmup_epochs:
-            scheduler.step()
         
         avg_loss = total_loss / max(1, n // batch_size)
         
