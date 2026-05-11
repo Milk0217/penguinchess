@@ -208,7 +208,7 @@ def _encode_flat_obs(core) -> np.ndarray:
     
     flat = np.zeros(272, dtype=np.float32)
     for i, cell in enumerate(hexes[:60]):
-        val = cell.get('points', 0) if cell.get('state') == 'active' else 0
+        val = cell.get('points', 0) if cell.get('state') in ('active', 'occupied') else 0
         c = cell.get('coord', {})
         flat[i * 3] = c.get('q', 0) / 8.0
         flat[i * 3 + 1] = c.get('r', 0) / 8.0
@@ -232,7 +232,7 @@ def _encode_flat_obs(core) -> np.ndarray:
     
     # Dense features (206-271)
     for i, cell in enumerate(hexes[:60]):
-        flat[206 + i] = cell.get('points', 0) / 3.0 if cell.get('state') == 'active' else 0.0
+        flat[206 + i] = cell.get('points', 0) / 3.0 if cell.get('state') in ('active', 'occupied') else 0.0
     flat[266] = scores[0] / 100.0
     flat[267] = scores[1] / 100.0
     flat[268] = 1.0 if phase == 'movement' else 0.0

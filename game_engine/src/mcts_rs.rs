@@ -346,7 +346,7 @@ fn flush_batch_obs_az(
     for state in states.iter() {
         let bn = &state.board.cells; let ps = &state.pieces; let cp = state.current_player;
         let ph = if state.phase == Phase::Movement { 1u8 } else { 0u8 };
-        let obs = crate::az_model::encode_obs(bn, ps, cp, ph);
+        let obs = crate::az_model::encode_obs(bn, ps, cp, ph, &state.scores);
         obs_buf.extend_from_slice(&obs);
     }
 
@@ -381,7 +381,7 @@ pub fn mcts_search_core_az(
     // Root evaluation with AZ model (272-dim obs)
     let bn = &state.board.cells; let ps = &state.pieces; let cp = state.current_player;
     let ph = if state.phase == Phase::Movement { 1u8 } else { 0u8 };
-    let root_obs = crate::az_model::encode_obs(bn, ps, cp, ph);
+    let root_obs = crate::az_model::encode_obs(bn, ps, cp, ph, &state.scores);
     let legal_root = state.get_legal_actions();
     if legal_root.is_empty() { return "{}".to_string(); }
 
@@ -465,7 +465,7 @@ pub fn az_mcts_build_tree(
 
     let bn = &state.board.cells; let ps = &state.pieces; let cp = state.current_player;
     let ph = if state.phase == Phase::Movement { 1u8 } else { 0u8 };
-    let root_obs = crate::az_model::encode_obs(bn, ps, cp, ph);
+    let root_obs = crate::az_model::encode_obs(bn, ps, cp, ph, &state.scores);
     let (rl, _) = model.forward(&root_obs);
     let policy = masked_softmax(&rl, &legal_root);
     let noise = sample_dirichlet(DIRICHLET_ALPHA, 60);
@@ -598,7 +598,11 @@ fn backup(root: &mut MCTSNode, path: &[usize], mut value: f64) {
 
 fn terminal_value(state: &GameState) -> f64 {
     if !state.terminated { return 0.0; }
-    let cp = state.current_player;
+    // step() doesn't toggle current_player on termination, so state.current_player
+    // = the player who just moved. MCTS backup always negates between levels assuming
+    // alternating turns. The value must be from the OPPONENT's (who would play next)
+    // perspective so backup negation produces the correct sign at the parent.
+    let cp = 1 - state.current_player;  // opponent = who would play next
     let (s0, s1) = (state.scores[0], state.scores[1]);
     if s0 > s1 { if cp == 0 { 1.0 } else { -1.0 } }
     else if s1 > s0 { if cp == 1 { 1.0 } else { -1.0 } }

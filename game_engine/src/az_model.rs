@@ -88,16 +88,17 @@ pub const OBS_DIM: usize = 272;
 ///   - 271: steps (1)
 pub fn encode_obs(board_cells: &[crate::board::HexCell],
                   pieces: &[crate::board::Piece],
-                  current_player: usize, phase: u8) -> [f32; OBS_DIM]
+                  current_player: usize, phase: u8,
+                  scores: &[i32; 2]) -> [f32; OBS_DIM]
 {
     let mut obs = [0.0f32; OBS_DIM];
     // Board: 60 hexes × 3 = 180
     for (i, cell) in board_cells.iter().enumerate() {
         if i >= 60 { break; }
         let p = cell.points as f32;
+        // Include both Active and Occupied to match Python encoding
         let val = match cell.state {
-            crate::board::HexState::Active => p / 3.0,
-            crate::board::HexState::Occupied => p / 3.0,
+            crate::board::HexState::Active | crate::board::HexState::Occupied => p / 3.0,
             _ => 0.0,
         };
         obs[i * 3] = cell.coord.q as f32 / 8.0;
@@ -131,9 +132,10 @@ pub fn encode_obs(board_cells: &[crate::board::HexCell],
             _ => 0.0,
         };
     }
-    // Scores (2)
-    obs[266] = pieces.iter().filter(|p| p.owner() == 0).map(|p| p.hex_value).sum::<i32>() as f32 / 100.0;
-    obs[267] = pieces.iter().filter(|p| p.owner() == 1).map(|p| p.hex_value).sum::<i32>() as f32 / 100.0;
+    // Scores (2) — use cumulative scores, NOT sum(hex_value), to match Python encoding
+    // Cumulative scores include captured pieces, sum(hex_value) does not.
+    obs[266] = scores[0] as f32 / 100.0;
+    obs[267] = scores[1] as f32 / 100.0;
     // Phase (1) — redundant with dim 205 but kept for clarity
     obs[268] = if phase == 1 { 1.0 } else { 0.0 };
     // Alive counts (2)
