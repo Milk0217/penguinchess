@@ -549,6 +549,13 @@ def train_on_data(net, replay_buffer, batch_size=4096, epochs=30, lr=3e-4, devic
     net.load_state_dict(best_state)
 
 
+MODEL_CLASSES = {
+    '1m': AlphaZeroResNet1M,
+    '2m': AlphaZeroResNet2M,
+    '3m': AlphaZeroResNet3M,
+    'xl': AlphaZeroResNetXL,
+}
+
 # ───── ELO Evaluation vs Historical Models ────────────────────
 
 def _discover_az_models(arch_name, top_k=10):
@@ -640,31 +647,6 @@ def evaluate_elo_vs_history(net, num_past=10, games_per_pair=20, sims=200):
     return (avg_wr, round(elo, 1))
 
 
-# ───── Auto-resume from best ─────────────────────────────────
-
-def _auto_resume_best(net_class, arch_name, device):
-    """Auto-load the best existing checkpoint if available.
-    Returns (net, obs_dim) or (fresh_net, OBS_DIM)."""
-    best_path = OUT_DIR / f'alphazero_{arch_name}_best.pth'
-    if best_path.exists():
-        sd = torch.load(best_path, map_location='cpu', weights_only=True)
-        fc_key = next((k for k in sd if k.endswith('fc_in.weight') or k.endswith('fc1.weight')), None)
-        obs_dim = sd[fc_key].shape[1] if fc_key else OBS_DIM
-        net = net_class(obs_dim=obs_dim).to(device)
-        net.load_state_dict(sd)
-        print(f'Auto-resumed: {best_path} ({net_class.__name__}, {obs_dim}-dim obs)', flush=True)
-        return net, obs_dim
-    # Check fallback old naming
-    old_path = OUT_DIR / 'alphazero_resnet_2m_best.pth'
-    if old_path.exists():
-        sd = torch.load(old_path, map_location='cpu', weights_only=True)
-        net = net_class(obs_dim=OBS_DIM).to(device)
-        net.load_state_dict(sd)
-        print(f'Auto-resumed: {old_path} ({net_class.__name__})', flush=True)
-        return net, OBS_DIM
-    return None, OBS_DIM
-
-
 # ───── Main Pipeline ─────────────────────────────────────────
 
 def main():
@@ -672,6 +654,8 @@ def main():
     parser = argparse.ArgumentParser(description='AlphaZero training (Rust MCTS)')
     parser.add_argument('--iterations', type=int, default=50)
     parser.add_argument('--games', type=int, default=500)
+    parser.add_argument('--model', type=str, default='3m', choices=['1m','2m','3m','xl'],
+                        help='Model architecture: 1m (850K), 2m (1.9M), 3m (3.1M), xl (313M)')
     parser.add_argument('--simulations', type=int, default=400)
     parser.add_argument('--games-per-iter', type=int, default=200)
     parser.add_argument('--lr', type=float, default=1e-3)
@@ -689,24 +673,29 @@ def main():
     device = args.device
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     
-    # Initialize network with backward compat for 206-dim models
+    # Initialize network
     if args.resume:
         sd = torch.load(args.resume, map_location='cpu', weights_only=True)
         NetClass = detect_net_arch(sd)
-        # Detect obs_dim from state_dict
         fc_key = next((k for k in sd if k.endswith('fc_in.weight') or k.endswith('fc1.weight')), None)
-        if fc_key:
-            obs_dim = sd[fc_key].shape[1]
-            net = NetClass(obs_dim=obs_dim).to(device)
-        else:
-            net = NetClass(obs_dim=OBS_DIM).to(device)
+        obs_dim = sd[fc_key].shape[1] if fc_key else OBS_DIM
+        net = NetClass(obs_dim=obs_dim).to(device)
         net.load_state_dict(sd)
         print(f'Loaded: {args.resume} ({NetClass.__name__}, {obs_dim}-dim obs)', flush=True)
     else:
-        net, obs_dim = _auto_resume_best(AlphaZeroResNet2M, 'resnet_2m', device)
-        if net is None:
-            net = AlphaZeroResNet2M().to(device)
-            print(f'Fresh: {net.__class__.__name__} ({OBS_DIM}-dim obs)', flush=True)
+        model_key = args.model
+        NetClass = MODEL_CLASSES.get(model_key, AlphaZeroResNet2M)
+        arch_name = NetClass.arch_name
+        # Auto-resume from best of same architecture
+        best_path = OUT_DIR / f'alphazero_{arch_name}_best.pth'
+        if best_path.exists():
+            sd = torch.load(best_path, map_location='cpu', weights_only=True)
+            net = NetClass(obs_dim=OBS_DIM).to(device)
+            net.load_state_dict(sd)
+            print(f'Auto-resumed: {best_path} ({NetClass.__name__})', flush=True)
+        else:
+            net = NetClass(obs_dim=OBS_DIM).to(device)
+            print(f'Fresh: {NetClass.__name__} ({OBS_DIM}-dim obs, {model_key})', flush=True)
     
     net.train()
     
