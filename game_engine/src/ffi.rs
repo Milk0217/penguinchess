@@ -648,7 +648,6 @@ pub unsafe extern "C" fn mcts_search_nnue_native(
 
 // ─── MCTS Tree Reuse ──────────────────────────────────────────
 
-use std::collections::HashMap;
 const MAX_MCTS_TREES: usize = 64;
 static mut MCTS_TREES: Vec<Option<mcts_rs::MCTSReuseTree>> = Vec::new();
 
@@ -753,8 +752,6 @@ fn get_ab_search(handle: i32) -> Option<&'static mut crate::alphabeta_rs::AlphaB
 
 // ─── NNUE Training Data Generation ──────────────────────────
 
-const NNUE_RECORD_FLOATS: usize = 73; // 6 sparse + 66 dense + 1 outcome
-
 #[no_mangle]
 pub unsafe extern "C" fn ffi_ab_generate_random_data(
     ab_handle: i32,
@@ -781,9 +778,8 @@ pub unsafe extern "C" fn ffi_ab_generate_random_data(
         None => return -2,
     };
     let weights = template.weights.clone();
-    let mut gen_config = template.config.clone();
-    // Use config's max_depth (no override)
-    drop(template);
+    let gen_config = template.config.clone();
+    let _ = template;
 
     let n_workers = workers.max(1) as usize;
     let games_per = (num_games as usize) / n_workers;
@@ -887,8 +883,8 @@ pub unsafe extern "C" fn ffi_ab_generate_selfplay_data(
         Some(s) => s, None => return -2,
     };
     let weights = template.weights.clone();
-    let mut gen_config = template.config.clone();
-    drop(template);
+    let gen_config = template.config.clone();
+    let _ = template;
 
     let n_workers = workers.max(1) as usize;
     let games_per = (num_games as usize) / n_workers;
@@ -974,8 +970,7 @@ pub unsafe extern "C" fn ffi_ab_generate_az_data(
     use crate::alphabeta_rs::AlphaBetaSearch;
     use crate::az_model::encode_obs;
     use crate::board::Board;
-    use crate::rules::{GameState, Phase, generate_sequence};
-    use rand::Rng;
+    use crate::rules::{GameState, generate_sequence};
     use std::fs::File;
     use std::io::Write;
 
@@ -986,7 +981,7 @@ pub unsafe extern "C" fn ffi_ab_generate_az_data(
     };
     let cfg = search.config.clone();
     let weights = search.weights.clone();
-    drop(search); // release the borrow before using cfg in the closure
+    let _ = search; // release the borrow before using cfg in the closure
     let nw = workers.max(1) as usize;
     let mut file = match File::create(path) { Ok(f) => f, _ => return -3 };
     let mut buf: Vec<u8> = Vec::with_capacity(1_000_000);
@@ -1262,7 +1257,7 @@ pub unsafe extern "C" fn ffi_nnue_train_candle(
 
     let flat = std::slice::from_raw_parts_mut(weights_flat, weight_count as usize);
     let mut weights = crate::nnue_rs::NNUEWeights::from_flat(flat);
-    let ft = weights.clone();  // Keep frozen FT
+    let _ft = weights.clone();  // Keep frozen FT
     let records = crate::nnue_train::load_records(path);
 
     let v = serde_json::from_str::<serde_json::Value>(cjson).unwrap_or_default();

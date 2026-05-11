@@ -17,7 +17,7 @@ mod simd {
         _mm256_storeu_ps(x.add(j), _mm256_max_ps(_mm256_loadu_ps(x.add(j)), _mm256_setzero_ps()));
     }
     #[inline(always)] pub unsafe fn splat(x: f32) -> __m256 { _mm256_set1_ps(x) }
-    #[inline(always)] pub unsafe fn add(dst: *mut f32, src: *const f32, j: usize) {
+    #[inline(always)] #[allow(dead_code)] pub unsafe fn add(dst: *mut f32, src: *const f32, j: usize) {
         _mm256_storeu_ps(dst.add(j), _mm256_add_ps(_mm256_loadu_ps(dst.add(j)), _mm256_loadu_ps(src.add(j))));
     }
 }
@@ -228,7 +228,7 @@ impl AZModelWeights {
         };
 
         let v1 = &self.layers[self.value1_idx];
-        let mut val_x = if v1.cols == OBS_DIM && self.value_uses_obs {
+        let val_x = if v1.cols == OBS_DIM && self.value_uses_obs {
             value_input.clone()
         } else {
             value_input.clone()

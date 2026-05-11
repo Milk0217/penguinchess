@@ -52,7 +52,8 @@ pub fn extract_dense(state: &GameState) -> Vec<f32> {
 // ─── Transposition Table (thread-safe) ────────────────────────
 
 #[derive(Clone, Copy, PartialEq)]
-enum TTFlag { Exact, Lower, Upper }
+pub(crate) enum TTFlag { Exact, Lower, Upper }
+#[allow(dead_code)]
 struct TTEntry { depth: u8, score: f32, flag: TTFlag, best_move: usize, age: u32 }
 
 pub struct TranspositionTable {
@@ -107,7 +108,7 @@ impl SharedTT {
     pub fn get_best_move(&self, state: &GameState) -> Option<usize> {
         self.inner.read().ok()?.get_best_move(state)
     }
-    pub fn store(&self, state: &GameState, depth: u8, score: f32, flag: TTFlag, best_move: usize) {
+    pub(crate) fn store(&self, state: &GameState, depth: u8, score: f32, flag: TTFlag, best_move: usize) {
         if let Ok(mut tt) = self.inner.write() { tt.store(state, depth, score, flag, best_move); }
     }
     pub fn new_search(&self) {

@@ -1,5 +1,4 @@
 /// NNUE training: gradient computation + Adam optimizer + training loop.
-use crate::alphabeta_rs::{extract_sparse, extract_dense};
 use crate::nnue_rs::*;
 
 // ─── Gradient Buffer ──────────────────────────────────────────
@@ -87,7 +86,7 @@ pub struct AdamState {
 }
 
 impl AdamState {
-    pub fn new() -> Self { let z = || vec![0.0f32; 0];
+    pub fn new() -> Self {
         Self {
             m_ft: vec![], v_ft: vec![], m_ft_b: vec![], v_ft_b: vec![],
             m_fc1_t: vec![], v_fc1_t: vec![], m_fc1_b: vec![], v_fc1_b: vec![],
@@ -96,7 +95,7 @@ impl AdamState {
             t: 0,
         }
     }
-    pub fn init(&mut self, w: &NNUEWeights) {
+    pub fn init(&mut self, _w: &NNUEWeights) {
         self.m_ft = vec![0.0; 360 * FT_DIM]; self.v_ft = vec![0.0; 360 * FT_DIM];
         self.m_ft_b = vec![0.0; FT_DIM]; self.v_ft_b = vec![0.0; FT_DIM];
         self.m_fc1_t = vec![0.0; INPUT_DIM * FC1_DIM]; self.v_fc1_t = vec![0.0; INPUT_DIM * FC1_DIM];
@@ -209,7 +208,7 @@ pub fn backward_sample(
         let xk = x[k];
         for j in 0..FC1_DIM { h1[j] += weights.fc1_weight_t[k * FC1_DIM + j] * xk; }
     }
-    let mut h1_pre = h1;
+    let h1_pre = h1;
     for j in 0..FC1_DIM { h1[j] = if h1[j] > 0.0 { h1[j] } else { 0.0 }; }
 
     // FC2 → h2
@@ -219,14 +218,13 @@ pub fn backward_sample(
         let h1k = h1[k];
         for j in 0..FC2_DIM { h2[j] += weights.fc2_weight_t[k * FC2_DIM + j] * h1k; }
     }
-    let mut h2_pre = h2;
+    let h2_pre = h2;
     for j in 0..FC2_DIM { h2[j] = if h2[j] > 0.0 { h2[j] } else { 0.0 }; }
 
     // FC3 → out
     let mut out = 0.0f32;
     out += weights.fc3_bias[0];
     for k in 0..FC2_DIM { out += weights.fc3_weight_t[k * 1 + 0] * h2[k]; }
-    let pre_out = out;
     out = out.tanh();
     let pred = out;
 
@@ -372,7 +370,7 @@ pub fn train(weights: &mut NNUEWeights, records: &[TrainingRecord], config: &Tra
     let mut best_weights = weights.clone();
     let mut epoch_losses = Vec::with_capacity(config.n_epochs);
 
-    for ep in 0..config.n_epochs {
+    for _ep in 0..config.n_epochs {
         let loss = train_epoch(weights, records, &mut adam, config);
         epoch_losses.push(loss);
         if loss < best_loss {

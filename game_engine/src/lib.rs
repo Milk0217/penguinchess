@@ -1,3 +1,5 @@
+#![allow(static_mut_refs)]
+
 pub mod alphabeta_rs;
 pub mod az_model;
 pub mod board;

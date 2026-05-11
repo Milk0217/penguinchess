@@ -15,7 +15,7 @@ const DIRICHLET_ALPHA: f64 = 0.15;
 const DIRICHLET_EPS: f64 = 0.25;
 
 #[derive(Clone)]
-pub(crate) struct MCTSNode {
+pub struct MCTSNode {
     pub(crate) visits: u32,
     pub(crate) total_value: f64,
     pub(crate) prior: f64,
@@ -88,6 +88,7 @@ fn encode_obs(state: &GameState, buf: &mut Vec<f32>) {
     buf.push(if matches!(state.phase, Phase::Placement) { 0.0 } else { 1.0 });
 }
 
+#[allow(dead_code)]
 fn obs_dim() -> usize { 206 }
 fn out_dim() -> usize { 61 }  // 60 logits + 1 value
 
@@ -154,7 +155,7 @@ fn mcts_search_core(
 
     if let Some(f) = eval_fn {
         let mut root_out = vec![0.0f32; out_dim()];
-        unsafe { f(root_obs.as_ptr(), 1, root_out.as_mut_ptr(), root_out.len() as i32); }
+        f(root_obs.as_ptr(), 1, root_out.as_mut_ptr(), root_out.len() as i32);
         let policy = masked_softmax(&root_out[..60], &legal_root);
         let noise = sample_dirichlet(DIRICHLET_ALPHA, 60);
         for &a in &legal_root {
@@ -311,7 +312,7 @@ fn flush_batch_obs(
     if let Some(f) = eval_fn {
         out_buf.clear();
         out_buf.resize(n * out_dim(), 0.0f32);
-        unsafe { f(obs_buf.as_ptr(), n as i32, out_buf.as_mut_ptr(), out_buf.len() as i32); }
+        f(obs_buf.as_ptr(), n as i32, out_buf.as_mut_ptr(), out_buf.len() as i32);
     } else {
         out_buf.clear();
         out_buf.resize(n * out_dim(), 0.0f32);
@@ -565,7 +566,7 @@ pub fn mcts_search_core_az_parallel(
         let s = state_ref.clone();
         let m = model.clone(); // model weights are cloneable
         handles.push(std::thread::spawn(move || {
-            let mut root = az_mcts_build_tree(&s, sims_per, c_puct, batch_size, &m).1;
+            let root = az_mcts_build_tree(&s, sims_per, c_puct, batch_size, &m).1;
             tree_to_visits_json(&root)
         }));
     }
