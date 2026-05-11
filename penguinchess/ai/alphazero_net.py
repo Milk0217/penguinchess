@@ -492,11 +492,44 @@ class AlphaZeroResNetConfigurable(_AlphaZeroResNetOriginal):
 
 
 class AlphaZeroResNetXL(AlphaZeroResNetConfigurable):
-    """
-    Large ResNet: 8K hidden dim, 3 residual blocks.
-    ~447M params, ~6GB GPU memory (fp16 AMP training).
+    """313M params (hidden=8192, blocks=2). Requires 6GB GPU memory."""
+    arch_name = "resnet_xl"
 
-    Estimated: 20-30s per step, ~30 min per iteration.
+    def __init__(self, obs_dim: int = 272, action_dim: int = 60):
+        super().__init__(obs_dim, action_dim, hidden_dim=8192, num_blocks=2)
+
+
+class AlphaZeroResNet1M(AlphaZeroResNetConfigurable):
+    """0.85M params. Default for backward compat with old models."""
+    arch_name = "resnet_1m"
+
+    def __init__(self, obs_dim: int = 272, action_dim: int = 60):
+        super().__init__(obs_dim, action_dim, hidden_dim=512, num_blocks=1)
+
+
+class AlphaZeroResNet2M(AlphaZeroResNetConfigurable):
+    """1.9M params (hidden=512, blocks=3). Default for new training."""
+    arch_name = "resnet_2m"
+
+    def __init__(self, obs_dim: int = 272, action_dim: int = 60):
+        super().__init__(obs_dim, action_dim, hidden_dim=512, num_blocks=3)
+
+
+class AlphaZeroResNet3M(AlphaZeroResNetConfigurable):
+    """
+    3.1M params (hidden=1024, blocks=1).
+    Previously AlphaZeroResNetLarge. For intermediate-scale training.
+    """
+    arch_name = "resnet_3m"
+
+    def __init__(self, obs_dim: int = 272, action_dim: int = 60):
+        super().__init__(obs_dim, action_dim, hidden_dim=1024, num_blocks=1)
+
+
+class AlphaZeroResNetXL(AlphaZeroResNetConfigurable):
+    """
+    313M params (hidden=8192, blocks=2).
+    Requires 6GB GPU memory. For large-scale training only.
     """
     arch_name = "resnet_xl"
 
@@ -504,39 +537,9 @@ class AlphaZeroResNetXL(AlphaZeroResNetConfigurable):
         super().__init__(obs_dim, action_dim, hidden_dim=8192, num_blocks=2)
 
 
-class AlphaZeroResNetLarge(AlphaZeroResNetConfigurable):
-    """
-    Wider ResNet: 1K hidden dim, 1 residual block.
-    ~2M params, ~45MB GPU memory.
-    """
-    arch_name = "resnet_large"
-
-    def __init__(self, obs_dim: int = 272, action_dim: int = 60):
-        super().__init__(obs_dim, action_dim, hidden_dim=1024, num_blocks=1)
-
-
-class AlphaZeroResNet2M(AlphaZeroResNetConfigurable):
-    """
-    2M-parameter ResNet: 512 hidden dim, 3 residual blocks.
-    ~2.2M params, ~40MB GPU memory.
-    Default model for AZ MCTS training (replaces 550K ResNet).
-    """
-    arch_name = "resnet_2m"
-
-    def __init__(self, obs_dim: int = 272, action_dim: int = 60):
-        super().__init__(obs_dim, action_dim, hidden_dim=512, num_blocks=3)
-
-
-class AlphaZeroResNet(AlphaZeroResNetConfigurable):
-    """
-    Standard ResNet: 512 hidden dim, 1 residual block.
-    ~550K params, ~25MB GPU memory.
-    Legacy default — use AlphaZeroResNet2M for new training.
-    """
-    arch_name = "resnet"
-
-    def __init__(self, obs_dim: int = 272, action_dim: int = 60):
-        super().__init__(obs_dim, action_dim, hidden_dim=512, num_blocks=1)
+# Backward compat aliases
+AlphaZeroResNet = AlphaZeroResNet1M
+AlphaZeroResNetLarge = AlphaZeroResNet3M
 
 
 def detect_net_arch(state_dict) -> type:
@@ -555,20 +558,19 @@ def detect_net_arch(state_dict) -> type:
         if fc_in_w is not None:
             h = fc_in_w.shape[0]
             if h >= 8192:
-                return AlphaZeroResNetXL  # 447M params
+                return AlphaZeroResNetXL  # 313M params
             elif h >= 1024:
-                return AlphaZeroResNetLarge  # ~4M params
-            # Check num_blocks to distinguish 2M from 550K
+                return AlphaZeroResNet3M  # 3M params
             n_blocks = sum(1 for k in state_dict if k.startswith("res_blocks.") and k.endswith("0.weight"))
             if n_blocks >= 3:
-                return AlphaZeroResNet2M  # ~2.2M params
-            return AlphaZeroResNet  # 550K params
+                return AlphaZeroResNet2M  # 2M params
+            return AlphaZeroResNet1M  # 1M params
         return AlphaZeroResNet2M
 
     # Legacy ResNet classes (fc1/bn1/fc2/bn2/fc3/bn3 keys)
     if any(k.startswith("fc3.") for k in state_dict.keys()):
         fc1_w = state_dict.get("fc1.weight")
         if fc1_w is not None and fc1_w.shape[0] >= 1024:
-            return AlphaZeroResNetLarge
+            return AlphaZeroResNet3M
         return _AlphaZeroResNetOriginal
     return AlphaZeroNet

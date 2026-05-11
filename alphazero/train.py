@@ -20,7 +20,7 @@ import numpy as np
 import torch, torch.nn as nn, torch.nn.functional as F, torch.optim as optim
 from ctypes import c_int32, c_char_p
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from penguinchess.ai.alphazero_net import AlphaZeroNet, AlphaZeroResNet, AlphaZeroResNet2M, AlphaZeroResNetLarge, AlphaZeroResNetXL, detect_net_arch
+from penguinchess.ai.alphazero_net import AlphaZeroNet, AlphaZeroResNet1M, AlphaZeroResNet2M, AlphaZeroResNet3M, AlphaZeroResNetXL, detect_net_arch
 from penguinchess.ai.mcts_core import select_action
 from penguinchess.rust_core import RustCore
 from penguinchess.rust_ffi import get_engine, mcts_search_rust_handle_az, ffi_az_create, AZModelHandle, AZMCTSReuseTree
@@ -166,7 +166,7 @@ def create_az_handle(net, device='cpu'):
     """Create Rust AZ handle from a PyTorch AlphaZero network."""
     sd = {k: v.to(device) for k, v in net.state_dict().items()}
 
-    if hasattr(net, 'arch_name') and net.arch_name in ('resnet', 'resnet_large', 'resnet_xl', 'resnet_2m'):
+    if hasattr(net, 'arch_name') and net.arch_name in ('resnet_1m', 'resnet_2m', 'resnet_3m', 'resnet_xl'):
         layer_info, weights, biases, pi, v1, v2 = export_resnet_to_rust(sd)
         arch_str = 'resnet'
     else:
@@ -432,10 +432,9 @@ def self_play_game(
 
 # ───── Training ──────────────────────────────────────────────
 
-def train_on_data(net, replay_buffer, batch_size=4096, epochs=15, lr=1e-4, device='cuda'):
-    """Train network on replay buffer data (FIFO, keep last 300K)."""
-    # FIFO truncation: keep only most recent positions
-    MAX_BUFFER = 300000
+def train_on_data(net, replay_buffer, batch_size=4096, epochs=5, lr=3e-4, device='cuda'):
+    """Train network on replay buffer data (FIFO, keep last 1M)."""
+    MAX_BUFFER = 1000000
     if len(replay_buffer) > MAX_BUFFER:
         replay_buffer[:] = replay_buffer[-MAX_BUFFER:]
     
@@ -501,9 +500,9 @@ def main():
     parser.add_argument('--games-per-iter', type=int, default=200)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--batch-size', type=int, default=4096)
-    parser.add_argument('--epochs', type=int, default=15)
+    parser.add_argument('--epochs', type=int, default=5)
     parser.add_argument('--resume', type=str, default='')
-    parser.add_argument('--eval-interval', type=int, default=5)
+    parser.add_argument('--eval-interval', type=int, default=10)
     parser.add_argument('--workers', type=int, default=8)
     parser.add_argument('--pretrain', action='store_true', help='Pre-train value head on AB+NNUE gen_2')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
