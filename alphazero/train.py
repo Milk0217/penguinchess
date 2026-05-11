@@ -356,7 +356,7 @@ def self_play_game(
             mcts_tree = AZMCTSReuseTree(
                 engine, core.handle, az_handle,
                 num_simulations=num_simulations, c_puct=3.0,
-                batch_size=min(128, max(16, num_simulations // 50)),
+                batch_size=min(64, max(32, num_simulations // 20)),
             )
 
     # Main game loop
@@ -371,7 +371,7 @@ def self_play_game(
                 core.handle, az_handle._handle,
                 num_simulations=num_simulations,
                 c_puct=3.0,
-                batch_size=min(128, max(16, num_simulations // 50)),
+                batch_size=min(64, max(32, num_simulations // 20)),
             )
             counts = {int(k): v for k, v in raw.items()}
 
@@ -434,11 +434,25 @@ def self_play_game(
 # ───── Training ──────────────────────────────────────────────
 
 def train_on_data(net, replay_buffer, batch_size=4096, epochs=30, lr=3e-4, device='cuda',
-                  gen2_supervision=False, gen2_model=None):
+                  gen2_supervision=False, gen2_model=None,
+                  value_loss_weight=10.0, entropy_weight=0.01,
+                  soft_value_factor=0.8):
     """Train network on replay buffer data. Keeps ALL data (no FIFO eviction) to
-    preserve high-quality positions from the model's peak performance period."""
+    preserve high-quality positions from the model's peak performance period.
+    
+    Args:
+        value_loss_weight: Multiply value loss to balance with policy loss
+                          (default 10.0 — value loss ~0.001, policy loss ~0.48)
+        entropy_weight: Entropy regularization strength (default 0.01)
+        soft_value_factor: Scale hard ±1 targets by this factor (default 0.8)
+                          prevents overconfident value predictions
+    """
     n = len(replay_buffer)
     if n < 100: return
+    
+    # Age-weighted sampling: newer data (higher index in buffer) gets higher weight
+    age_weights = np.arange(1, n + 1, dtype=np.float32)
+    age_weights /= age_weights.sum()
     
     obs = np.zeros((n, OBS_DIM), dtype=np.float32)
     policy = np.zeros((n, 60), dtype=np.float32)
@@ -446,9 +460,14 @@ def train_on_data(net, replay_buffer, batch_size=4096, epochs=30, lr=3e-4, devic
     for i, (o, p, v) in enumerate(replay_buffer):
         obs[i] = o; policy[i] = p; value[i] = v
     
+    # Soft value targets: scale ±1 to ±soft_value_factor to prevent overconfidence
+    if soft_value_factor < 1.0:
+        value = value * soft_value_factor
+    
     obs_t = torch.from_numpy(obs).to(device)
     policy_t = torch.from_numpy(policy).to(device)
     value_t = torch.from_numpy(value).to(device).unsqueeze(1)
+    age_w_t = torch.from_numpy(age_weights).to(device)
     
     optimizer = optim.Adam(net.parameters(), lr=lr, weight_decay=1e-4)
     
@@ -475,7 +494,10 @@ def train_on_data(net, replay_buffer, batch_size=4096, epochs=30, lr=3e-4, devic
         for pg in optimizer.param_groups:
             pg['lr'] = current_lr
         
-        perm = torch.randperm(n)
+        # Age-weighted sampling: newer experiences sampled more frequently
+        # Use a fresh weighted sample each epoch
+        sample_idx = torch.multinomial(age_w_t, n, replacement=True)
+        perm = sample_idx
         total_loss = 0.0
         total_pol_loss = 0.0
         total_val_loss = 0.0
@@ -484,7 +506,8 @@ def train_on_data(net, replay_buffer, batch_size=4096, epochs=30, lr=3e-4, devic
             o, p, v = obs_t[idx], policy_t[idx], value_t[idx]
             
             logits, val = net(o)
-            policy_loss = -torch.mean(torch.sum(p * F.log_softmax(logits, dim=1), dim=1))
+            log_probs = F.log_softmax(logits, dim=1)
+            policy_loss = -torch.mean(torch.sum(p * log_probs, dim=1))
             value_loss = F.mse_loss(val, v)
             
             # Optional gen_2 value supervision
@@ -492,7 +515,12 @@ def train_on_data(net, replay_buffer, batch_size=4096, epochs=30, lr=3e-4, devic
                 gv = gen2_values[idx].to(device)
                 value_loss = 0.5 * value_loss + 0.5 * F.mse_loss(val, gv)
             
-            loss = policy_loss + value_loss
+            # Policy entropy regularization: encourages broader exploration
+            probs = torch.exp(log_probs)
+            entropy = -torch.mean(torch.sum(probs * log_probs, dim=1))
+            
+            # Combined loss: weighted value + policy + entropy bonus
+            loss = policy_loss + value_loss_weight * value_loss - entropy_weight * entropy
             
             optimizer.zero_grad()
             loss.backward()
@@ -522,7 +550,7 @@ def main():
     parser = argparse.ArgumentParser(description='AlphaZero training (Rust MCTS)')
     parser.add_argument('--iterations', type=int, default=50)
     parser.add_argument('--games', type=int, default=500)
-    parser.add_argument('--simulations', type=int, default=200)
+    parser.add_argument('--simulations', type=int, default=300)
     parser.add_argument('--games-per-iter', type=int, default=200)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--batch-size', type=int, default=4096)
@@ -617,10 +645,11 @@ def main():
             gen2_model.eval()
             print(f'  gen_2 value supervision: ON ({device})', flush=True)
         
-        # Train
+        # Train with age-weighted sampling, value soft targets, entropy reg
         train_on_data(net, replay_buffer, batch_size=args.batch_size,
                       epochs=args.epochs, lr=args.lr, device=device,
-                      gen2_supervision=args.gen2_sup, gen2_model=gen2_model)
+                      gen2_supervision=args.gen2_sup, gen2_model=gen2_model,
+                      value_loss_weight=10.0, entropy_weight=0.01)
         
         # Re-export weights to Rust handle
         update_az_weights(az_handle, net, device='cpu')

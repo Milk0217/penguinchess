@@ -594,17 +594,32 @@ Monte Carlo Tree Search（蒙特卡洛树搜索）通过随机模拟构建搜索
 Selection → Expansion → Simulation(→ NN) → Backpropagation
 ```
 
-### UCB 公式
+### PUCT 公式
 
-```rust
-fn ucb_score(node, parent_visits) -> f32 {
-    let exploration = C_PUCT * node.policy_prob *
-        sqrt(parent_visits) / (1 + node.visits);
-    node.value + exploration
-}
-```
+PUCT（Polynomial Upper Confidence Trees）是 AlphaZero 使用的 MCTS 节点选择公式：
 
-`C_PUCT = 1.4`（默认）。
+$$
+\text{UCB}(s, a) = Q(s, a) + c_{\text{puct}} \cdot P(s, a) \cdot \frac{\sqrt{N_{\text{parent}}}}{1 + N(s, a)}
+$$
+
+其中：
+
+| 符号 | 含义 | 值域 |
+|------|------|------|
+| $Q(s, a)$ | 节点 $(s, a)$ 的平均价值 = $\sum \text{value} / N(s, a)$ | $[-1, 1]$ |
+| $P(s, a)$ | 神经网络输出的先验概率 | $[0, 1]$ |
+| $N(s, a)$ | 节点 $(s, a)$ 的访问次数 | $\mathbb{N}$ |
+| $N_{\text{parent}}$ | 父节点的访问次数 | $\mathbb{N}$ |
+| $c_{\text{puct}}$ | 探索常数 | 默认 `3.0` |
+
+**实现细节：**
+
+- 未访问节点（$N=0$）：$Q=0$，探索项 = $c_{\text{puct}} \cdot P / \sqrt{N_{\text{parent}}}$（在 Rust 中 `ucb()` 函数不会提前返回 INFINITY）
+- 访问节点（$N>0$）：完整公式
+- **噪声扰动**：根节点添加 Dirichlet 噪声 $\text{Dir}(\alpha = 0.15)$，混合比例 $\varepsilon = 0.25$：$P_{\text{noisy}}(a) = (1-\varepsilon)P(a) + \varepsilon \cdot \text{Dir}(a)$
+- **UCB 去重**：对 $10^{-12}$ 量级的随机噪声用于平局打破，防止哈希遍历顺序偏置
+
+**Rust 实现位置**：`game_engine/src/mcts_rs.rs` 第 29-33 行 `fn ucb()`。使用批量评估（batch evaluation）将多个叶节点评估合并为一次神经网络前向传播，batch_size 由 `max(16, num_simulations // 50)` 控制。
 
 ### 并行 MCTS（Rust 内部）
 
