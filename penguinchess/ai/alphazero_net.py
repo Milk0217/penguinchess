@@ -462,9 +462,9 @@ class AlphaZeroResNetConfigurable(_AlphaZeroResNetOriginal):
         # ----- policy head -----
         self.policy_fc = nn.Linear(hidden_dim // 2, action_dim)
 
-        # ----- value head -----
-        self.value_fc1 = nn.Linear(hidden_dim // 2, hidden_dim // 4)
-        self.value_fc2 = nn.Linear(hidden_dim // 4, 1)
+        # ----- value head (larger) -----
+        self.value_fc1 = nn.Linear(hidden_dim // 2, hidden_dim // 2)
+        self.value_fc2 = nn.Linear(hidden_dim // 2, 1)
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         # Shared trunk
@@ -517,13 +517,13 @@ class AlphaZeroResNet2M(AlphaZeroResNetConfigurable):
 
 class AlphaZeroResNet3M(AlphaZeroResNetConfigurable):
     """
-    3.1M params (hidden=1024, blocks=1).
-    Previously AlphaZeroResNetLarge. For intermediate-scale training.
+    3.0M params (hidden=512, blocks=5).
+    Balanced depth/width for intermediate-scale training.
     """
     arch_name = "resnet_3m"
 
     def __init__(self, obs_dim: int = 272, action_dim: int = 60):
-        super().__init__(obs_dim, action_dim, hidden_dim=1024, num_blocks=1)
+        super().__init__(obs_dim, action_dim, hidden_dim=512, num_blocks=5)
 
 
 class AlphaZeroResNetXL(AlphaZeroResNetConfigurable):
