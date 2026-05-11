@@ -135,15 +135,21 @@ fn mcts_search_core(
     batch_size: i32,
     eval_fn: Option<EvalFn>,
     nnue_mode: bool,
+    az_mode: bool,
 ) -> String {
     let mut root = MCTSNode::new(0.0);
     let bs = batch_size.max(1) as usize;
-    let obs_dim_val = if nnue_mode { 75usize } else { 206usize };
+    let obs_dim_val = if nnue_mode { 75usize } else if az_mode { crate::az_model::OBS_DIM } else { 206usize };
 
     // ----- Pre-expand root with Dirichlet noise -----
     let mut root_obs = Vec::with_capacity(obs_dim_val);
     if nnue_mode {
         encode_nnue_obs(state, &mut root_obs);
+    } else if az_mode {
+        let bn = &state.board.cells; let ps = &state.pieces; let cp = state.current_player;
+        let ph = if state.phase == Phase::Movement { 1u8 } else { 0u8 };
+        let obs_arr = crate::az_model::encode_obs(bn, ps, cp, ph, &state.scores);
+        root_obs.extend_from_slice(&obs_arr);
     } else {
         encode_obs(state, &mut root_obs);
     }
@@ -204,19 +210,19 @@ fn mcts_search_core(
 
         if terminated {
             backup(&mut root, &path, terminal_value(&state_clone));
-        } else if !legal.is_empty() {
+        } else     if !legal.is_empty() {
             pending_states.push(state_clone);
             pending_legal.push(legal);
             pending_paths.push(path);
             if pending_states.len() >= bs {
                 flush_batch_obs(&mut root, &mut pending_states, &mut pending_legal,
-                                &mut pending_paths, eval_fn, &mut obs_buf, &mut out_buf, nnue_mode);
+                                &mut pending_paths, eval_fn, &mut obs_buf, &mut out_buf, nnue_mode, az_mode);
             }
         }
     }
     if !pending_states.is_empty() {
         flush_batch_obs(&mut root, &mut pending_states, &mut pending_legal,
-                        &mut pending_paths, eval_fn, &mut obs_buf, &mut out_buf, nnue_mode);
+                        &mut pending_paths, eval_fn, &mut obs_buf, &mut out_buf, nnue_mode, az_mode);
     }
 
     let mut out = serde_json::Map::new();
@@ -247,9 +253,24 @@ unsafe fn mcts_search_internal(
     };
     state.board.rebuild_index_for_json();
 
-    let result = mcts_search_core(&state, num_simulations, c_puct, batch_size, eval_fn, nnue_mode);
+    let result = mcts_search_core(&state, num_simulations, c_puct, batch_size, eval_fn, nnue_mode, false);
     write_output(output_buf, output_size, &result);
     0
+}
+
+/// Exported: MCTS with Python eval callback (JSON input).
+#[no_mangle]
+pub unsafe extern "C" fn mcts_search_callback(
+    state_json: *const c_char,
+    num_simulations: i32,
+    c_puct: f64,
+    batch_size: i32,
+    eval_fn: Option<EvalFn>,
+    nnue_mode: bool,
+) -> String {
+    let json_str = match std::ffi::CStr::from_ptr(state_json).to_str() { Ok(s) => s, _ => return "{}".to_string() };
+    let game: crate::rules::GameState = match serde_json::from_str(json_str) { Ok(g) => g, _ => return "{}".to_string() };
+    mcts_search_core(&game, num_simulations, c_puct, batch_size, eval_fn, nnue_mode, false)
 }
 
 /// Exported: MCTS with Python eval callback (JSON input).
@@ -277,8 +298,9 @@ pub unsafe fn mcts_search_on_handle(
     batch_size: i32,
     eval_fn: Option<EvalFn>,
     nnue_mode: bool,
+    az_mode: bool,
 ) -> String {
-    mcts_search_core(state, num_simulations, c_puct, batch_size, eval_fn, nnue_mode)
+    mcts_search_core(state, num_simulations, c_puct, batch_size, eval_fn, nnue_mode, az_mode)
 }
 
 // =============================================================================
@@ -296,17 +318,23 @@ fn flush_batch_obs(
     obs_buf: &mut Vec<f32>,
     out_buf: &mut Vec<f32>,
     nnue_obs: bool,
+    az_obs: bool,
 ) {
     let n = states.len();
     obs_buf.clear();
     for state in states.iter() {
         if nnue_obs {
             encode_nnue_obs(state, obs_buf);
+        } else if az_obs {
+            let bn = &state.board.cells; let ps = &state.pieces; let cp = state.current_player;
+            let ph = if state.phase == Phase::Movement { 1u8 } else { 0u8 };
+            let obs_arr = crate::az_model::encode_obs(bn, ps, cp, ph, &state.scores);
+            obs_buf.extend_from_slice(&obs_arr);
         } else {
             encode_obs(state, obs_buf);
         }
     }
-    let obs_dim = if nnue_obs { 75usize } else { 206usize };
+    let obs_dim = if nnue_obs { 75usize } else if az_obs { crate::az_model::OBS_DIM } else { 206usize };
     debug_assert_eq!(obs_buf.len(), n * obs_dim);
 
     if let Some(f) = eval_fn {
@@ -633,7 +661,7 @@ pub fn mcts_search_parallel_core(
     num_workers: usize,
 ) -> String {
     if num_workers <= 1 {
-        return mcts_search_core(state, num_simulations, c_puct, batch_size, eval_fn, false);
+        return mcts_search_core(state, num_simulations, c_puct, batch_size, eval_fn, false, false);
     }
 
     let sims_per = std::cmp::max(1, num_simulations / num_workers as i32);
@@ -646,7 +674,7 @@ pub fn mcts_search_parallel_core(
         for _ in 0..num_workers {
             let state_clone = base_state.clone();
             handles.push(s.spawn(move || {
-                mcts_search_core(&state_clone, sims_per, c_puct, batch_size, eval_fn, false)
+                mcts_search_core(&state_clone, sims_per, c_puct, batch_size, eval_fn, false, false)
             }));
         }
 

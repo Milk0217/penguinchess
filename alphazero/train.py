@@ -324,9 +324,11 @@ def self_play_game(
     tree_reuse: bool = True,
     additional_sims: int = 20,
     random_open_moves: int = 10,
+    gpu_net=None,
 ) -> list:
     """Self-play using Rust MCTS. First random_open_moves are random to diversify data.
-    With tree_reuse=True, tree is reused across moves after the random opening."""
+    With tree_reuse=True, tree is reused across moves after the random opening.
+    With gpu_net provided, uses GPU-parallelized Python callback MCTS instead of Rust AZ model."""
     import random
     engine = get_engine()
     seed = random.randint(0, 2**31 - 1)
@@ -351,7 +353,11 @@ def self_play_game(
 
     # Build MCTS tree at current position (after random opening)
     if not terminated:
-        if tree_reuse:
+        if gpu_net is not None:
+            # GPU-parallelized MCTS (no tree reuse)
+            from penguinchess.rust_ffi import mcts_search_az_gpu
+            pass  # raw will be fetched in the loop
+        elif tree_reuse:
             from penguinchess.rust_ffi import AZMCTSReuseTree
             mcts_tree = AZMCTSReuseTree(
                 engine, core.handle, az_handle,
@@ -364,7 +370,13 @@ def self_play_game(
     while not terminated and ep_step_count < 500:
         t = temperature if ep_step_count < temp_threshold else 0.1
 
-        if tree_reuse and 'mcts_tree' in locals():
+        if gpu_net is not None:
+            # GPU MCTS: no tree reuse, full search each move
+            from penguinchess.rust_ffi import mcts_search_az_gpu
+            raw = mcts_search_az_gpu(core.handle, gpu_net, num_simulations=num_simulations,
+                                     c_puct=3.0, batch_size=min(128, max(32, num_simulations // 10)))
+            counts = {int(k): v for k, v in raw.items()}
+        elif tree_reuse and 'mcts_tree' in locals():
             counts = mcts_tree._raw
         else:
             raw = mcts_search_rust_handle_az(
@@ -396,7 +408,8 @@ def self_play_game(
             if legal:
                 policy[legal] = 1.0 / len(legal)
             else:
-                if tree_reuse and 'mcts_tree' in locals(): mcts_tree.free()
+                if not gpu_net and tree_reuse and 'mcts_tree' in locals():
+                    mcts_tree.free()
                 core.close()
                 return game_data, 2
 
@@ -407,7 +420,7 @@ def self_play_game(
         _, _, terminated, _ = core.step(action)
         ep_step_count += 1
 
-        if tree_reuse and 'mcts_tree' in locals() and not terminated:
+        if gpu_net is None and tree_reuse and 'mcts_tree' in locals() and not terminated:
             mcts_tree.step(action, additional_sims=additional_sims, c_puct=3.0,
                            batch_size=min(128, max(16, num_simulations // 50)))
 
@@ -464,7 +477,7 @@ def train_on_data(net, replay_buffer, batch_size=4096, epochs=30, lr=3e-4, devic
     policy_t = torch.from_numpy(policy).to(device)
     value_t = torch.from_numpy(value).to(device).unsqueeze(1)
     
-    optimizer = optim.Adam(net.parameters(), lr=lr, weight_decay=1e-4)
+    optimizer = optim.AdamW(net.parameters(), lr=lr, weight_decay=1e-4)
     
     best_loss = float('inf')
     best_state = net.state_dict().copy()
@@ -659,7 +672,7 @@ def main():
     parser = argparse.ArgumentParser(description='AlphaZero training (Rust MCTS)')
     parser.add_argument('--iterations', type=int, default=50)
     parser.add_argument('--games', type=int, default=500)
-    parser.add_argument('--simulations', type=int, default=200)
+    parser.add_argument('--simulations', type=int, default=400)
     parser.add_argument('--games-per-iter', type=int, default=200)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--batch-size', type=int, default=4096)
@@ -670,6 +683,7 @@ def main():
     parser.add_argument('--pretrain', action='store_true', help='Pre-train value head on AB+NNUE gen_2')
     parser.add_argument('--gen2-sup', action='store_true', help='Use gen_2 value supervision during training')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
+    parser.add_argument('--gpu-mcts', action='store_true', help='Use GPU-parallelized NN inference for MCTS')
     args = parser.parse_args()
     
     device = args.device
@@ -699,6 +713,13 @@ def main():
     # Create Rust AZ handle from PyTorch weights
     az_handle = create_az_handle(net, device='cpu')
     print(f'Rust AZ handle created', flush=True)
+    
+    # GPU model for GPU MCTS path (if requested)
+    gpu_model = None
+    if args.gpu_mcts and device.startswith('cuda'):
+        gpu_model = copy.deepcopy(net).to(device)
+        gpu_model.eval()
+        print(f'GPU MCTS model on {device}', flush=True)
     
     # Pre-train value head on gen_2 if requested
     if args.pretrain:
@@ -730,8 +751,9 @@ def main():
             data, winner = self_play_game(
                 az_handle, num_simulations=args.simulations,
                 temperature=1.0, temp_threshold=30,
-                tree_reuse=(args.simulations >= 200), additional_sims=20,
-                random_open_moves=0)
+                tree_reuse=(args.simulations >= 200 and not args.gpu_mcts),
+                additional_sims=20, random_open_moves=0,
+                gpu_net=gpu_model if args.gpu_mcts else None)
             return data if data else []
         
         with ThreadPoolExecutor(max_workers=game_workers) as pool:
@@ -778,7 +800,7 @@ def main():
             
             # vs Random baseline
             a_wins = 0
-            for ep in range(min(50, args.games)):
+            for ep in range(min(100, args.games)):
                 core = RustCore(engine=get_engine()).reset(ep + 99999)
                 stepped = 0
                 while True:
@@ -796,7 +818,7 @@ def main():
                     if term: break
                 if core.players_scores[0] > core.players_scores[1]: a_wins += 1
                 core.close()
-            wr = a_wins / 50
+            wr = a_wins / min(100, args.games)
             print(f'  vs Random (50 games, 800 sims): {a_wins}/50 ({wr*100:.0f}%)', flush=True)
             
             # ELO vs historical AZ models

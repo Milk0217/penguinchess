@@ -514,7 +514,7 @@ pub unsafe extern "C" fn mcts_search_rust_handle(
         _ => return -1,
     };
     let result = mcts_rs::mcts_search_on_handle(
-        game, num_simulations, c_puct, batch_size, eval_fn, false,  // AZ mode (272-dim)
+        game, num_simulations, c_puct, batch_size, eval_fn, false, false,
     );
     write_output(output_buf, output_size, &result);
     0
@@ -563,7 +563,30 @@ pub unsafe extern "C" fn mcts_search_nnue_handle(
         _ => return -1,
     };
     let result = mcts_rs::mcts_search_on_handle(
-        game, num_simulations, c_puct, batch_size, eval_fn, true,
+        game, num_simulations, c_puct, batch_size, eval_fn, true, false,
+    );
+    write_output(output_buf, output_size, &result);
+    0
+}
+
+/// MCTS search using AZ model with Python GPU eval callback (272-dim obs).
+#[no_mangle]
+pub unsafe extern "C" fn mcts_search_az_handle_gpu(
+    handle: i32,
+    num_simulations: i32,
+    c_puct: f64,
+    batch_size: i32,
+    eval_fn: Option<mcts_rs::EvalFn>,
+    output_buf: *mut c_char,
+    output_size: i32,
+) -> i32 {
+    let game = match GAMES.get(handle as usize) {
+        Some(Some(g)) => g,
+        _ => return -1,
+    };
+    // az_mode=true uses 272-dim obs via crate::az_model::encode_obs
+    let result = mcts_rs::mcts_search_on_handle(
+        game, num_simulations, c_puct, batch_size, eval_fn, false, true,
     );
     write_output(output_buf, output_size, &result);
     0

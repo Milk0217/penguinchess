@@ -809,6 +809,72 @@ class AlphaBetaSearchHandle:
         result_str = out.value.decode('utf-8') if out.value else '{}'
         return json.loads(result_str)
 
+
+def mcts_search_az_gpu(
+    handle: int,
+    model: torch.nn.Module,
+    num_simulations: int = 400,
+    c_puct: float = 3.0,
+    batch_size: int = 32,
+) -> dict:
+    """GPU-accelerated AZ MCTS search using Python eval callback.
+    Model is a PyTorch AlphaZero network on GPU (cuda).
+    Uses Rust MCTS with 272-dim observations and GPU batch inference."""
+    import torch
+    engine = get_engine()
+    net = model
+    device = next(net.parameters()).device
+
+    @EVAL_FN
+    def evaluate_fn(obs_ptr, batch_size, output_ptr, output_capacity):
+        nonlocal net
+        try:
+            B = batch_size
+            # Copy 272-dim obs from Rust shared memory
+            obs_raw = npct.as_array(
+                ctypes.cast(obs_ptr, POINTER(c_float)),
+                shape=(B, 272),
+            ).copy()
+            # Convert to GPU tensor
+            obs_t = torch.from_numpy(obs_raw).float().to(device)
+            with torch.no_grad():
+                logits_t, values_t = net(obs_t)
+            logits = logits_t.cpu().numpy().astype(np.float32)
+            values = values_t.cpu().numpy().flatten().astype(np.float32)
+
+            out_arr = npct.as_array(
+                ctypes.cast(output_ptr, POINTER(c_float)),
+                shape=(output_capacity,),
+            )
+            for i in range(B):
+                out_arr[i * 61:(i + 1) * 61 - 1] = logits[i]
+                out_arr[(i + 1) * 61 - 1] = values[i]
+            return 0
+        except Exception:
+            return -1
+
+    result_buf = create_string_buffer(1_048_576)
+    try:
+        code = engine._lib.mcts_search_az_handle_gpu(
+            c_int32(handle),
+            c_int32(num_simulations),
+            c_double(c_puct),
+            c_int32(batch_size),
+            evaluate_fn,
+            result_buf,
+            c_int32(1_048_576),
+        )
+        if code != 0:
+            raise RuntimeError(f"GPU AZ MCTS returned error code: {code}")
+    except Exception as e:
+        raise RuntimeError(f"GPU AZ MCTS failed: {e}")
+
+    raw = result_buf.value
+    if not raw:
+        return {}
+    result_str = raw.decode("utf-8")
+    return json.loads(result_str)
+
     def free(self):
         if self._handle >= 0:
             self._lib.ffi_ab_destroy(c_int32(self._handle))
