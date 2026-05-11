@@ -356,10 +356,11 @@ def self_play_game(
             mcts_tree = AZMCTSReuseTree(
                 engine, core.handle, az_handle,
                 num_simulations=num_simulations, c_puct=3.0,
-                batch_size=min(1024, max(128, num_simulations // 2)),
+                batch_size=min(128, max(16, num_simulations // 50)),
             )
 
-    ep_step_count = 0
+    # Main game loop
+    ep_step_count = random_open_moves
     while not terminated and ep_step_count < 500:
         t = temperature if ep_step_count < temp_threshold else 0.1
 
@@ -370,7 +371,7 @@ def self_play_game(
                 core.handle, az_handle._handle,
                 num_simulations=num_simulations,
                 c_puct=3.0,
-                batch_size=min(1024, max(128, num_simulations // 2)),
+                batch_size=min(128, max(16, num_simulations // 50)),
             )
             counts = {int(k): v for k, v in raw.items()}
 
@@ -408,7 +409,7 @@ def self_play_game(
 
         if tree_reuse and 'mcts_tree' in locals() and not terminated:
             mcts_tree.step(action, additional_sims=additional_sims, c_puct=3.0,
-                           batch_size=min(1024, max(128, num_simulations // 2)))
+                           batch_size=min(128, max(16, num_simulations // 50)))
 
         if terminated:
             break
@@ -432,9 +433,10 @@ def self_play_game(
 
 # ───── Training ──────────────────────────────────────────────
 
-def train_on_data(net, replay_buffer, batch_size=4096, epochs=5, lr=3e-4, device='cuda'):
-    """Train network on replay buffer data (FIFO, keep last 1M)."""
-    MAX_BUFFER = 1000000
+def train_on_data(net, replay_buffer, batch_size=4096, epochs=30, lr=3e-4, device='cuda',
+                  gen2_supervision=False, gen2_model=None):
+    """Train network on replay buffer data with optional gen_2 value supervision."""
+    MAX_BUFFER = 300000
     if len(replay_buffer) > MAX_BUFFER:
         replay_buffer[:] = replay_buffer[-MAX_BUFFER:]
     
@@ -452,14 +454,30 @@ def train_on_data(net, replay_buffer, batch_size=4096, epochs=5, lr=3e-4, device
     value_t = torch.from_numpy(value).to(device).unsqueeze(1)
     
     optimizer = optim.Adam(net.parameters(), lr=lr, weight_decay=1e-4)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=5)
+    # Cosine LR schedule with linear warmup
+    warmup_epochs = min(5, epochs // 6)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs - warmup_epochs, eta_min=1e-5)
     
     best_loss = float('inf')
     best_state = net.state_dict().copy()
     
+    # Pre-compute gen_2 value targets if using supervision
+    if gen2_supervision and gen2_model is not None:
+        gen2_model.eval()
+        with torch.no_grad():
+            gen2_values = gen2_model(obs_t.to(device))[1]
+            gen2_values = gen2_values.cpu()
+    
     for ep in range(epochs):
+        # Warmup LR
+        if ep < warmup_epochs:
+            for pg in optimizer.param_groups:
+                pg['lr'] = lr * (ep + 1) / warmup_epochs
+        
         perm = torch.randperm(n)
         total_loss = 0.0
+        total_pol_loss = 0.0
+        total_val_loss = 0.0
         for i in range(0, n, batch_size):
             idx = perm[i:i+batch_size]
             o, p, v = obs_t[idx], policy_t[idx], value_t[idx]
@@ -467,6 +485,12 @@ def train_on_data(net, replay_buffer, batch_size=4096, epochs=5, lr=3e-4, device
             logits, val = net(o)
             policy_loss = -torch.mean(torch.sum(p * F.log_softmax(logits, dim=1), dim=1))
             value_loss = F.mse_loss(val, v)
+            
+            # Optional gen_2 value supervision
+            if gen2_supervision and gen2_model is not None:
+                gv = gen2_values[idx].to(device)
+                value_loss = 0.5 * value_loss + 0.5 * F.mse_loss(val, gv)
+            
             loss = policy_loss + value_loss
             
             optimizer.zero_grad()
@@ -474,17 +498,21 @@ def train_on_data(net, replay_buffer, batch_size=4096, epochs=5, lr=3e-4, device
             torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
             optimizer.step()
             total_loss += loss.item()
+            total_pol_loss += policy_loss.item()
+            total_val_loss += value_loss.item()
+        
+        if ep >= warmup_epochs:
+            scheduler.step()
         
         avg_loss = total_loss / max(1, n // batch_size)
-        scheduler.step(avg_loss)
         
         if avg_loss < best_loss:
             best_loss = avg_loss
             best_state = net.state_dict().copy()
         
-        if ep % 5 == 0:
+        if ep % 10 == 0 or ep == epochs - 1:
             lr_now = optimizer.param_groups[0]['lr']
-            print(f'  ep {ep+1:>3d}/{epochs}  loss={avg_loss:.4f}  LR={lr_now:.1e}', flush=True)
+            print(f'  ep {ep+1:>3d}/{epochs}  loss={avg_loss:.4f}  P={total_pol_loss/max(1,n//batch_size):.4f}  V={total_val_loss/max(1,n//batch_size):.4f}  LR={lr_now:.1e}', flush=True)
     
     net.load_state_dict(best_state)
 
@@ -496,15 +524,16 @@ def main():
     parser = argparse.ArgumentParser(description='AlphaZero training (Rust MCTS)')
     parser.add_argument('--iterations', type=int, default=50)
     parser.add_argument('--games', type=int, default=500)
-    parser.add_argument('--simulations', type=int, default=400)
+    parser.add_argument('--simulations', type=int, default=200)
     parser.add_argument('--games-per-iter', type=int, default=200)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--batch-size', type=int, default=4096)
-    parser.add_argument('--epochs', type=int, default=5)
+    parser.add_argument('--epochs', type=int, default=30)
     parser.add_argument('--resume', type=str, default='')
     parser.add_argument('--eval-interval', type=int, default=10)
     parser.add_argument('--workers', type=int, default=8)
     parser.add_argument('--pretrain', action='store_true', help='Pre-train value head on AB+NNUE gen_2')
+    parser.add_argument('--gen2-sup', action='store_true', help='Use gen_2 value supervision during training')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
     args = parser.parse_args()
     
@@ -579,9 +608,21 @@ def main():
         replay_buffer.extend(iter_data)
         print(f'  {len(iter_data)} positions, buffer={len(replay_buffer)}', flush=True)
         
+        # Load gen_2 for value supervision if requested
+        gen2_model = None
+        if args.gen2_sup:
+            from penguinchess.ai.nnue import NNUE
+            gen2_model = NNUE().to(device)
+            sd = torch.load('models/ab_nnue/nnue_gen_2.pt', map_location=device, weights_only=False)
+            sd = sd.get('model_state', sd) if isinstance(sd, dict) and 'model_state' in sd else sd
+            gen2_model.load_state_dict(sd, strict=False)
+            gen2_model.eval()
+            print(f'  gen_2 value supervision: ON ({device})', flush=True)
+        
         # Train
         train_on_data(net, replay_buffer, batch_size=args.batch_size,
-                      epochs=args.epochs, lr=args.lr, device=device)
+                      epochs=args.epochs, lr=args.lr, device=device,
+                      gen2_supervision=args.gen2_sup, gen2_model=gen2_model)
         
         # Re-export weights to Rust handle
         update_az_weights(az_handle, net, device='cpu')
@@ -604,7 +645,7 @@ def main():
                     if not legal: break
                     # Alternate between AZ and random
                     if stepped % 2 == 0:
-                        raw = mcts_search_rust_handle_az(core.handle, az_handle._handle, num_simulations=800, c_puct=3.0, batch_size=128)
+                        raw = mcts_search_rust_handle_az(core.handle, az_handle._handle, num_simulations=800, c_puct=3.0, batch_size=32)
                         counts = {int(k): v for k, v in raw.items()}
                         if not counts: break
                         action = max(counts, key=counts.__getitem__)

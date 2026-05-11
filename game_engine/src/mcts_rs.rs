@@ -27,8 +27,7 @@ impl MCTSNode {
         MCTSNode { visits: 0, total_value: 0.0, prior, children: HashMap::new() }
     }
     fn ucb(&self, parent_visits: u32, c_puct: f64) -> f64 {
-        if self.visits == 0 { return f64::INFINITY; }
-        let q = self.total_value / self.visits as f64;
+        let q = if self.visits == 0 { 0.0 } else { self.total_value / self.visits as f64 };
         let u = c_puct * self.prior * (parent_visits as f64).sqrt() / (1.0 + self.visits as f64);
         q + u
     }
