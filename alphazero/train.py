@@ -392,21 +392,17 @@ def self_play_game(
             core.close()
             return game_data, 2
 
-        policy = np.zeros(60, dtype=np.float32)
-        if t > 0:
-            for a, c in counts.items():
-                policy[a] = c ** (1.0 / t)
-        else:
-            best_cnt = max(counts.values())
-            for a, c in counts.items():
-                policy[a] = 1.0 if c == best_cnt else 0.0
-        s = policy.sum()
+        # Training target: always use temperature=1.0 (rich distribution)
+        train_policy = np.zeros(60, dtype=np.float32)
+        for a, c in counts.items():
+            train_policy[a] = c ** 1.0  # always t=1.0 for training target
+        s = train_policy.sum()
         if s > 0:
-            policy /= s
+            train_policy /= s
         else:
             legal = core.get_legal_actions()
             if legal:
-                policy[legal] = 1.0 / len(legal)
+                train_policy[legal] = 1.0 / len(legal)
             else:
                 if not gpu_net and tree_reuse and 'mcts_tree' in locals():
                     mcts_tree.free()
@@ -414,8 +410,9 @@ def self_play_game(
                 return game_data, 2
 
         flat_obs = _encode_flat_obs(core)
-        game_data.append((flat_obs, policy, core.current_player))
+        game_data.append((flat_obs, train_policy, core.current_player))
 
+        # Move selection: use original temperature decay
         action = select_action(counts, temperature=t)
         _, _, terminated, _ = core.step(action)
         ep_step_count += 1
