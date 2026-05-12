@@ -1050,7 +1050,7 @@ pub unsafe extern "C" fn ffi_ab_generate_az_data(
                     for (st, act) in &game_states {
                         let bn = &st.board.cells; let ps = &st.pieces; let cp = st.current_player;
                         let ph = if st.phase == crate::rules::Phase::Movement { 1u8 } else { 0u8 };
-                        let obs = encode_obs(bn, ps, cp, ph, &st.scores);
+                        let obs = encode_obs(bn, ps, cp, ph, &st.scores, st.episode_steps as i32);
                         for &v in obs.iter() { local_buf.extend_from_slice(&v.to_le_bytes()); }
                         local_buf.extend_from_slice(&act.to_le_bytes());
                         let ao = if st.current_player == 0 { outcome } else { -outcome };

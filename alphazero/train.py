@@ -269,7 +269,7 @@ def pretrain_value_from_gen2(net, n_games=1000, depth=6, epochs=30, device='cuda
     cnt=engine._lib.ffi_ab_generate_az_data(
         c_int32(h._handle), c_int32(n_games), c_int32(0), c_int32(8), c_char_p(path.encode()))
     print(f'  Gen: {cnt} pos in {time.time()-t0:.0f}s', flush=True)
-    h.free()
+    h = None  # release handle
     
     # Load data
     raw=open(path,'rb').read()
@@ -690,10 +690,15 @@ def main():
         # Auto-resume from best of same architecture
         best_path = OUT_DIR / f'alphazero_{arch_name}_best.pth'
         if best_path.exists():
-            sd = torch.load(best_path, map_location='cpu', weights_only=True)
-            net = NetClass(obs_dim=OBS_DIM).to(device)
-            net.load_state_dict(sd)
-            print(f'Auto-resumed: {best_path} ({NetClass.__name__})', flush=True)
+            try:
+                sd = torch.load(best_path, map_location='cpu', weights_only=True)
+                net = NetClass(obs_dim=OBS_DIM).to(device)
+                net.load_state_dict(sd)
+                print(f'Auto-resumed: {best_path} ({NetClass.__name__})', flush=True)
+            except Exception as e:
+                print(f'  [warn] auto-resume failed (arch mismatch?): {e}', flush=True)
+                print(f'  Starting fresh instead.', flush=True)
+                net = NetClass(obs_dim=OBS_DIM).to(device)
         else:
             net = NetClass(obs_dim=OBS_DIM).to(device)
             print(f'Fresh: {NetClass.__name__} ({OBS_DIM}-dim obs, {model_key})', flush=True)
@@ -726,12 +731,13 @@ def main():
     best_elo = -999.0
     total_t0 = time.time()
     
-    # Generate gen_2 data for buffer augmentation (one-time)
-    if args.gen2_data:
+    # Pre-train on gen_2 data with Rust fast path
+    if args.gen2_data or args.pretrain:
         print(f'\n{"="*50}', flush=True)
-        print(f'Generating gen_2 teacher data...')
+        print(f'Generating gen_2 teacher data (Rust FFI)...')
         print(f'{"="*50}', flush=True)
         from penguinchess.ai.nnue import NNUE
+        from penguinchess.rust_ffi import ffi_ab_create, get_engine as ge
         m = NNUE()
         sd = torch.load('models/ab_nnue/nnue_gen_2.pt', map_location='cpu', weights_only=False)
         sd = sd.get('model_state', sd) if isinstance(sd, dict) and 'model_state' in sd else sd
@@ -739,40 +745,84 @@ def main():
         w = {k: v.cpu() for k, v in m.state_dict().items()}
         h = ffi_ab_create(json.dumps({'max_depth': 6, 'tt_size': 65536, 'null_move': True}))
         h.set_weights(w)
-        sm = {'active': 'active', 'occupied': 'occupied', 'used': 'used'}
-        n_gen_games = min(1000, args.games)
-        for g in range(n_gen_games):
-            core = RustCore(engine=get_engine(), seed=g * 997 + 12345).reset(seed=g * 997 + 12345)
-            gd = []
-            while not core._terminated and core._episode_steps < 200:
-                leg = core.get_legal_actions()
-                if not leg: break
-                obs = _encode_flat_obs(core)
-                s = json.loads(core.to_json())
-                hx = [{'coord': x['coord'], 'state': sm.get(x['state'], 'active'), 'points': x.get('points', 0)} for x in s['board']['cells']]
-                px = [{'id': p['id'], 'alive': p['alive'], 'hex_idx': p.get('hex_idx'), 'hex_value': p.get('hex_value', 0)} for p in s['pieces']]
-                sj = json.dumps({'board': {'cells': hx}, 'pieces': px, 'scores': s['scores'],
-                    'phase': s['phase'], 'current_player': s['current_player'],
-                    'placement_count': s['placement_count'], 'episode_steps': s['episode_steps'],
-                    'terminated': False})
-                r = h.search(sj, max_depth=6)
-                if not isinstance(r, dict) or 'best_action' not in r:
-                    if leg: core.step(leg[0])
-                    continue
-                a = r['best_action']
-                if a in leg: core.step(a)
-                elif leg: core.step(leg[0])
-                else: break
-                gd.append(obs)
-            s0, s1 = core.players_scores
-            outcome = 1.0 if s0 > s1 else (-1.0 if s1 > s0 else 0.0)
-            for obs in gd:
-                replay_buffer.append((obs, np.zeros(60, dtype=np.float32), outcome))
-            core.close()
-            if (g + 1) % 200 == 0:
-                print(f'  gen_2 games: {g+1}/{n_gen_games} ({len(replay_buffer)} pos)', flush=True)
-        h.free()
-        print(f'  gen_2 data: {n_gen_games} games, {len(replay_buffer)} positions added to buffer', flush=True)
+        
+        t0 = time.time()
+        n_teacher = args.games * 2 if args.pretrain else args.games
+        data_path = 'data_gen2_full.bin'
+        cnt = ge()._lib.ffi_ab_generate_az_data(
+            c_int32(h._handle), c_int32(min(n_teacher, 2000)), c_int32(0), c_int32(8),
+            c_char_p(data_path.encode()))
+        print(f'  Gen: {cnt} pos in {time.time()-t0:.0f}s', flush=True)
+        
+        if cnt > 0:
+            raw = open(data_path, 'rb').read()
+            n = struct.unpack('<Q', raw[:8])[0]; off = 8
+            obss = []; acts = []; vals = []
+            for _ in range(min(n, 200000)):
+                obs = np.frombuffer(raw[off:off+1088], dtype=np.float32, count=272).copy(); off += 1088
+                act = struct.unpack('<i', raw[off:off+4])[0]; off += 4
+                out = struct.unpack('<f', raw[off:off+4])[0]; off += 4
+                _ = struct.unpack('<i', raw[off:off+4])[0]; off += 4
+                obss.append(obs); acts.append(act); vals.append(out)
+            print(f'  {len(obss)} positions loaded', flush=True)
+            
+            # Train on gen_2 data
+            n_pos = len(obss)
+            ot = torch.from_numpy(np.array(obss)).float()
+            at = torch.from_numpy(np.array(acts, dtype=np.int64))
+            vt = torch.from_numpy(np.array(vals)).float().unsqueeze(1)
+            
+            if args.pretrain or args.gen2_data:
+                gen_epochs = 50 if args.pretrain else 10
+                net.train()
+                if args.pretrain:
+                    # Full model training
+                    opt = optim.AdamW(net.parameters(), lr=3e-4, weight_decay=1e-4)
+                else:
+                    # Value-only fine-tuning
+                    for n_, p in net.named_parameters():
+                        p.requires_grad = 'value' in n_ or 'fc_out' in n_ or 'fc_in' in n_
+                    opt = optim.AdamW([p for p in net.parameters() if p.requires_grad], lr=1e-3, weight_decay=1e-4)
+                
+                bs2 = 4096
+                for ep in range(gen_epochs):
+                    perm = torch.randperm(n_pos); tl = 0.; tc = 0
+                    for i in range(0, n_pos, bs2):
+                        idx = perm[i:i+bs2]
+                        o = ot[idx].to(device)
+                        a = at[idx].to(device)
+                        v = vt[idx].to(device)
+                        logits, val = net(o)
+                        # Policy: CE on one-hot action
+                        p_loss = F.cross_entropy(logits, a)
+                        # Value: MSE
+                        v_loss = F.mse_loss(val, v)
+                        loss = p_loss + v_loss
+                        opt.zero_grad(); loss.backward()
+                        torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
+                        opt.step()
+                        tl += loss.item(); tc += 1
+                    if ep % 10 == 0:
+                        print(f'  gen2 ep {ep+1:>3d}/{gen_epochs}  loss={tl/tc:.4f}  P={p_loss.item():.4f}  V={v_loss.item():.4f}', flush=True)
+                
+                # Reset requires_grad
+                for p in net.parameters(): p.requires_grad = True
+                
+                # Re-create Rust handle with pre-trained weights
+                try: az_handle.free()
+                except: pass
+                net.eval()
+                net.to(device)
+                az_handle = create_az_handle(net, device='cpu')
+                net.train()
+                print(f'  Rust handle re-created after gen_2 training', flush=True)
+                
+                # Save pre-trained model
+                pretrain_path = OUT_DIR / f'alphazero_{net.arch_name}_gen2_pretrain.pth'
+                torch.save(net.state_dict(), pretrain_path)
+                print(f'  Saved gen_2 pre-trained: {pretrain_path}', flush=True)
+        
+        del h  # release handle
     
     for i_iter in range(1, args.iterations + 1):
         t0 = time.time()
@@ -791,7 +841,7 @@ def main():
                     az_handle, num_simulations=args.simulations,
                     temperature=1.0, temp_threshold=30,
                     tree_reuse=(args.simulations >= 200 and not args.gpu_mcts),
-                    additional_sims=15, random_open_moves=0,
+                    additional_sims=15, random_open_moves=10,
                     gpu_net=gpu_model if args.gpu_mcts else None)
                 return data if data else []
             except Exception as e:

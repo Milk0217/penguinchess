@@ -148,7 +148,7 @@ fn mcts_search_core(
     } else if az_mode {
         let bn = &state.board.cells; let ps = &state.pieces; let cp = state.current_player;
         let ph = if state.phase == Phase::Movement { 1u8 } else { 0u8 };
-        let obs_arr = crate::az_model::encode_obs(bn, ps, cp, ph, &state.scores);
+        let obs_arr = crate::az_model::encode_obs(bn, ps, cp, ph, &state.scores, state.episode_steps as i32);
         root_obs.extend_from_slice(&obs_arr);
     } else {
         encode_obs(state, &mut root_obs);
@@ -328,7 +328,7 @@ fn flush_batch_obs(
         } else if az_obs {
             let bn = &state.board.cells; let ps = &state.pieces; let cp = state.current_player;
             let ph = if state.phase == Phase::Movement { 1u8 } else { 0u8 };
-            let obs_arr = crate::az_model::encode_obs(bn, ps, cp, ph, &state.scores);
+            let obs_arr = crate::az_model::encode_obs(bn, ps, cp, ph, &state.scores, state.episode_steps as i32);
             obs_buf.extend_from_slice(&obs_arr);
         } else {
             encode_obs(state, obs_buf);
@@ -375,7 +375,7 @@ fn flush_batch_obs_az(
     for state in states.iter() {
         let bn = &state.board.cells; let ps = &state.pieces; let cp = state.current_player;
         let ph = if state.phase == Phase::Movement { 1u8 } else { 0u8 };
-        let obs = crate::az_model::encode_obs(bn, ps, cp, ph, &state.scores);
+        let obs = crate::az_model::encode_obs(bn, ps, cp, ph, &state.scores, state.episode_steps as i32);
         obs_buf.extend_from_slice(&obs);
     }
 
@@ -410,7 +410,7 @@ pub fn mcts_search_core_az(
     // Root evaluation with AZ model (272-dim obs)
     let bn = &state.board.cells; let ps = &state.pieces; let cp = state.current_player;
     let ph = if state.phase == Phase::Movement { 1u8 } else { 0u8 };
-    let root_obs = crate::az_model::encode_obs(bn, ps, cp, ph, &state.scores);
+    let root_obs = crate::az_model::encode_obs(bn, ps, cp, ph, &state.scores, state.episode_steps as i32);
     let legal_root = state.get_legal_actions();
     if legal_root.is_empty() { return "{}".to_string(); }
 
@@ -494,7 +494,7 @@ pub fn az_mcts_build_tree(
 
     let bn = &state.board.cells; let ps = &state.pieces; let cp = state.current_player;
     let ph = if state.phase == Phase::Movement { 1u8 } else { 0u8 };
-    let root_obs = crate::az_model::encode_obs(bn, ps, cp, ph, &state.scores);
+    let root_obs = crate::az_model::encode_obs(bn, ps, cp, ph, &state.scores, state.episode_steps as i32);
     let (rl, _) = model.forward(&root_obs);
     let policy = masked_softmax(&rl, &legal_root);
     let noise = sample_dirichlet(DIRICHLET_ALPHA, 60);

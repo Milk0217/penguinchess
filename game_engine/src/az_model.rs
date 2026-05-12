@@ -89,7 +89,8 @@ pub const OBS_DIM: usize = 272;
 pub fn encode_obs(board_cells: &[crate::board::HexCell],
                   pieces: &[crate::board::Piece],
                   current_player: usize, phase: u8,
-                  scores: &[i32; 2]) -> [f32; OBS_DIM]
+                  scores: &[i32; 2],
+                  episode_steps: i32) -> [f32; OBS_DIM]
 {
     let mut obs = [0.0f32; OBS_DIM];
     // Board: 60 hexes × 3 = 180
@@ -142,7 +143,7 @@ pub fn encode_obs(board_cells: &[crate::board::HexCell],
     obs[269] = pieces.iter().filter(|p| p.owner() == 0 && p.alive).count() as f32 / 3.0;
     obs[270] = pieces.iter().filter(|p| p.owner() == 1 && p.alive).count() as f32 / 3.0;
     // Steps (1) — not available in encode_obs context, left as 0
-    obs[271] = 0.0;
+    obs[271] = episode_steps as f32 / 500.0;
     obs
 }
 
