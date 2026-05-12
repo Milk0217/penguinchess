@@ -567,10 +567,11 @@ def _discover_az_models(arch_name, top_k=10):
 
 
 def evaluate_elo_vs_history(net, num_past=10, games_per_pair=20, sims=200):
-    """Evaluate model against N most recent historical AZ checkpoints.
+    """Evaluate model against N past AZ models. Tree reuse + parallel execution.
     Returns (avg_win_rate, elo) or None if insufficient past models."""
     import random as _rnd, re
-    from penguinchess.rust_ffi import mcts_search_rust_handle_az, get_engine
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from penguinchess.rust_ffi import AZMCTSReuseTree, get_engine
     from penguinchess.rust_core import RustCore
     
     arch_name = net.arch_name
@@ -589,58 +590,55 @@ def evaluate_elo_vs_history(net, num_past=10, games_per_pair=20, sims=200):
         m.load_state_dict(sd)
         past_handles.append(create_az_handle(m, device='cpu'))
     
-    # Current model handle
     current_handle = create_az_handle(net, device='cpu')
     
-    # Play matches: current vs each past, alternating sides
-    results = []  # (current_wins, current_plays)
-    for ph in past_handles:
+    def _play_tree_game(seed, p0_handle, p1_handle):
+        """Play one game with tree reuse for both sides."""
+        core = RustCore(engine=get_engine()).reset(seed)
+        eng = get_engine()
+        tree0 = AZMCTSReuseTree(eng, core.handle, p0_handle, sims, 3.0, 32)
+        tree1 = AZMCTSReuseTree(eng, core.handle, p1_handle, sims, 3.0, 32)
+        stepped = 0
+        while True:
+            legal = core.get_legal_actions()
+            if not legal: break
+            active_tree = tree0 if stepped % 2 == 0 else tree1
+            passive_tree = tree1 if stepped % 2 == 0 else tree0
+            cnt = active_tree._raw
+            if not cnt: break
+            action = max(cnt, key=cnt.__getitem__)
+            _, _, term, _ = core.step(action)
+            stepped += 1
+            if term: break
+            # Step active tree (no extra sims), passive tree (gets sims for next turn)
+            active_tree.step(action, 0, 3.0, 32)
+            passive_tree.step(action, sims, 3.0, 32)
+        p0_won = 1 if core.players_scores[0] > core.players_scores[1] else 0
+        tree0.free(); tree1.free(); core.close()
+        return p0_won
+    
+    def _eval_past(ph, idx):
+        """Evaluate current vs one past model (parallel worker)."""
         cw = 0; cp = 0
         for g in range(games_per_pair):
-            seed = g * 973 + 1911
-            # Game 1: current as P1, past as P2
-            core = RustCore(engine=get_engine()).reset(seed)
-            stepped = 0
-            while True:
-                legal = core.get_legal_actions()
-                if not legal: break
-                h = current_handle if stepped % 2 == 0 else ph
-                raw = mcts_search_rust_handle_az(core.handle, h._handle,
-                    num_simulations=sims, c_puct=3.0, batch_size=32)
-                cnt = {int(k): v for k, v in raw.items() if v > 0}
-                if not cnt: break
-                action = max(cnt, key=cnt.__getitem__)
-                _, _, term, _ = core.step(action); stepped += 1
-                if term: break
-            if core.players_scores[0] > core.players_scores[1]: cw += 1
+            seed = g * 973 + 1911 + idx * 9999
+            cw += _play_tree_game(seed, current_handle._handle, ph._handle)
             cp += 1
-            core.close()
-            # Game 2: past as P1, current as P2
-            core = RustCore(engine=get_engine()).reset(seed + 500000)
-            stepped = 0
-            while True:
-                legal = core.get_legal_actions()
-                if not legal: break
-                h = ph if stepped % 2 == 0 else current_handle
-                raw = mcts_search_rust_handle_az(core.handle, h._handle,
-                    num_simulations=sims, c_puct=3.0, batch_size=32)
-                cnt = {int(k): v for k, v in raw.items() if v > 0}
-                if not cnt: break
-                action = max(cnt, key=cnt.__getitem__)
-                _, _, term, _ = core.step(action); stepped += 1
-                if term: break
-            if core.players_scores[0] < core.players_scores[1]: cw += 1
+            cw += 1 - _play_tree_game(seed + 500000, ph._handle, current_handle._handle)
             cp += 1
-            core.close()
-        results.append(cw / cp)
-        
+        return cw / cp
+    
+    results = []
+    with ThreadPoolExecutor(max_workers=min(8, len(past_handles))) as pool:
+        futs = [pool.submit(_eval_past, ph, i) for i, ph in enumerate(past_handles)]
+        for f in as_completed(futs):
+            results.append(f.result())
+    
     for h in past_handles: h.free()
     current_handle.free()
     
     if not results: return None
     avg_wr = sum(results) / len(results)
-    # Simple ELO: K=32, base 1200, compute from avg win rate
-    # elo = 1200 + 400 * log10(wr / (1-wr))  -- but clip to avoid inf
     import math
     safe_wr = max(0.01, min(0.99, avg_wr))
     elo = 1200 + 400 * math.log10(safe_wr / (1 - safe_wr))
@@ -932,7 +930,7 @@ def main():
             print(f'  vs Random ({n_eval} games, 200 tree-sims): {a_wins}/{n_eval} ({wr*100:.0f}%)', flush=True)
             
             # ELO vs historical AZ models
-            elo_result = evaluate_elo_vs_history(net, num_past=10, games_per_pair=10, sims=400)
+            elo_result = evaluate_elo_vs_history(net, num_past=10, games_per_pair=10)
             if elo_result is not None:
                 avg_wr, elo = elo_result
                 print(f'  ELO vs history (10 games×10 past): WR={avg_wr*100:.0f}%  ELO={elo:.0f}', flush=True)
