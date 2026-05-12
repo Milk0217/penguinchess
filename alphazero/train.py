@@ -650,7 +650,7 @@ def main():
     parser.add_argument('--games', type=int, default=500)
     parser.add_argument('--model', type=str, default='3m', choices=['1m','2m','3m','xl'],
                         help='Model architecture: 1m (850K), 2m (1.9M), 3m (3.1M), xl (313M)')
-    parser.add_argument('--simulations', type=int, default=400)
+    parser.add_argument('--simulations', type=int, default=800)
     parser.add_argument('--games-per-iter', type=int, default=200)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--batch-size', type=int, default=4096)
