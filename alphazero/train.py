@@ -442,14 +442,12 @@ def self_play_game(
 
 def train_on_data(net, replay_buffer, batch_size=4096, epochs=30, lr=3e-4, device='cuda',
                   gen2_supervision=False, gen2_model=None,
-                  value_loss_weight=10.0, entropy_weight=0.01,
+                  entropy_weight=0.01,
                   soft_value_factor=0.8):
-    """Train network on replay buffer data. Keeps ALL data (no FIFO eviction) to
-    preserve high-quality positions from the model's peak performance period.
+    """Train network on replay buffer data. FIFO replay buffer (500K limit).
+    Value loss weight is adaptive: high when value MSE is high, low when converged.
     
     Args:
-        value_loss_weight: Multiply value loss to balance with policy loss
-                          (default 10.0 — value loss ~0.001, policy loss ~0.48)
         entropy_weight: Entropy regularization strength (default 0.01)
         soft_value_factor: Scale hard ±1 targets by this factor (default 0.8)
                           prevents overconfident value predictions
@@ -519,8 +517,16 @@ def train_on_data(net, replay_buffer, batch_size=4096, epochs=30, lr=3e-4, devic
             probs = torch.exp(log_probs)
             entropy = -torch.mean(torch.sum(probs * log_probs, dim=1))
             
-            # Combined loss: weighted value + policy + entropy bonus
-            loss = policy_loss + value_loss_weight * value_loss - entropy_weight * entropy
+            # Adaptive value weight (EMA smoothed): high when value MSE is high (needs learning),
+            # low when value MSE is low (let policy dominate)
+            raw_vw = max(1.0, min(10.0, 1.0 + 9.0 * value_loss.item() * 100.0))
+            if i == 0:
+                smooth_vw = raw_vw
+            else:
+                smooth_vw = 0.9 * smooth_vw + 0.1 * raw_vw
+            
+            # Combined loss: policy + adaptively weighted value - entropy
+            loss = policy_loss + smooth_vw * value_loss - entropy_weight * entropy
             
             optimizer.zero_grad()
             loss.backward()
@@ -876,7 +882,7 @@ def main():
         train_on_data(net, replay_buffer, batch_size=args.batch_size,
                       epochs=args.epochs, lr=args.lr, device=device,
                       gen2_supervision=args.gen2_sup, gen2_model=gen2_model,
-                      value_loss_weight=10.0, entropy_weight=0.01)
+                      entropy_weight=0.01)
         
         # Re-export weights to Rust handle
         update_az_weights(az_handle, net, device='cpu')
