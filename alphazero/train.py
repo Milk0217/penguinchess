@@ -855,6 +855,10 @@ def main():
                     print(f'  Games: {i+1}/{args.games} ({len(iter_data)} pos)', flush=True)
         
         replay_buffer.extend(iter_data)
+        # FIFO eviction: keep most recent 500K positions
+        BUFFER_MAX = 500000
+        if len(replay_buffer) > BUFFER_MAX:
+            replay_buffer[:len(replay_buffer) - BUFFER_MAX] = []
         print(f'  {len(iter_data)} positions, buffer={len(replay_buffer)}', flush=True)
         
         # Load gen_2 for value supervision if requested
