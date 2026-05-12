@@ -895,30 +895,41 @@ def main():
         # Periodic evaluation: ELO vs historical models + vs Random
         if i_iter % args.eval_interval == 0:
             import random as _rnd
-            from penguinchess.rust_ffi import mcts_search_rust_handle_az
+            from penguinchess.rust_ffi import mcts_search_rust_handle_az, AZMCTSReuseTree
             
-            # vs Random baseline
+            # vs Random baseline (with tree reuse for speed)
             a_wins = 0
-            for ep in range(min(100, args.games)):
+            n_eval = min(100, args.games)
+            for ep in range(n_eval):
                 core = RustCore(engine=get_engine()).reset(ep + 99999)
+                # Tree: 200 initial sims, then 200 per step
+                tree = AZMCTSReuseTree(get_engine(), core.handle, az_handle._handle,
+                    num_simulations=200, c_puct=3.0, batch_size=32)
                 stepped = 0
                 while True:
                     legal = core.get_legal_actions()
                     if not legal: break
                     if stepped % 2 == 0:
-                        raw = mcts_search_rust_handle_az(core.handle, az_handle._handle, num_simulations=800, c_puct=3.0, batch_size=32)
-                        counts = {int(k): v for k, v in raw.items()}
+                        # AZ turn: use tree visit counts (already have sims)
+                        counts = tree._raw
                         if not counts: break
                         action = max(counts, key=counts.__getitem__)
+                        _, _, term, _ = core.step(action)
+                        if term: break
+                        tree.step(action, additional_sims=0, c_puct=3.0, batch_size=32)  # move to child
                     else:
+                        # Random turn
                         action = _rnd.choice(legal) if legal else 0
-                    _, _, term, _ = core.step(action)
+                        _, _, term, _ = core.step(action)
+                        if term: break
+                        # Advance tree + do 200 sims at new state
+                        tree.step(action, additional_sims=200, c_puct=3.0, batch_size=32)
                     stepped += 1
-                    if term: break
                 if core.players_scores[0] > core.players_scores[1]: a_wins += 1
+                tree.free()
                 core.close()
-            wr = a_wins / min(100, args.games)
-            print(f'  vs Random (50 games, 800 sims): {a_wins}/50 ({wr*100:.0f}%)', flush=True)
+            wr = a_wins / n_eval
+            print(f'  vs Random ({n_eval} games, 200 tree-sims): {a_wins}/{n_eval} ({wr*100:.0f}%)', flush=True)
             
             # ELO vs historical AZ models
             elo_result = evaluate_elo_vs_history(net, num_past=10, games_per_pair=10, sims=400)
