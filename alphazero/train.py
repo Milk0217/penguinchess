@@ -336,16 +336,13 @@ def self_play_game(
     game_data = []
     terminated = False
 
-    # Random opening moves
+    # Random opening moves (no training data — only to create diverse positions)
+    terminated = False
     for step in range(random_open_moves):
         legal = core.get_legal_actions()
         if not legal:
             core.close()
             return [], 2
-        flat_obs = _encode_flat_obs(core)
-        uniform = np.zeros(60, dtype=np.float32)
-        uniform[legal] = 1.0 / len(legal)
-        game_data.append((flat_obs, uniform, core.current_player))
         action = random.choice(legal)
         _, _, terminated, _ = core.step(action)
         if terminated:
