@@ -1093,6 +1093,115 @@ pub unsafe extern "C" fn ffi_ab_generate_az_data(
     total as i64
 }
 
+/// Batch self-play data generation using AZ model (parallel with std::thread::scope).
+///
+/// config_json fields: simulations, additional_sims, random_open_moves, temp_threshold,
+///                     max_steps, c_puct, batch_size, seed_offset
+///
+/// Output binary: [n_positions: u64] + [obs(272f32) + policy(60f32) + value(f32)] × n
+#[no_mangle]
+pub unsafe extern "C" fn ffi_az_selfplay_batch(
+    az_handle: i32, num_games: i32, num_workers: i32,
+    config_json: *const c_char, output_path: *const c_char,
+) -> i64 {
+    use std::fs::File; use std::io::Write; use std::thread;
+    use rand::Rng; use rand::seq::SliceRandom;
+
+    let cjson = match std::ffi::CStr::from_ptr(config_json).to_str() { Ok(s) => s, _ => return -1 };
+    let cfg: serde_json::Value = match serde_json::from_str(cjson) { Ok(v) => v, _ => return -2 };
+    let sims = cfg["simulations"].as_i64().unwrap_or(800) as i32;
+    let add_sims = cfg["additional_sims"].as_i64().unwrap_or(15) as i32;
+    let rm = cfg["random_open_moves"].as_i64().unwrap_or(10) as i32;
+    let tt = cfg["temp_threshold"].as_i64().unwrap_or(30) as i32;
+    let off = cfg["seed_offset"].as_i64().unwrap_or(0) as i32;
+    let maxs = cfg["max_steps"].as_i64().unwrap_or(500) as i32;
+    let cp = cfg["c_puct"].as_f64().unwrap_or(3.0);
+    let bs = cfg["batch_size"].as_i64().unwrap_or(48) as i32;
+
+    let model = match AZ_MODELS.get(az_handle as usize) {
+        Some(Some(m)) => m.clone(), _ => return -3,
+    };
+    let path = match std::ffi::CStr::from_ptr(output_path).to_str() { Ok(s) => s, _ => return -4 };
+    let nw = num_workers.max(1) as usize;
+
+    let mut results = thread::scope(|s| {
+        let mut handles = Vec::with_capacity(nw);
+        for w in 0..nw {
+            let m = model.clone();
+            handles.push(s.spawn(move || {
+                let mut rng = rand::thread_rng();
+                let mut buf: Vec<u8> = Vec::new();
+                let mut j: u64 = 0;
+                let gpw = num_games / nw as i32;
+                let extra = if (w as i32) < (num_games % nw as i32) { 1 } else { 0 };
+                for gi in 0..gpw + extra {
+                    let seed = (off + start(w as i32, gpw, extra) + gi) as u64;
+                    let seq = generate_sequence(seed);
+                    let board = Board::new(&seq);
+                    let mut state = GameState::new(board);
+                    for _ in 0..rm {
+                        let l = state.get_legal_actions();
+                        if l.is_empty() || state.terminated { break; }
+                        state.step(*l.choose(&mut rng).unwrap());
+                    }
+                    if state.terminated { continue; }
+                    let mut root = crate::mcts_rs::MCTSNode::new(0.0);
+                    crate::mcts_rs::az_mcts_search_on_root(&state, &mut root, sims, cp, bs, &m);
+                    let mut gd: Vec<([f32; 272], [f32; 60], usize)> = Vec::with_capacity(50);
+                    let mut step = rm;
+                    while !state.terminated && step < maxs {
+                        let legal = state.get_legal_actions();
+                        if legal.is_empty() { break; }
+                        let cv: Vec<(usize, u32)> = root.children.iter().map(|(a, c)| (*a, c.visits)).collect();
+                        let mut pol = [0.0f32; 60]; let sum_c: u32 = cv.iter().map(|(_, c)| c).sum();
+                        if sum_c > 0 { for (a, c) in &cv { pol[*a] = *c as f32 / sum_c as f32; } }
+                        else if !legal.is_empty() { let u = 1.0 / legal.len() as f32; for a in &legal { pol[*a] = u; } }
+                        let obs = crate::az_model::encode_obs(
+                            &state.board.cells, &state.pieces, state.current_player,
+                            matches!(state.phase, Phase::Movement) as u8, &state.scores,
+                            state.episode_steps as i32,
+                        );
+                        gd.push((obs, pol, state.current_player));
+                        let temp = if step < tt { 1.0 } else { 0.1 };
+                        let action = if temp < 0.01 {
+                            cv.iter().max_by_key(|(_, c)| *c).map(|(a, _)| *a).unwrap_or(0)
+                        } else {
+                            let probs: Vec<f64> = cv.iter().map(|(_, c)| (*c as f64).powf(1.0 / temp)).collect();
+                            let ps: f64 = probs.iter().sum(); let mut r = rng.gen::<f64>() * ps; let mut ca = 0;
+                            for (i, (a, _)) in cv.iter().enumerate() { r -= probs[i]; if r <= 0.0 { ca = *a; break; } }
+                            ca
+                        };
+                        if legal.contains(&action) { state.step(action); }
+                        else if !legal.is_empty() { state.step(legal[0]); }
+                        else { break; }
+                        step += 1; if state.terminated { break; }
+                        let child = root.children.remove(&action).unwrap_or(crate::mcts_rs::MCTSNode::new(0.0));
+                        root.children.clear(); root = child;
+                        crate::mcts_rs::az_mcts_search_on_root(&state, &mut root, add_sims, cp, bs, &m);
+                    }
+                    let winner = if state.scores[0] > state.scores[1] { 0 }
+                        else if state.scores[1] > state.scores[0] { 1 } else { 2 };
+                    for (obs, pol, cp_) in gd {
+                        let value: f32 = if winner == 2 { 0.0 } else if cp_ == winner { 1.0 } else { -1.0 };
+                        for v in obs { buf.extend_from_slice(&v.to_le_bytes()); }
+                        for v in pol { buf.extend_from_slice(&v.to_le_bytes()); }
+                        buf.extend_from_slice(&value.to_le_bytes()); j += 1;
+                    }
+                }
+                (buf, j)
+            }));
+        }
+        let mut total = 0u64; let mut all_data = Vec::new(); all_data.extend_from_slice(&0u64.to_le_bytes());
+        for h in handles { if let Ok((d, c)) = h.join() { all_data.extend_from_slice(&d); total += c; } }
+        (all_data, total)
+    });
+    let cb = results.1.to_le_bytes();
+    for (i, &b) in cb.iter().enumerate() { results.0[i] = b; }
+    match File::create(path) { Ok(mut f) => { let _ = f.write_all(&results.0); } _ => return -5, }
+    results.1 as i64
+}
+fn start(w: i32, gpw: i32, extra: i32) -> i32 { w * gpw + extra.min(w) }
+
 fn write_ab_json(output_buf: *mut c_char, output_size: i32, result: &str) {
     let bytes = result.as_bytes();
     let n = (bytes.len() + 1).min(output_size as usize);

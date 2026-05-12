@@ -1203,3 +1203,25 @@ def mcts_search_rust_handle_az(
     )
     raw = out_buf.value.decode('utf-8')
     return json.loads(raw) if raw else {}
+
+
+def ffi_az_selfplay_batch(
+    az_handle: int, num_games: int, num_workers: int,
+    config: dict, output_path: str,
+    lib=None,
+) -> int:
+    """Run batch self-play in Rust with tree reuse and parallel workers.
+    Returns number of positions generated.
+    
+    config keys:
+        simulations, additional_sims, random_open_moves, temp_threshold,
+        max_steps, c_puct, batch_size, seed_offset
+    """
+    if lib is None:
+        lib = get_engine()._lib
+    config_json = json.dumps(config)
+    return lib.ffi_az_selfplay_batch(
+        c_int32(az_handle), c_int32(num_games), c_int32(num_workers),
+        c_char_p(config_json.encode('utf-8')),
+        c_char_p(output_path.encode('utf-8')),
+    )

@@ -831,10 +831,41 @@ def main():
         print(f'Iteration {i_iter}/{args.iterations}', flush=True)
         print(f'{"="*50}', flush=True)
         
-        # Self-play with Rust MCTS (parallel games)
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        # Self-play with Rust batch (faster: no Python overhead)
         iter_data = []
-        game_workers = args.workers
+        try:
+            from penguinchess.rust_ffi import ffi_az_selfplay_batch
+            batch_cfg = {
+                'simulations': args.simulations,
+                'additional_sims': 15,
+                'random_open_moves': 10,
+                'temp_threshold': 30,
+                'max_steps': 500,
+                'c_puct': 3.0,
+                'batch_size': min(128, max(32, args.simulations // 50)),
+                'seed_offset': i_iter * 100000,
+            }
+            sp_path = f'data/sp_batch_{i_iter}.bin'
+            n_pos = ffi_az_selfplay_batch(az_handle._handle, args.games, args.workers,
+                                          batch_cfg, sp_path)
+            if n_pos > 0:
+                raw = open(sp_path, 'rb').read()
+                n = struct.unpack('<Q', raw[:8])[0]
+                off = 8
+                for _ in range(min(n, 1000000)):
+                    obs = np.frombuffer(raw[off:off+1088], dtype=np.float32, count=272).copy(); off += 1088
+                    pol = np.frombuffer(raw[off:off+240], dtype=np.float32, count=60).copy(); off += 240
+                    val = struct.unpack('<f', raw[off:off+4])[0]; off += 4
+                    iter_data.append((obs, pol, val))
+                import os; os.remove(sp_path)
+                print(f'  Rust batch: {n} positions, {len(iter_data)} loaded', flush=True)
+        except ImportError:
+            pass
+        
+        if not iter_data:
+            # Fallback: Python ThreadPoolExecutor self-play
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            game_workers = args.workers
         
         def play_one_game(g):
             try:
