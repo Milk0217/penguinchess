@@ -592,12 +592,12 @@ def evaluate_elo_vs_history(net, num_past=10, games_per_pair=20, sims=200):
     
     current_handle = create_az_handle(net, device='cpu')
     
-    def _play_tree_game(seed, p0_handle, p1_handle):
-        """Play one game with tree reuse for both sides."""
+    def _play_tree_game(seed, h0, h1):
+        """Play one game with tree reuse for both sides. h0/h1 are handle objects."""
         core = RustCore(engine=get_engine()).reset(seed)
         eng = get_engine()
-        tree0 = AZMCTSReuseTree(eng, core.handle, p0_handle, sims, 3.0, 32)
-        tree1 = AZMCTSReuseTree(eng, core.handle, p1_handle, sims, 3.0, 32)
+        tree0 = AZMCTSReuseTree(eng, core.handle, h0, sims, 3.0, 32)
+        tree1 = AZMCTSReuseTree(eng, core.handle, h1, sims, 3.0, 32)
         stepped = 0
         while True:
             legal = core.get_legal_actions()
@@ -610,7 +610,6 @@ def evaluate_elo_vs_history(net, num_past=10, games_per_pair=20, sims=200):
             _, _, term, _ = core.step(action)
             stepped += 1
             if term: break
-            # Step active tree (no extra sims), passive tree (gets sims for next turn)
             active_tree.step(action, 0, 3.0, 32)
             passive_tree.step(action, sims, 3.0, 32)
         p0_won = 1 if core.players_scores[0] > core.players_scores[1] else 0
@@ -618,13 +617,12 @@ def evaluate_elo_vs_history(net, num_past=10, games_per_pair=20, sims=200):
         return p0_won
     
     def _eval_past(ph, idx):
-        """Evaluate current vs one past model (parallel worker)."""
         cw = 0; cp = 0
         for g in range(games_per_pair):
             seed = g * 973 + 1911 + idx * 9999
-            cw += _play_tree_game(seed, current_handle._handle, ph._handle)
+            cw += _play_tree_game(seed, current_handle, ph)
             cp += 1
-            cw += 1 - _play_tree_game(seed + 500000, ph._handle, current_handle._handle)
+            cw += 1 - _play_tree_game(seed + 500000, ph, current_handle)
             cp += 1
         return cw / cp
     
@@ -901,7 +899,7 @@ def main():
             for ep in range(n_eval):
                 core = RustCore(engine=get_engine()).reset(ep + 99999)
                 # Tree: 200 initial sims, then 200 per step
-                tree = AZMCTSReuseTree(get_engine(), core.handle, az_handle._handle,
+                tree = AZMCTSReuseTree(get_engine(), core.handle, az_handle,
                     num_simulations=200, c_puct=3.0, batch_size=32)
                 stepped = 0
                 while True:
