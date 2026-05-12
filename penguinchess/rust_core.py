@@ -105,6 +105,17 @@ class RustCore:
         if self._game is None:
             raise RuntimeError("Game not initialized. Call reset() first.")
         return self._game.handle
+    
+    def encode_obs(self) -> np.ndarray:
+        """Encode game state to 272-dim observation (no JSON serialization)."""
+        import numpy as np
+        from ctypes import POINTER, c_float, c_int32
+        lib = self._engine._lib
+        out = (c_float * 272)()
+        rc = lib.ffi_az_encode_obs(c_int32(self._game.handle), out)
+        if rc != 0:
+            raise RuntimeError(f"ffi_az_encode_obs failed: rc={rc}")
+        return np.frombuffer(out, dtype=np.float32).copy()
 
     def close(self):
         if self._game is not None:

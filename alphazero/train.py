@@ -197,7 +197,12 @@ def update_az_weights(az_handle: AZModelHandle, net, device='cpu'):
 OBS_DIM = 272
 
 def _encode_flat_obs(core) -> np.ndarray:
-    """Encode game state to 272-dim observation vector (206 + 66 dense features)."""
+    """Encode game state to 272-dim observation (Rust fast path via FFI)."""
+    try:
+        return core.encode_obs()
+    except Exception:
+        pass
+    # Fallback: JSON-based encoding
     import json
     s = json.loads(core.to_json())
     hexes = s.get('board', {}).get('cells', [])

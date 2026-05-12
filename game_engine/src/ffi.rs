@@ -496,6 +496,22 @@ pub unsafe extern "C" fn game_stateful_get_info(
     0
 }
 
+/// Encode game state to 272-dim obs (bypasses JSON serialization).
+#[no_mangle]
+pub unsafe extern "C" fn ffi_az_encode_obs(handle: i32, obs_out: *mut f32) -> i32 {
+    let game = match GAMES.get(handle as usize) {
+        Some(Some(g)) => g,
+        _ => return -1,
+    };
+    let bn = &game.board.cells;
+    let ps = &game.pieces;
+    let cp = game.current_player;
+    let ph = if game.phase == crate::rules::Phase::Movement { 1u8 } else { 0u8 };
+    let obs = crate::az_model::encode_obs(bn, ps, cp, ph, &game.scores, game.episode_steps as i32);
+    std::ptr::copy_nonoverlapping(obs.as_ptr(), obs_out, 272);
+    0
+}
+
 /// Handle-based MCTS search: read state from GAMES[handle], run search,
 /// bypassing the JSON serialization/deserialization roundtrip.
 /// Returns visit counts JSON (same format as mcts_search_rust).
