@@ -665,6 +665,7 @@ def main():
     parser.add_argument('--eval-interval', type=int, default=10)
     parser.add_argument('--workers', type=int, default=8)
     parser.add_argument('--pretrain', action='store_true', help='Pre-train value head on AB+NNUE gen_2')
+    parser.add_argument('--gen2-data', action='store_true', help='Augment replay buffer with gen_2 AB+NNUE game data')
     parser.add_argument('--gen2-sup', action='store_true', help='Use gen_2 value supervision during training')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
     parser.add_argument('--gpu-mcts', action='store_true', help='Use GPU-parallelized NN inference for MCTS')
@@ -724,6 +725,54 @@ def main():
     best_wr = 0.0
     best_elo = -999.0
     total_t0 = time.time()
+    
+    # Generate gen_2 data for buffer augmentation (one-time)
+    if args.gen2_data:
+        print(f'\n{"="*50}', flush=True)
+        print(f'Generating gen_2 teacher data...')
+        print(f'{"="*50}', flush=True)
+        from penguinchess.ai.nnue import NNUE
+        m = NNUE()
+        sd = torch.load('models/ab_nnue/nnue_gen_2.pt', map_location='cpu', weights_only=False)
+        sd = sd.get('model_state', sd) if isinstance(sd, dict) and 'model_state' in sd else sd
+        m.load_state_dict(sd)
+        w = {k: v.cpu() for k, v in m.state_dict().items()}
+        h = ffi_ab_create(json.dumps({'max_depth': 6, 'tt_size': 65536, 'null_move': True}))
+        h.set_weights(w)
+        sm = {'active': 'active', 'occupied': 'occupied', 'used': 'used'}
+        n_gen_games = min(1000, args.games)
+        for g in range(n_gen_games):
+            core = RustCore(engine=get_engine(), seed=g * 997 + 12345).reset(seed=g * 997 + 12345)
+            gd = []
+            while not core._terminated and core._episode_steps < 200:
+                leg = core.get_legal_actions()
+                if not leg: break
+                obs = _encode_flat_obs(core)
+                s = json.loads(core.to_json())
+                hx = [{'coord': x['coord'], 'state': sm.get(x['state'], 'active'), 'points': x.get('points', 0)} for x in s['board']['cells']]
+                px = [{'id': p['id'], 'alive': p['alive'], 'hex_idx': p.get('hex_idx'), 'hex_value': p.get('hex_value', 0)} for p in s['pieces']]
+                sj = json.dumps({'board': {'cells': hx}, 'pieces': px, 'scores': s['scores'],
+                    'phase': s['phase'], 'current_player': s['current_player'],
+                    'placement_count': s['placement_count'], 'episode_steps': s['episode_steps'],
+                    'terminated': False})
+                r = h.search(sj, max_depth=6)
+                if not isinstance(r, dict) or 'best_action' not in r:
+                    if leg: core.step(leg[0])
+                    continue
+                a = r['best_action']
+                if a in leg: core.step(a)
+                elif leg: core.step(leg[0])
+                else: break
+                gd.append(obs)
+            s0, s1 = core.players_scores
+            outcome = 1.0 if s0 > s1 else (-1.0 if s1 > s0 else 0.0)
+            for obs in gd:
+                replay_buffer.append((obs, np.zeros(60, dtype=np.float32), outcome))
+            core.close()
+            if (g + 1) % 200 == 0:
+                print(f'  gen_2 games: {g+1}/{n_gen_games} ({len(replay_buffer)} pos)', flush=True)
+        h.free()
+        print(f'  gen_2 data: {n_gen_games} games, {len(replay_buffer)} positions added to buffer', flush=True)
     
     for i_iter in range(1, args.iterations + 1):
         t0 = time.time()
