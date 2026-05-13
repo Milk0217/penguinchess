@@ -107,11 +107,13 @@ impl AdamState {
     }
 }
 
-fn adam_apply(w: &mut [f32], g: &[f32], m: &mut [f32], v: &mut [f32], lr: f32, wd: f32, _b1t: f32, _b2t: f32) {
+fn adam_apply(w: &mut [f32], g: &[f32], m: &mut [f32], v: &mut [f32], lr: f32, wd: f32, b1t: f32, b2t: f32) {
     for i in 0..w.len() {
         m[i] = 0.9 * m[i] + 0.1 * g[i];
         v[i] = 0.999 * v[i] + 0.001 * g[i] * g[i];
-        w[i] -= lr * (m[i] / 0.1) / ((v[i] / 0.001).sqrt() + 1e-8) + lr * wd * w[i];
+        let m_hat = m[i] * b1t;
+        let v_hat = v[i] * b2t;
+        w[i] -= lr * m_hat / (v_hat.sqrt() + 1e-8) + lr * wd * w[i];
     }
 }
 
@@ -119,16 +121,17 @@ pub fn adam_step(w: &mut NNUEWeights, g: &GradientBuffer, a: &mut AdamState, lr:
     a.t += 1;
     let b1t = 1.0 / (1.0 - 0.9f32.powi(a.t as i32));
     let b2t = 1.0 / (1.0 - 0.999f32.powi(a.t as i32));
-    let lr_e = lr * (b2t.sqrt()) / b1t;
+    // b1t, b2t = 1/(1-β^t), so m_hat = m * b1t, v_hat = v * b2t
+    // Pass bias correction factors to adam_apply
 
-    adam_apply(&mut w.ft_weight, &g.d_ft, &mut a.m_ft, &mut a.v_ft, lr_e, wd, 0.9, 0.999);
-    adam_apply(&mut w.ft_bias, &g.d_ft_b, &mut a.m_ft_b, &mut a.v_ft_b, lr_e, wd, 0.9, 0.999);
-    adam_apply(&mut w.fc1_weight_t, &g.d_fc1_t, &mut a.m_fc1_t, &mut a.v_fc1_t, lr_e, wd, 0.9, 0.999);
-    adam_apply(&mut w.fc1_bias, &g.d_fc1_b, &mut a.m_fc1_b, &mut a.v_fc1_b, lr_e, wd, 0.9, 0.999);
-    adam_apply(&mut w.fc2_weight_t, &g.d_fc2_t, &mut a.m_fc2_t, &mut a.v_fc2_t, lr_e, wd, 0.9, 0.999);
-    adam_apply(&mut w.fc2_bias, &g.d_fc2_b, &mut a.m_fc2_b, &mut a.v_fc2_b, lr_e, wd, 0.9, 0.999);
-    adam_apply(&mut w.fc3_weight_t, &g.d_fc3_t, &mut a.m_fc3_t, &mut a.v_fc3_t, lr_e, wd, 0.9, 0.999);
-    adam_apply(&mut w.fc3_bias, &g.d_fc3_b, &mut a.m_fc3_b, &mut a.v_fc3_b, lr_e, wd, 0.9, 0.999);
+    adam_apply(&mut w.ft_weight, &g.d_ft, &mut a.m_ft, &mut a.v_ft, lr, wd, b1t, b2t);
+    adam_apply(&mut w.ft_bias, &g.d_ft_b, &mut a.m_ft_b, &mut a.v_ft_b, lr, wd, b1t, b2t);
+    adam_apply(&mut w.fc1_weight_t, &g.d_fc1_t, &mut a.m_fc1_t, &mut a.v_fc1_t, lr, wd, b1t, b2t);
+    adam_apply(&mut w.fc1_bias, &g.d_fc1_b, &mut a.m_fc1_b, &mut a.v_fc1_b, lr, wd, b1t, b2t);
+    adam_apply(&mut w.fc2_weight_t, &g.d_fc2_t, &mut a.m_fc2_t, &mut a.v_fc2_t, lr, wd, b1t, b2t);
+    adam_apply(&mut w.fc2_bias, &g.d_fc2_b, &mut a.m_fc2_b, &mut a.v_fc2_b, lr, wd, b1t, b2t);
+    adam_apply(&mut w.fc3_weight_t, &g.d_fc3_t, &mut a.m_fc3_t, &mut a.v_fc3_t, lr, wd, b1t, b2t);
+    adam_apply(&mut w.fc3_bias, &g.d_fc3_b, &mut a.m_fc3_b, &mut a.v_fc3_b, lr, wd, b1t, b2t);
 }
 
 // ─── Training ─────────────────────────────────────────────────
@@ -193,11 +196,13 @@ pub fn backward_sample(
         if is_stm { stm_features.push(f); } else { nstm_features.push(f); }
     }
 
-    // CReLU + concat dense → x (194-dim)
+    // CReLU → x (128-dim, values in [0, 127])
     let mut x = [0.0f32; INPUT_DIM];
     for i in 0..FT_DIM {
-        x[i] = (acc_stm[i].clamp(0.0, 127.0)) * 2.0 / 127.0 - 1.0;
-        x[FT_DIM + i] = (acc_nstm[i].clamp(0.0, 127.0)) * 2.0 / 127.0 - 1.0;
+        x[i] = acc_stm[i].clamp(0.0, 127.0);
+    }
+    for i in 0..FT_DIM {
+        x[FT_DIM + i] = acc_nstm[i].clamp(0.0, 127.0);
     }
     x[FT_DIM*2..].copy_from_slice(&rec.dense);
 
@@ -285,17 +290,16 @@ pub fn backward_sample(
     }
 
     // ── 5. Backward CReLU + FT ────────────────────────────────
-    let scale = 2.0 / 127.0;
     for i in 0..FT_DIM {
         let d_crelu = d_x[i];
-        let d_acc_stm_i = if acc_stm[i] > 0.0 && acc_stm[i] < 127.0 { d_crelu * scale } else { 0.0 };
+        let d_acc_stm_i = if acc_stm[i] > 0.0 && acc_stm[i] < 127.0 { d_crelu } else { 0.0 };
         g.d_ft_b[i] += d_acc_stm_i;
         for &f in &stm_features {
             g.d_ft[(f as usize) * FT_DIM + i] += d_acc_stm_i;
         }
 
         let d_crelu_n = d_x[FT_DIM + i];
-        let d_acc_nstm_i = if acc_nstm[i] > 0.0 && acc_nstm[i] < 127.0 { d_crelu_n * scale } else { 0.0 };
+        let d_acc_nstm_i = if acc_nstm[i] > 0.0 && acc_nstm[i] < 127.0 { d_crelu_n } else { 0.0 };
         g.d_ft_b[i] += d_acc_nstm_i;
         for &f in &nstm_features {
             g.d_ft[(f as usize) * FT_DIM + i] += d_acc_nstm_i;

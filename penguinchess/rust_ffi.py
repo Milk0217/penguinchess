@@ -983,7 +983,7 @@ def ffi_ab_generate_random_data(
     Returns number of positions generated.
     """
     lib = get_engine()._lib
-    count = lib.ffi_ab_generate_selfplay_data(
+    count = lib.ffi_ab_generate_random_data(
         c_int32(ab_handle._handle),
         c_int32(num_games),
         c_int32(seed_offset),

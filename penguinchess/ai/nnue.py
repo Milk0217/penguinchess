@@ -186,9 +186,9 @@ class NNUE(nn.Module):
             stm_players = [0] * B
 
         # Build padded index tensors for stm and nstm features
-        # Each sample has at most 3 pieces per player
-        stm_idx = torch.zeros(B, 3, dtype=torch.long, device=device)
-        nstm_idx = torch.zeros(B, 3, dtype=torch.long, device=device)
+        # Use -1 as padding, masked during gather
+        stm_idx = torch.full((B, 3), -1, dtype=torch.long, device=device)
+        nstm_idx = torch.full((B, 3), -1, dtype=torch.long, device=device)
 
         for i in range(B):
             sp = sparse_batch[i]
@@ -207,10 +207,15 @@ class NNUE(nn.Module):
                     nstm_idx[i, ni] = f
                     ni += 1
 
-        # Feature Transformer: single embedding gather per perspective
-        # ft_w[stm_idx]: (B, 3, ft_dim) → sum(dim=1): (B, ft_dim)
-        acc_stm = ft_w[stm_idx].sum(dim=1) + ft_b  # (B, ft_dim)
-        acc_nstm = ft_w[nstm_idx].sum(dim=1) + ft_b
+        # Feature Transformer: masked gather, sum only valid indices
+        # Mask for -1 sentinel: (B, 3, 1) broadcast over ft_dim
+        stm_mask = (stm_idx >= 0).unsqueeze(-1).float()  # (B, 3, 1)
+        nstm_mask = (nstm_idx >= 0).unsqueeze(-1).float()
+        # Use clamp to avoid out-of-bounds gather, then zero out masked entries
+        stm_gathered = ft_w[stm_idx.clamp(min=0)] * stm_mask  # (B, 3, ft_dim)
+        nstm_gathered = ft_w[nstm_idx.clamp(min=0)] * nstm_mask
+        acc_stm = stm_gathered.sum(dim=1) + ft_b  # (B, ft_dim)
+        acc_nstm = nstm_gathered.sum(dim=1) + ft_b
 
         x = torch.cat([F.relu(acc_stm), F.relu(acc_nstm), dense_batch], dim=-1)
         x = F.relu(self.fc1(x))

@@ -98,12 +98,13 @@ def generate_games(
         for sparse, dense, player in game_features:
             if player == 0:  # P1 to move
                 value = outcome
-            else:  # P2 to move
-                value = -outcome  # Flip for opponent
+            else:
+                value = -outcome
             data.append({
                 'sparse': sparse,
                 'dense': dense.tolist(),
                 'value': value,
+                'player': player,
             })
     
     return data
