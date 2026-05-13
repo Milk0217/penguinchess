@@ -81,3 +81,11 @@ penguinchess/
 
 > **引入任何新技术或算法前，必须先补充 `docs/TECHNICAL_REFERENCE.md` 相关章节。**
 > 内容包括：算法原理、架构图、参数说明、代码位置、参考链接。
+
+### 12.1 版本控制规范
+
+> **本项目使用 `jj` (Jujutsu) 作为首选版本控制系统，替代 `git`。**
+> - 所有新提交必须使用 `jj` 命令：`jj describe -m "msg"`, `jj new`, `jj bookmark move main@origin`, `jj git push`
+> - 禁止使用 `git commit`, `git push` 等原生命令
+> - `jj` 提供与 `git` 相同的远程仓库兼容性（push/pull to GitHub 不变）
+> - 迁移原因：`jj` 提供自动分支管理、更安全的 amend、原生工作副本即提交模型
