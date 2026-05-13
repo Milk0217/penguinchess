@@ -46,6 +46,7 @@ class PPOAgent(Agent):
     def __init__(self, model, deterministic: bool = True, model_path: str = ''):
         import torch
         import pickle
+        from pathlib import Path
 
         self._model = model
         self._deterministic = deterministic

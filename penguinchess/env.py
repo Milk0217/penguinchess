@@ -4,6 +4,7 @@ PenguinChess Gymnasium RL environment with optional Rust game engine.
 
 from __future__ import annotations
 from typing import Optional, Tuple, Any
+import random
 import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
@@ -58,7 +59,8 @@ class PenguinChessEnv(gym.Env):
 
     def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None) -> tuple[np.ndarray, dict]:
         super().reset(seed=seed)
-        self._game.reset(seed=seed)
+        real_seed = seed if seed is not None else random.randint(0, 2**31 - 1)
+        self._game.reset(seed=real_seed)
         self._obs = self._make_obs()
         self._winner = None
         self._elapsed_steps = 0
@@ -75,7 +77,7 @@ class PenguinChessEnv(gym.Env):
         if action not in legal:
             info = self._make_info()
             info["invalid_action"] = True
-            return self._obs, -0.5, False, truncated, info
+            return self._obs, -0.01, False, truncated, info
 
         # Execute
         _, reward, terminated, step_info = self._game.step(action)

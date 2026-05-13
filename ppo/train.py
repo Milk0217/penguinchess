@@ -71,19 +71,21 @@ def compete(
     model_p2: PPO | None,
     num_episodes: int = 100,
     deterministic: bool = True,
+    norm_stats: dict = None,
 ) -> dict:
     """
     model_p1 与 model_p2 对战 num_episodes 局。
-    
     如果某个 model 为 None，则该方使用随机策略。
-    
-    Returns:
-        {"p1_win": float, "p2_win": float, "draw": float,
-         "p1_avg_reward": float, "p2_avg_reward": float}
+    norm_stats: {'mean': np.ndarray, 'std': np.ndarray} — 从 VecNormalize 加载的观测归一化统计量。
     """
     env = gym.make("PenguinChess-v0")
     p1_wins = 0; p2_wins = 0; draws = 0
     p1_total_r = 0.0; p2_total_r = 0.0
+
+    def _norm(obs):
+        if norm_stats is not None:
+            return (obs - norm_stats['mean']) / (norm_stats['std'] + 1e-8)
+        return obs
 
     for ep in range(num_episodes):
         obs, info = env.reset(seed=ep)
@@ -92,7 +94,7 @@ def compete(
         while not terminated and not truncated:
             # P1 选动作
             if model_p1:
-                act_arr, _ = model_p1.predict(obs, deterministic=deterministic)
+                act_arr, _ = model_p1.predict(_norm(obs), deterministic=deterministic)
                 action = int(act_arr.item())
             else:
                 legal = info.get("valid_actions", [])
@@ -102,7 +104,7 @@ def compete(
 
             # P2 选动作
             if model_p2:
-                act_arr, _ = model_p2.predict(obs, deterministic=deterministic)
+                act_arr, _ = model_p2.predict(_norm(obs), deterministic=deterministic)
                 action = int(act_arr.item())
             else:
                 legal = info.get("valid_actions", [])
@@ -200,6 +202,9 @@ def train(args):
     elapsed = time.time() - start_time
     print(f"训练完成! 耗时: {elapsed:.1f}s ({args.timesteps / elapsed:.0f} steps/s)")
 
+    # 保存为新一代
+    gen = get_next_gen()
+
     # 保存 VecNormalize 统计量（供评估时归一化 obs）
     import pickle
     norm_stats = {
@@ -210,8 +215,6 @@ def train(args):
     with open(stats_path, 'wb') as f:
         pickle.dump(norm_stats, f)
 
-    # 保存为新一代
-    gen = get_next_gen()
     gen_path = str(MODELS_DIR / f"ppo_penguinchess_gen_{gen}.zip")
     model.save(gen_path)
     print(f"已保存: gen_{gen}")
@@ -228,7 +231,7 @@ def train(args):
     print(f"\n--- Gen {gen} 对战评估 ---")
 
     # 1) 对随机 AI
-    r = compete(model, None, args.eval_episodes)
+    r = compete(model, None, args.eval_episodes, norm_stats=norm_stats)
     print(f"vs 随机 AI:  胜 {r['p1_win']:.1%}  负 {r['p2_win']:.1%}  平 {r['draw']:.1%}")
 
     # 2) 对前几代（交叉评估）
@@ -244,7 +247,7 @@ def train(args):
     total_games = 0
     for g in range(1, gen):
         if g in eval_models:
-            r2 = compete(model, eval_models[g], args.eval_episodes)
+            r2 = compete(model, eval_models[g], args.eval_episodes, norm_stats=norm_stats)
             score_a = r2['p1_win'] + 0.5 * r2['draw']
             elo_ratings[gen], elo_ratings[g] = compute_elo(elo_ratings[gen], elo_ratings[g], score_a)
             total_wins += r2['p1_win']
