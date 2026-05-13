@@ -867,30 +867,30 @@ def main():
             from concurrent.futures import ThreadPoolExecutor, as_completed
             game_workers = args.workers
         
-        def play_one_game(g):
-            try:
-                data, winner = self_play_game(
-                    az_handle, num_simulations=args.simulations,
-                    temperature=1.0, temp_threshold=30,
-                    tree_reuse=(args.simulations >= 200 and not args.gpu_mcts),
-                    additional_sims=15, random_open_moves=10,
-                    gpu_net=gpu_model if args.gpu_mcts else None)
-                return data if data else []
-            except Exception as e:
-                print(f'  [warn] game {g} failed: {e}', flush=True)
-                return []
-        
-        with ThreadPoolExecutor(max_workers=game_workers) as pool:
-            futures = [pool.submit(play_one_game, g) for g in range(args.games)]
-            for i, f in enumerate(as_completed(futures)):
+            def play_one_game(g):
                 try:
-                    data = f.result()
-                    if data:
-                        iter_data.extend(data)
+                    data, winner = self_play_game(
+                        az_handle, num_simulations=args.simulations,
+                        temperature=1.0, temp_threshold=30,
+                        tree_reuse=(args.simulations >= 200 and not args.gpu_mcts),
+                        additional_sims=15, random_open_moves=10,
+                        gpu_net=gpu_model if args.gpu_mcts else None)
+                    return data if data else []
                 except Exception as e:
-                    print(f'  [warn] future {i} failed: {e}', flush=True)
-                if (i + 1) % 50 == 0:
-                    print(f'  Games: {i+1}/{args.games} ({len(iter_data)} pos)', flush=True)
+                    print(f'  [warn] game {g} failed: {e}', flush=True)
+                    return []
+        
+            with ThreadPoolExecutor(max_workers=game_workers) as pool:
+                futures = [pool.submit(play_one_game, g) for g in range(args.games)]
+                for i, f in enumerate(as_completed(futures)):
+                    try:
+                        data = f.result()
+                        if data:
+                            iter_data.extend(data)
+                    except Exception as e:
+                        print(f'  [warn] future {i} failed: {e}', flush=True)
+                    if (i + 1) % 50 == 0:
+                        print(f'  Games: {i+1}/{args.games} ({len(iter_data)} pos)', flush=True)
         
         replay_buffer.extend(iter_data)
         # FIFO eviction: keep most recent 500K positions

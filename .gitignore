@@ -15,3 +15,10 @@ backend_data/
 
 # Rust build artifacts
 game_engine/target/
+
+# Training data binaries
+data/*.bin
+
+# Model files (tracked manually via model_registry.json)
+models/**/*.pth
+models/**/*.onnx

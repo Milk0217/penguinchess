@@ -436,10 +436,17 @@ class AlphaZeroResNetConfigurable(_AlphaZeroResNetOriginal):
     arch_name = "resnet_configurable"
 
     def __init__(self, obs_dim: int = 272, action_dim: int = 60,
-                 hidden_dim: int = 512, num_blocks: int = 1):
+                 hidden_dim: int = 512, num_blocks: int = 1,
+                 value_dim: int = None):
+        """
+        value_dim: hidden size for value head (default: hidden_dim//4 for 1M/2M, hidden_dim//2 for 3M)
+        """
         nn.Module.__init__(self)
         self.obs_dim = obs_dim
         self.action_dim = action_dim
+        if value_dim is None:
+            value_dim = max(64, hidden_dim // 4)
+        self._value_dim = value_dim
 
         # ----- shared trunk with residual blocks -----
         self.fc_in = nn.Linear(obs_dim, hidden_dim)
@@ -462,9 +469,9 @@ class AlphaZeroResNetConfigurable(_AlphaZeroResNetOriginal):
         # ----- policy head -----
         self.policy_fc = nn.Linear(hidden_dim // 2, action_dim)
 
-        # ----- value head (larger) -----
-        self.value_fc1 = nn.Linear(hidden_dim // 2, hidden_dim // 2)
-        self.value_fc2 = nn.Linear(hidden_dim // 2, 1)
+        # ----- value head -----
+        self.value_fc1 = nn.Linear(hidden_dim // 2, self._value_dim)
+        self.value_fc2 = nn.Linear(self._value_dim, 1)
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         # Shared trunk
@@ -517,13 +524,13 @@ class AlphaZeroResNet2M(AlphaZeroResNetConfigurable):
 
 class AlphaZeroResNet3M(AlphaZeroResNetConfigurable):
     """
-    3.0M params (hidden=512, blocks=5).
-    Balanced depth/width for intermediate-scale training.
+    3.0M params (hidden=512, blocks=5, value_hidden=256).
+    Balanced depth/width with larger value head for intermediate-scale training.
     """
     arch_name = "resnet_3m"
 
     def __init__(self, obs_dim: int = 272, action_dim: int = 60):
-        super().__init__(obs_dim, action_dim, hidden_dim=512, num_blocks=5)
+        super().__init__(obs_dim, action_dim, hidden_dim=512, num_blocks=5, value_dim=256)
 
 
 class AlphaZeroResNetXL(AlphaZeroResNetConfigurable):
