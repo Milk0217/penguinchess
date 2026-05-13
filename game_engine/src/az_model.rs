@@ -227,26 +227,21 @@ impl AZModelWeights {
         } else {
             x.clone() // AlphaZero: value shares trunk output
         };
+        // Forward through ALL value layers sequentially (Fix: handle intermediate layers)
+        let mut value = value_input.clone();
+        for li in self.value1_idx..=self.value2_idx {
+            let layer = &self.layers[li];
+            let lw = &self.weights[layer.weight_offset..layer.weight_offset + layer.rows * layer.cols];
+            let lb = &self.biases[layer.bias_offset..layer.bias_offset + layer.rows];
+            let mut vout = vec![0.0f32; layer.rows];
+            matvec(lw, &value, layer.rows, layer.cols, lb, &mut vout);
+            if li < self.value2_idx && layer.has_relu {
+                relu_inplace(&mut vout);
+            }
+            value = vout;
+        }
 
-        let v1 = &self.layers[self.value1_idx];
-        let val_x = if v1.cols == OBS_DIM && self.value_uses_obs {
-            value_input.clone()
-        } else {
-            value_input.clone()
-        };
-        let v1w = &self.weights[v1.weight_offset..v1.weight_offset + v1.rows * v1.cols];
-        let v1b = &self.biases[v1.bias_offset..v1.bias_offset + v1.rows];
-        let mut value = vec![0.0f32; v1.rows];
-        matvec(v1w, &val_x, v1.rows, v1.cols, v1b, &mut value);
-        relu_inplace(&mut value);
-
-        let v2 = &self.layers[self.value2_idx];
-        let v2w = &self.weights[v2.weight_offset..v2.weight_offset + v2.rows * v2.cols];
-        let v2b = &self.biases[v2.bias_offset..v2.bias_offset + v2.rows];
-        let mut vout = [0.0f32; 1];
-        matvec(v2w, &value, 1, v2.cols, v2b, &mut vout);
-
-        (policy, vout[0].tanh())
+        (policy, value[0].tanh())
     }
 
     pub fn evaluate_batch(&self, obs_batch: &[[f32; OBS_DIM]]) -> (Vec<Vec<f32>>, Vec<f32>) {

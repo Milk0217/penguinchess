@@ -188,7 +188,15 @@ pub unsafe extern "C" fn game_stateful_step(
         _ => return -1,
     };
     let (reward, terminated) = game.step(action as usize);
-    let result = serde_json::json!({"reward": reward, "terminated": terminated}).to_string();
+    let legal = game.get_legal_actions();
+    let result = serde_json::json!({
+        "reward": reward,
+        "terminated": terminated,
+        "scores": game.scores,
+        "current_player": game.current_player,
+        "phase": serde_json::to_value(&game.phase).unwrap_or(serde_json::json!("placement")),
+        "legal_actions": legal,
+    }).to_string();
     write_ab_json(output_buffer, buffer_size, &result);
     0
 }
@@ -492,6 +500,50 @@ pub unsafe extern "C" fn game_stateful_get_info(
         "terminated": game.terminated,
     });
     let output = serde_json::to_string(&result).unwrap_or_default();
+    write_output(output_buffer, buffer_size, &output);
+    0
+}
+
+/// Get game observation (board, pieces, current_player, phase) as JSON.
+#[no_mangle]
+pub unsafe extern "C" fn game_stateful_get_obs(
+    handle: i32,
+    output_buffer: *mut c_char,
+    buffer_size: i32,
+) -> i32 {
+    let game = match GAMES.get(handle as usize) {
+        Some(Some(g)) => g,
+        _ => return -1,
+    };
+    let board: Vec<Vec<f64>> = game.board.cells.iter().map(|c| {
+        let val = if c.state == crate::board::HexState::Active || c.state == crate::board::HexState::Occupied {
+            c.points as f64 / 3.0
+        } else { 0.0 };
+        vec![c.coord.q as f64 / 8.0, c.coord.r as f64 / 8.0, val]
+    }).collect();
+    let pieces: Vec<Vec<f64>> = game.pieces.iter().map(|p| {
+        if p.alive {
+            if let Some(hi) = p.hex_idx {
+                if let Some(cell) = game.board.cells.get(hi as usize) {
+                    vec![p.id as f64 / 10.0, cell.coord.q as f64 / 8.0, cell.coord.r as f64 / 8.0, cell.coord.s as f64 / 8.0]
+                } else {
+                    vec![-1.0, 0.0, 0.0, 0.0]
+                }
+            } else {
+                vec![-1.0, 0.0, 0.0, 0.0]
+            }
+        } else {
+            vec![-1.0, 0.0, 0.0, 0.0]
+        }
+    }).collect();
+    let phase_val: i32 = if game.phase == crate::rules::Phase::Movement { 1 } else { 0 };
+    let obs = serde_json::json!({
+        "board": board,
+        "pieces": pieces,
+        "current_player": game.current_player,
+        "phase": phase_val,
+    });
+    let output = serde_json::to_string(&obs).unwrap_or_default();
     write_output(output_buffer, buffer_size, &output);
     0
 }

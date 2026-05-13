@@ -249,7 +249,7 @@ def load_agent(info: dict, use_mcts=False, mcts_simulations=800, deterministic=T
         from stable_baselines3 import PPO
         device = "cuda" if use_gpu else "cpu"
         model = PPO.load(info["path"], device=device)
-        return PPOAgent(model, deterministic=deterministic)
+        return PPOAgent(model, deterministic=deterministic, model_path=info["path"])
     else:
         import torch
         from penguinchess.ai.alphazero_net import AlphaZeroNet, AlphaZeroResNet, detect_net_arch

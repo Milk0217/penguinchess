@@ -292,9 +292,14 @@ class AIPlayer:
         return action if action in legal else int(np.random.choice(legal))
 
 
-def _encode_flat_obs(obs: dict) -> np.ndarray:
-    """Encode observation to 206-dim flat array."""
+def _encode_flat_obs(obs: dict, target_dim: int = 272) -> np.ndarray:
+    """Encode observation to flat array, padded to target_dim (272) for Rust inference."""
     board = np.array(obs["board"], dtype=np.float32).flatten()
     pieces = np.array(obs["pieces"], dtype=np.float32).flatten()
     meta = np.array([float(obs["current_player"]), float(obs["phase"])], dtype=np.float32)
-    return np.concatenate([board, pieces, meta]).reshape(1, -1)
+    flat = np.concatenate([board, pieces, meta])  # 206-dim
+    if target_dim > len(flat):
+        padded = np.zeros(target_dim, dtype=np.float32)
+        padded[:len(flat)] = flat
+        flat = padded
+    return flat.reshape(1, -1)

@@ -41,10 +41,11 @@ class RandomAgent(Agent):
 
 
 class PPOAgent(Agent):
-    """PPO Agent — pre-allocated buffer + torch.from_numpy 零拷贝 + policy._predict 直调。"""
+    """PPO Agent — pre-allocated buffer + obs normalization + policy._predict 直调。"""
 
-    def __init__(self, model, deterministic: bool = True):
+    def __init__(self, model, deterministic: bool = True, model_path: str = ''):
         import torch
+        import pickle
 
         self._model = model
         self._deterministic = deterministic
@@ -53,6 +54,20 @@ class PPOAgent(Agent):
         self._tensor = None
         self._rng = np.random.default_rng()
         self._device = next(model.policy.parameters()).device
+
+        # Load VecNormalize stats if available
+        self._obs_mean = np.zeros(self._expected_dim, dtype=np.float32)
+        self._obs_std = np.ones(self._expected_dim, dtype=np.float32)
+        if model_path:
+            stats_path = Path(model_path).parent / 'vec_normalize_stats.pkl'
+            if stats_path.exists():
+                try:
+                    with open(stats_path, 'rb') as f:
+                        stats = pickle.load(f)
+                    self._obs_mean = stats.get('mean', self._obs_mean)
+                    self._obs_std = stats.get('std', self._obs_std)
+                except Exception:
+                    pass
 
     def select_action(self, core, legal: list[int]) -> int:
         import torch
@@ -77,11 +92,12 @@ class PPOAgent(Agent):
             self._obs_buf[204] = float(obs["current_player"])
             self._obs_buf[205] = float(obs["phase"])
 
+        # Apply VecNormalize normalization (if training was done with norm_obs=True)
+        self._obs_buf = (self._obs_buf - self._obs_mean) / (self._obs_std + 1e-8)
+
         if self._tensor is None:
             self._tensor = torch.from_numpy(self._obs_buf).unsqueeze(0).to(self._device)
         else:
-            # numpy buffer update auto-reflects, but move to device each time
-            # (zero-copy on CPU, explicit transfer on GPU)
             if str(self._device) != "cpu":
                 self._tensor = torch.from_numpy(self._obs_buf).unsqueeze(0).to(self._device)
 

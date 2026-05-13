@@ -44,9 +44,9 @@ LOGS_DIR.mkdir(exist_ok=True)
 # =============================================================================
 
 def make_env(rank: int = 0, seed: int = 0) -> callable:
-    """创建 PenguinChess 环境实例（用于 VecEnv 的工厂函数）。"""
+    """创建 PenguinChess 环境实例（Rust 引擎加速）。"""
     def _init():
-        env = gym.make("PenguinChess-v0")
+        env = gym.make("PenguinChessRust-v0")
         env = Monitor(env)
         env.reset(seed=seed + rank)
         return env
@@ -200,6 +200,16 @@ def train(args):
     elapsed = time.time() - start_time
     print(f"训练完成! 耗时: {elapsed:.1f}s ({args.timesteps / elapsed:.0f} steps/s)")
 
+    # 保存 VecNormalize 统计量（供评估时归一化 obs）
+    import pickle
+    norm_stats = {
+        'mean': vec_env.obs_rms.mean.copy(),
+        'std': np.sqrt(vec_env.obs_rms.var.copy()),
+    }
+    stats_path = MODELS_DIR / f'ppo_penguinchess_gen_{gen}_norm_stats.pkl'
+    with open(stats_path, 'wb') as f:
+        pickle.dump(norm_stats, f)
+
     # 保存为新一代
     gen = get_next_gen()
     gen_path = str(MODELS_DIR / f"ppo_penguinchess_gen_{gen}.zip")
@@ -211,6 +221,8 @@ def train(args):
     best_dir.mkdir(exist_ok=True)
     best_path = str(best_dir / "best_model.zip")
     model.save(best_path)
+    with open(str(best_dir / 'vec_normalize_stats.pkl'), 'wb') as f:
+        pickle.dump(norm_stats, f)
 
     # ===== 对战评估 & ELO =====
     print(f"\n--- Gen {gen} 对战评估 ---")

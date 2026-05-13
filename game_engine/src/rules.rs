@@ -108,6 +108,7 @@ impl GameState {
         }
 
         let prev_player = self.current_player;
+        let prev_score = self.scores[prev_player];
         let _prev_pieces_alive: Vec<bool> = self.pieces.iter().map(|p| p.alive).collect();
 
         if self.phase == Phase::Placement {
@@ -131,7 +132,7 @@ impl GameState {
             self.current_player = 1 - prev_player;
         }
 
-        let reward = 0.0; // 简化版奖励
+        let reward = (self.scores[prev_player] - prev_score) as f32 / 100.0;
         self.last_action = Some(ActionInfo { action, player: prev_player });
         (reward, self.terminated)
     }
