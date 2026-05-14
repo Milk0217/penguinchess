@@ -210,9 +210,15 @@ class AlphaZeroNet(nn.Module):
                 [float(obs["current_player"]), float(obs["phase"])],
                 dtype=np.float32,
             )  # (2,)
-            obs_list.append(np.concatenate([board, pieces, meta]))          # (206,)
+            flat = np.concatenate([board, pieces, meta])                   # (206,)
+            # Pad to self.obs_dim if needed (e.g. 272-dim model)
+            if self.obs_dim > len(flat):
+                padded = np.zeros(self.obs_dim, dtype=np.float32)
+                padded[:len(flat)] = flat
+                flat = padded
+            obs_list.append(flat)
 
-        batch = np.array(obs_list, dtype=np.float32)                        # (B, 206)
+        batch = np.array(obs_list, dtype=np.float32)                        # (B, obs_dim)
 
         # Forward pass (no_grad is applied by the decorator)
         x = torch.from_numpy(batch).to(device)
