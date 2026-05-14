@@ -2,23 +2,22 @@
 import os, sys, subprocess, json, time, math, shutil, pickle
 from pathlib import Path
 
-# Set up path: the script runs from repo root after git clone
-# The script is at KAGGLE_WORKING/penguinchess/kaggle/kaggle_train_xl.py
-# REPO_ROOT = parent of kaggle/ directory
-REPO_ROOT = Path(__file__).resolve().parent.parent
+# Debug: print actual locations
+print('CWD:', os.getcwd(), flush=True)
+print('__file__:', __file__, flush=True)
+print('__file__ abs:', Path(__file__).absolute(), flush=True)
+print('__file__ resolve:', Path(__file__).resolve(), flush=True)
+
+# Use absolute path from __file__ location
+SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIR.parent
 sys.path.insert(0, str(REPO_ROOT))
 print('REPO_ROOT:', REPO_ROOT, flush=True)
-print('sys.path:', sys.path[:3], flush=True)
 
-# Debug: check if penguinchess package exists
-pkg_dir = REPO_ROOT / 'penguinchess'
-print('pkg_dir:', pkg_dir, 'exists:', pkg_dir.exists(), flush=True)
-if pkg_dir.exists():
-    print('pkg contents:', [f.name for f in pkg_dir.iterdir()][:10], flush=True)
-    init_file = pkg_dir / '__init__.py'
-    print('__init__.py exists:', init_file.exists(), flush=True)
-    rp = pkg_dir / 'rust_ffi.py'
-    print('rust_ffi.py exists:', rp.exists(), flush=True)
+# Check where penguinchess package actually is
+for p in [REPO_ROOT / 'penguinchess', SCRIPT_DIR.parent.parent / 'penguinchess',
+          Path('/kaggle/working/penguinchess/penguinchess')]:
+    print(f'  Check {p}: exists={p.exists()}, __init__={(p/"__init__.py").exists()}, rust_ffi={(p/"rust_ffi.py").exists()}', flush=True)
 
 os.environ['GIT_TERMINAL_PROMPT'] = '0'
 
