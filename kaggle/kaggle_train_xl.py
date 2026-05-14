@@ -90,21 +90,20 @@ def sel_action(counts, legal, temp=1.0):
 def self_play(net, game_idx, eng):
     seed = game_idx * 997 + 42 + start_iter * 10000
     core = RustCore(engine=eng, seed=seed).reset(seed=seed)
-    data = []
+    data = []; terminated = False
     for _ in range(CFG['random_open_moves']):
         legal = core.get_legal_actions()
-        if not legal or core._terminated: core.close(); return []
+        if not legal: core.close(); return []
         flat = encode_obs(core)
         u = np.zeros(60, dtype=np.float32); u[legal] = 1.0/len(legal)
         data.append((flat, u, core.current_player))
         _, _, term, _ = core.step(np.random.choice(legal))
-        if term: break
+        if term: terminated = True; break
     step = CFG['random_open_moves']
-    while not core._terminated and step < 500:
+    while not terminated and step < 500:
         legal = core.get_legal_actions()
         if not legal: break
         raw = mcts_search_rust_handle_parallel(core.handle, model=net,
-            num_simulations=CFG['simulations'], c_puct=CFG['c_puct'],
             batch_size=CFG['mcts_batch_size'], num_workers=2)
         counts = {int(k): v for k, v in raw.items()}
         if not counts: core.close(); return []
@@ -179,14 +178,16 @@ for it in range(start_iter, CFG['iterations']):
         with open(BUFFER_FILE, 'wb') as f: pickle.dump(list(replay_buffer), f)
     torch.save(net.state_dict(), str(model_dir/'alphazero_resnet_xl_latest.pth'))
     if (it+1)%5==0:
-        net.eval(); w=d=l=0
+        net.eval();         w=d=l=0
         for g in range(30):
             core=RustCore(engine=engine, seed=g*973+it*999).reset(seed=g*973+it*999)
+            term=False; ep=0
             for _ in range(6):
                 leg=core.get_legal_actions()
                 if leg: _,_,term,_=core.step(np.random.choice(leg))
+                ep+=1
                 if term: break
-            while not core._terminated and core._episode_steps<200:
+            while not term and ep<200:
                 leg=core.get_legal_actions()
                 if not leg: break
                 if core.current_player==0:
