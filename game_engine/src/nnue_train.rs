@@ -352,11 +352,14 @@ pub struct TrainingConfig {
     pub max_norm: f32,
     pub batch_size: usize,
     pub n_epochs: usize,
+    pub lr_min: f32,
+    pub warmup_epochs: usize,
 }
 
 impl Default for TrainingConfig {
     fn default() -> Self {
-        Self { learning_rate: 3e-4, weight_decay: 1e-4, max_norm: 1.0, batch_size: 4096, n_epochs: 50 }
+        Self { learning_rate: 3e-4, weight_decay: 1e-4, max_norm: 1.0, batch_size: 4096, n_epochs: 50,
+               lr_min: 3e-5, warmup_epochs: 5 }
     }
 }
 
@@ -374,12 +377,31 @@ pub fn train(weights: &mut NNUEWeights, records: &[TrainingRecord], config: &Tra
     let mut best_weights = weights.clone();
     let mut epoch_losses = Vec::with_capacity(config.n_epochs);
 
-    for _ep in 0..config.n_epochs {
-        let loss = train_epoch(weights, records, &mut adam, config);
+    for ep in 0..config.n_epochs {
+        // Cosine annealing LR with linear warmup
+        let lr = if ep < config.warmup_epochs {
+            config.learning_rate * (ep + 1) as f32 / config.warmup_epochs as f32
+        } else {
+            let progress = (ep - config.warmup_epochs) as f32 / (config.n_epochs - config.warmup_epochs).max(1) as f32;
+            config.lr_min + 0.5 * (config.learning_rate - config.lr_min) * (1.0 + (std::f32::consts::PI * progress).cos())
+        };
+        let cfg_i = TrainingConfig {
+            learning_rate: lr,
+            weight_decay: config.weight_decay,
+            max_norm: config.max_norm,
+            batch_size: config.batch_size,
+            n_epochs: 1,
+            lr_min: config.lr_min,
+            warmup_epochs: 0,
+        };
+        let loss = train_epoch(weights, records, &mut adam, &cfg_i);
         epoch_losses.push(loss);
         if loss < best_loss {
             best_loss = loss;
             best_weights = weights.clone();
+        }
+        if ep == 0 || (ep + 1) % 10 == 0 || ep == config.n_epochs - 1 {
+            println!("  ep {}/{}  lr={:.2e}  loss={:.6}", ep + 1, config.n_epochs, lr, loss);
         }
     }
 

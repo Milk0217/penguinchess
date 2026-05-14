@@ -1421,16 +1421,18 @@ pub unsafe extern "C" fn ffi_nnue_train(
     let mut weights = crate::nnue_rs::NNUEWeights::from_flat(flat);
     let records = crate::nnue_train::load_records(path);
 
-    let (lr, wd, bs, ep, mn) = match serde_json::from_str::<serde_json::Value>(cjson) {
+    let (lr, wd, bs, ep, mn, lr_min, warmup) = match serde_json::from_str::<serde_json::Value>(cjson) {
         Ok(v) => (
             v.get("lr").and_then(|x| x.as_f64()).unwrap_or(3e-4) as f32,
             v.get("wd").and_then(|x| x.as_f64()).unwrap_or(1e-4) as f32,
             v.get("batch_size").and_then(|x| x.as_u64()).unwrap_or(4096) as usize,
             v.get("epochs").and_then(|x| x.as_u64()).unwrap_or(50) as usize,
             v.get("max_norm").and_then(|x| x.as_f64()).unwrap_or(1.0) as f32,
+            v.get("lr_min").and_then(|x| x.as_f64()).unwrap_or(1e-5) as f32,
+            v.get("warmup").and_then(|x| x.as_u64()).unwrap_or(5) as usize,
         ), Err(_) => { write_ab_json(output_buf, output_size, r#"{"error":"bad json"}"#); return -3; }
     };
-    let cfg = crate::nnue_train::TrainingConfig { learning_rate: lr, weight_decay: wd, batch_size: bs, n_epochs: ep, max_norm: mn };
+    let cfg = crate::nnue_train::TrainingConfig { learning_rate: lr, weight_decay: wd, batch_size: bs, n_epochs: ep, max_norm: mn, lr_min, warmup_epochs: warmup };
     let result = crate::nnue_train::train(&mut weights, &records, &cfg);
 
     let new_flat = crate::nnue_rs::NNUEWeights::flatten(&weights);

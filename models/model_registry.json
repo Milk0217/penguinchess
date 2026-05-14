@@ -2498,6 +2498,14 @@
       "created_at": "2026-04-29T02:31:46Z",
       "generation": 3,
       "arch": "nnue"
+    },
+    {
+      "id": "nnue_gen_4",
+      "type": "nnue",
+      "file": "nnue/nnue_gen_4.pt",
+      "created_at": "2026-05-14T09:03:07Z",
+      "generation": 4,
+      "arch": "nnue"
     }
   ]
 }

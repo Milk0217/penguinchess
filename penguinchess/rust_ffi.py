@@ -778,13 +778,15 @@ class AlphaBetaSearchHandle:
         import torch
 
         # Build flat weight array
-        ft_weight = model_state['ft.weight'].cpu().numpy().T.ravel()  # (360, ft_dim) row-major
+        # PyTorch stores weight as (out_features, in_features)
+        # Rust expects: ft_weight (360, ft_dim), fc*_weight_t (in, out) = transposed
+        ft_weight = model_state['ft.weight'].cpu().numpy().T.ravel()  # (ft_dim, 360) -> (360, ft_dim) row-major
         ft_bias = model_state['ft.bias'].cpu().numpy().ravel()
-        fc1_w = model_state['fc1.weight'].cpu().numpy().ravel()  # (fc1_dim, input_dim)
+        fc1_w = model_state['fc1.weight'].cpu().numpy().T.ravel()  # (fc1_dim, input_dim) -> (input_dim, fc1_dim)
         fc1_b = model_state['fc1.bias'].cpu().numpy().ravel()
-        fc2_w = model_state['fc2.weight'].cpu().numpy().ravel()  # (fc2_dim, fc1_dim)
+        fc2_w = model_state['fc2.weight'].cpu().numpy().T.ravel()  # (fc2_dim, fc1_dim) -> (fc1_dim, fc2_dim)
         fc2_b = model_state['fc2.bias'].cpu().numpy().ravel()
-        fc3_w = model_state['fc3.weight'].cpu().numpy().ravel()  # (1, fc2_dim)
+        fc3_w = model_state['fc3.weight'].cpu().numpy().T.ravel()  # (1, fc2_dim) -> (fc2_dim, 1)
         fc3_b = model_state['fc3.bias'].cpu().numpy().ravel()
 
         flat = np.concatenate([ft_weight, ft_bias, fc1_w, fc1_b, fc2_w, fc2_b, fc3_w, fc3_b]).astype(np.float32)

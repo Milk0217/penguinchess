@@ -295,7 +295,10 @@ def main():
         except Exception as e:
             print(f"  Register: {e}")
 
-    ab_handle.free()
+    try:
+        ab_handle.free()
+    except AttributeError:
+        pass
     elapsed = time.time() - total_t0
     print(f"\nDone! {elapsed:.0f}s ({elapsed/60:.1f}min)")
 

@@ -26,8 +26,8 @@ from penguinchess.ai.sparse_features import (
     HEX_COUNT, PIECE_COUNT, PIECE_HEX_DIM, DENSE_DIM,
 )
 
-FT_DIM = 64
-HIDDEN_DIM = 256
+FT_DIM = 128
+HIDDEN_DIM = 512
 
 # P1 features: indices 0-179 (pieces 0,1,2 × 60 hexes)
 # P2 features: indices 180-359 (pieces 3,4,5 × 60 hexes)
@@ -160,7 +160,7 @@ class NNUE(nn.Module):
             idx = torch.tensor(nstm_idx, dtype=torch.long, device=ft_w.device)
             nstm_acc = nstm_acc + ft_w[idx].sum(dim=0)
         
-        x = torch.cat([F.relu(stm_acc), F.relu(nstm_acc), dense], dim=-1)
+        x = torch.cat([stm_acc.clamp(0, 127), nstm_acc.clamp(0, 127), dense], dim=-1)
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
         x = torch.tanh(self.fc3(x))
@@ -217,7 +217,7 @@ class NNUE(nn.Module):
         acc_stm = stm_gathered.sum(dim=1) + ft_b  # (B, ft_dim)
         acc_nstm = nstm_gathered.sum(dim=1) + ft_b
 
-        x = torch.cat([F.relu(acc_stm), F.relu(acc_nstm), dense_batch], dim=-1)
+        x = torch.cat([acc_stm.clamp(0, 127), acc_nstm.clamp(0, 127), dense_batch], dim=-1)
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
         x = torch.tanh(self.fc3(x))

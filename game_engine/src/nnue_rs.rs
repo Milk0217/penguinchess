@@ -11,7 +11,6 @@
 
 use serde::{Deserialize, Serialize};
 
-// Value-only NNUE (gen_2, AB search)
 pub const FT_DIM: usize = 64;
 pub const DENSE_DIM: usize = 66;
 pub const FC1_DIM: usize = 256;
