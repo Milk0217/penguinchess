@@ -3,8 +3,8 @@ Upload as Kaggle Notebook, set GPU accelerator (T4 x2), run end-to-end.
 
 Structure:
   1. Install Rust, compile game_engine
-  2. Load project code from dataset
-  3. Download best model from previous Kaggle run (or start fresh)
+  2. Clone project from GitHub
+  3. Download checkpoint from GitHub Releases or start fresh
   4. Train AlphaZeroResNetXL (312M params) with Python MCTS + GPU batch eval
   5. Save model, upload back to dataset
 """
@@ -42,17 +42,16 @@ if torch.cuda.is_available():
 # ═══════════════════════════════════════════════
 import torch
 
-# Clone/pull project
+# Clone project from GitHub
 PROJECT_DIR = Path('/kaggle/working/penguinchess')
 if not PROJECT_DIR.exists():
-    print("Cloning project...")
-    subprocess.run(['git', 'clone', 'https://github.com/YOUR_USER/penguinchess.git', str(PROJECT_DIR)], check=True)
-    
-    # Or copy from dataset
-    # shutil.copytree('/kaggle/input/penguinchess-code', str(PROJECT_DIR))
+    GIT_URL = os.environ.get('PENGUINCHESS_GIT_URL', 'https://github.com/milkyblack/penguinchess.git')
+    print(f"Cloning {GIT_URL}...")
+    subprocess.run(['git', 'clone', GIT_URL, str(PROJECT_DIR)], check=True)
     
 os.chdir(str(PROJECT_DIR))
 print(f"Working dir: {PROJECT_DIR}")
+print(f"Commit: {subprocess.run(['git', 'log', '--oneline', '-1'], capture_output=True, text=True).stdout.strip()}")
 
 # Check if we need to compile Rust
 dll_path = PROJECT_DIR / 'game_engine' / 'target' / 'release' / 'libgame_engine.so'
