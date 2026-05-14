@@ -19,8 +19,16 @@ if not shutil.which('rustc'):
     os.environ['PATH'] = os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH']
 
 dll = ROOT / 'game_engine/target/release/libgame_engine.so'
+# Force rebuild if stale (missing parallel MCTS symbol)
+if dll.exists():
+    import ctypes
+    try:
+        ctypes.CDLL(str(dll)).mcts_search_rust_handle_parallel
+    except AttributeError:
+        print("Stale DLL (no parallel MCTS), rebuilding...")
+        dll.unlink()
 if not dll.exists():
-    print("Compiling Rust engine (one-time)...")
+    print("Compiling Rust engine (one-time ~2min)...")
     subprocess.run(['cargo', 'build', '--release'], cwd=str(ROOT/'game_engine'), check=True)
 
 subprocess.run([sys.executable, '-m', 'pip', 'install', 'numpy', 'tqdm'], check=True)
