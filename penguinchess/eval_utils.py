@@ -61,6 +61,10 @@ class PPOAgent(Agent):
         self._obs_std = np.ones(self._expected_dim, dtype=np.float32)
         if model_path:
             stats_path = Path(model_path).parent / 'vec_normalize_stats.pkl'
+            # Also check for model-specific stats file: {model_name}_norm_stats.pkl
+            model_specific_path = Path(model_path).with_suffix('').parent / f'{Path(model_path).stem}_norm_stats.pkl'
+            if model_specific_path.exists():
+                stats_path = model_specific_path
             if stats_path.exists():
                 try:
                     with open(stats_path, 'rb') as f:
@@ -96,6 +100,8 @@ class PPOAgent(Agent):
         # Apply VecNormalize normalization (if training was done with norm_obs=True)
         self._obs_buf = (self._obs_buf - self._obs_mean) / (self._obs_std + 1e-8)
 
+        # Use masked action selection: zero out logits for illegal actions
+        # to ensure the model NEVER picks an illegal move during eval
         if self._tensor is None:
             self._tensor = torch.from_numpy(self._obs_buf).unsqueeze(0).to(self._device)
         else:
@@ -103,10 +109,28 @@ class PPOAgent(Agent):
                 self._tensor = torch.from_numpy(self._obs_buf).unsqueeze(0).to(self._device)
 
         with torch.no_grad():
-            action_tensor = self._model.policy._predict(self._tensor, deterministic=self._deterministic)
-            action = int(action_tensor[0].item())
+            dist = self._model.policy.get_distribution(self._tensor)
+            action_dist = dist.distribution  # This is a Categorical distribution
+            
+            if self._deterministic:
+                # For deterministic: mask logits, pick argmax from legal
+                logits = action_dist.logits[0].clone()
+                mask = torch.full((60,), -float('inf'), device=self._device)
+                for a in legal:
+                    mask[a] = 0
+                masked_logits = logits + mask
+                action = int(masked_logits.argmax().item())
+            else:
+                # For stochastic: mask logits, sample from legal only
+                logits = action_dist.logits[0].clone()
+                mask = torch.full((60,), -1e9, device=self._device)
+                for a in legal:
+                    mask[a] = 0
+                masked_logits = logits + mask
+                probs = torch.softmax(masked_logits, dim=0)
+                action = int(torch.multinomial(probs, 1).item())
 
-        return action if action in legal else int(self._rng.choice(legal))
+        return action
 
 
 class AlphaZeroAgent(Agent):
