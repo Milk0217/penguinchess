@@ -8,7 +8,17 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 print('REPO_ROOT:', REPO_ROOT, flush=True)
-print('penguinchess dir exists:', (REPO_ROOT / 'penguinchess').exists(), flush=True)
+print('sys.path:', sys.path[:3], flush=True)
+
+# Debug: check if penguinchess package exists
+pkg_dir = REPO_ROOT / 'penguinchess'
+print('pkg_dir:', pkg_dir, 'exists:', pkg_dir.exists(), flush=True)
+if pkg_dir.exists():
+    print('pkg contents:', [f.name for f in pkg_dir.iterdir()][:10], flush=True)
+    init_file = pkg_dir / '__init__.py'
+    print('__init__.py exists:', init_file.exists(), flush=True)
+    rp = pkg_dir / 'rust_ffi.py'
+    print('rust_ffi.py exists:', rp.exists(), flush=True)
 
 os.environ['GIT_TERMINAL_PROMPT'] = '0'
 
