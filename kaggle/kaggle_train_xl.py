@@ -2,6 +2,10 @@
 import os, sys, subprocess, json, time, math, shutil, pickle
 from pathlib import Path
 
+# Set up path: the script runs from repo root after git clone
+REPO_ROOT = Path(os.getcwd())
+sys.path.insert(0, str(REPO_ROOT))
+
 os.environ['GIT_TERMINAL_PROMPT'] = '0'
 
 # Install Rust
@@ -29,7 +33,6 @@ if not dll.exists():
     subprocess.run(['cargo', 'build', '--release'], cwd='game_engine', check=True)
     print("Rust engine compiled")
 
-sys.path.insert(0, '.')
 from penguinchess.rust_ffi import get_engine
 eng = get_engine()
 print("Rust engine loaded")
