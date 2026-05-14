@@ -160,7 +160,8 @@ if replay_buffer is None: replay_buffer = deque(maxlen=CFG['max_buffer'])
 best_wr = float('-inf'); total_t0 = time.time()
 
 for it in range(start_iter, CFG['iterations']):
-    if interrupted: break; t0 = time.time()
+    t0 = time.time()
+    if interrupted: break
     print(f"\n{'='*50}\nIter {it+1}/{CFG['iterations']}\n{'='*50}", flush=True)
     net.eval(); gd = []
     with ThreadPoolExecutor(max_workers=CFG['workers']) as pool:
