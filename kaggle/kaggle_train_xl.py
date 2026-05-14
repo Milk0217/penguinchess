@@ -212,3 +212,11 @@ for it in range(start_iter, CFG['iterations']):
 print(f"\n{'='*50}", flush=True)
 print(f"{'Interrupted' if interrupted else 'Complete'}! Total: {time.time()-total_t0:.0f}s", flush=True)
 print(f"Best: {100*best_wr:.0f}% vs Random", flush=True)
+
+# Copy final model to /kaggle/output/ for easy download
+import shutil
+for src in [best_path, model_dir/'alphazero_resnet_xl_latest.pth']:
+    if src.exists():
+        dst = Path('/kaggle/output') / src.name
+        shutil.copy2(str(src), str(dst))
+        print(f"Model saved to {dst}", flush=True)
