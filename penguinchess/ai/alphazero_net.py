@@ -391,6 +391,10 @@ class _AlphaZeroResNetOriginal(nn.Module):
         """Pre-built flat observation batch. non_blocking GPU transfer."""
         self.eval()
         device = next(self.parameters()).device
+        if batch.shape[-1] < self.obs_dim:
+            padded = np.zeros((batch.shape[0], self.obs_dim), dtype=np.float32)
+            padded[:, :batch.shape[1]] = batch
+            batch = padded
         x = torch.from_numpy(batch).to(device, non_blocking=True)
         logits, val_t = self.forward(x)
         return logits.cpu().numpy().astype(np.float32), val_t.cpu().numpy().flatten().astype(np.float32)
