@@ -146,26 +146,35 @@ pub struct TrainingRecord {
 pub fn load_records(path: &str) -> Vec<TrainingRecord> {
     use std::fs::File;
     use std::io::Read;
-    let mut f = File::open(path).unwrap();
-    let mut header = [0u8; 8];
-    f.read_exact(&mut header).ok();
-    let count = u64::from_le_bytes(header) as usize;
-    let mut records = Vec::with_capacity(count.min(1_000_000));
-    let mut raw = [0u8; 296];
-    for _ in 0..count {
-        if f.read_exact(&mut raw).is_err() { break; }
-        let mut sparse = [-1i32; 6];
-        for i in 0..6 {
-            let val = i32::from_le_bytes([raw[i*4], raw[i*4+1], raw[i*4+2], raw[i*4+3]]);
-            if val >= 0 && val < 360 { sparse[i] = val; }
+    
+    // Support comma-separated paths
+    let mut records = Vec::new();
+    for p in path.split(',') {
+        let p = p.trim();
+        if p.is_empty() { continue; }
+        let mut f = match File::open(p) {
+            Ok(f) => f,
+            Err(_) => { eprintln!("[nnue_train] cannot open {p}"); continue; }
+        };
+        let mut header = [0u8; 8];
+        f.read_exact(&mut header).ok();
+        let count = u64::from_le_bytes(header) as usize;
+        let mut raw = [0u8; 296];
+        for _ in 0..count.min(1_000_000) {
+            if f.read_exact(&mut raw).is_err() { break; }
+            let mut sparse = [-1i32; 6];
+            for i in 0..6 {
+                let val = i32::from_le_bytes([raw[i*4], raw[i*4+1], raw[i*4+2], raw[i*4+3]]);
+                if val >= 0 && val < 360 { sparse[i] = val; }
+            }
+            let mut dense = [0.0f32; 66];
+            for i in 0..66 {
+                dense[i] = f32::from_le_bytes([raw[24+i*4], raw[25+i*4], raw[26+i*4], raw[27+i*4]]);
+            }
+            let label = f32::from_le_bytes([raw[288], raw[289], raw[290], raw[291]]);
+            let stm = i32::from_le_bytes([raw[292], raw[293], raw[294], raw[295]]);
+            records.push(TrainingRecord { sparse, dense, label, stm });
         }
-        let mut dense = [0.0f32; 66];
-        for i in 0..66 {
-            dense[i] = f32::from_le_bytes([raw[24+i*4], raw[25+i*4], raw[26+i*4], raw[27+i*4]]);
-        }
-        let label = f32::from_le_bytes([raw[288], raw[289], raw[290], raw[291]]);
-        let stm = i32::from_le_bytes([raw[292], raw[293], raw[294], raw[295]]);
-        records.push(TrainingRecord { sparse, dense, label, stm });
     }
     records
 }
