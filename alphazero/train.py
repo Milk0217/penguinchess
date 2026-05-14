@@ -325,13 +325,13 @@ def self_play_game(
     az_handle,
     num_simulations: int = 800,
     temperature: float = 1.0,
-    temp_threshold: int = 30,
+    temp_threshold: int = 50,
     tree_reuse: bool = True,
-    additional_sims: int = 20,
+    additional_sims: int = 200,
     random_open_moves: int = 10,
     gpu_net=None,
 ) -> list:
-    """Self-play using Rust MCTS. First random_open_moves are random to diversify data.
+    """Self-play using Rust MCTS. Stores root_value as value target (self-distillation).
     With tree_reuse=True, tree is reused across moves after the random opening.
     With gpu_net provided, uses GPU-parallelized Python callback MCTS instead of Rust AZ model."""
     import random
@@ -341,8 +341,7 @@ def self_play_game(
     game_data = []
     terminated = False
 
-    # Random opening moves (no training data — only to create diverse positions)
-    terminated = False
+    # Random opening (no training data stored)
     for step in range(random_open_moves):
         legal = core.get_legal_actions()
         if not legal:
@@ -356,9 +355,8 @@ def self_play_game(
     # Build MCTS tree at current position (after random opening)
     if not terminated:
         if gpu_net is not None:
-            # GPU-parallelized MCTS (no tree reuse)
             from penguinchess.rust_ffi import mcts_search_az_gpu
-            pass  # raw will be fetched in the loop
+            pass
         elif tree_reuse:
             from penguinchess.rust_ffi import AZMCTSReuseTree
             mcts_tree = AZMCTSReuseTree(
@@ -367,19 +365,19 @@ def self_play_game(
                 batch_size=min(128, max(16, num_simulations // 50)),
             )
 
-    # Main game loop
     ep_step_count = random_open_moves
     while not terminated and ep_step_count < 500:
         t = temperature if ep_step_count < temp_threshold else 0.1
 
         if gpu_net is not None:
-            # GPU MCTS: no tree reuse, full search each move
             from penguinchess.rust_ffi import mcts_search_az_gpu
             raw = mcts_search_az_gpu(core.handle, gpu_net, num_simulations=num_simulations,
                                      c_puct=3.0, batch_size=min(128, max(32, num_simulations // 10)))
             counts = {int(k): v for k, v in raw.items()}
+            root_value = 0.0
         elif tree_reuse and 'mcts_tree' in locals():
             counts = mcts_tree._raw
+            root_value = mcts_tree._root_value
         else:
             raw = mcts_search_rust_handle_az(
                 core.handle, az_handle._handle,
@@ -388,6 +386,7 @@ def self_play_game(
                 batch_size=min(128, max(16, num_simulations // 50)),
             )
             counts = {int(k): v for k, v in raw.items()}
+            root_value = 0.0
 
         if not counts:
             if tree_reuse and 'mcts_tree' in locals(): mcts_tree.free()
@@ -397,7 +396,7 @@ def self_play_game(
         # Training target: always use temperature=1.0 (rich distribution)
         train_policy = np.zeros(60, dtype=np.float32)
         for a, c in counts.items():
-            train_policy[a] = c ** 1.0  # always t=1.0 for training target
+            train_policy[a] = c ** 1.0
         s = train_policy.sum()
         if s > 0:
             train_policy /= s
@@ -412,9 +411,10 @@ def self_play_game(
                 return game_data, 2
 
         flat_obs = _encode_flat_obs(core)
-        game_data.append((flat_obs, train_policy, core.current_player))
+        # Self-distillation: store root_value (MCTS assessment) instead of game outcome
+        game_data.append((flat_obs, train_policy, root_value))
 
-        # Move selection: use original temperature decay
+        # Move selection with temperature
         action = select_action(counts, temperature=t)
         _, _, terminated, _ = core.step(action)
         ep_step_count += 1
@@ -427,20 +427,8 @@ def self_play_game(
             break
 
     if tree_reuse and 'mcts_tree' in locals(): mcts_tree.free()
-    if core.players_scores[0] > core.players_scores[1]: winner = 0
-    elif core.players_scores[1] > core.players_scores[0]: winner = 1
-    else: winner = 2
-
-    result = []
-    for flat_obs, policy, cp in game_data:
-        if winner == 2:
-            value = 0.0
-        else:
-            value = 1.0 if cp == winner else -1.0
-        result.append((flat_obs, policy, value))
-
     core.close()
-    return result, winner
+    return game_data, 0
 
 
 # ───── Training ──────────────────────────────────────────────
@@ -661,7 +649,7 @@ def main():
     parser.add_argument('--games-per-iter', type=int, default=200)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--batch-size', type=int, default=4096)
-    parser.add_argument('--epochs', type=int, default=30)
+    parser.add_argument('--epochs', type=int, default=15)
     parser.add_argument('--resume', type=str, default='')
     parser.add_argument('--eval-interval', type=int, default=10)
     parser.add_argument('--workers', type=int, default=8)
@@ -831,66 +819,38 @@ def main():
         print(f'Iteration {i_iter}/{args.iterations}', flush=True)
         print(f'{"="*50}', flush=True)
         
-        # Self-play with Rust batch (faster: no Python overhead)
+        # Self-play games with tree reuse (Python Orchestrator + Rust MCTS)
+        # Note: deliberately NOT using ffi_az_selfplay_batch because the Python
+        # tree-reuse path provides root_value (self-distillation labels) and
+        # per-step additional_sims=200 for consistent data quality.
         iter_data = []
-        try:
-            from penguinchess.rust_ffi import ffi_az_selfplay_batch
-            batch_cfg = {
-                'simulations': args.simulations,
-                'additional_sims': 15,
-                'random_open_moves': 10,
-                'temp_threshold': 30,
-                'max_steps': 500,
-                'c_puct': 3.0,
-                'batch_size': min(128, max(32, args.simulations // 50)),
-                'seed_offset': i_iter * 100000,
-            }
-            sp_path = f'data/sp_batch_{i_iter}.bin'
-            n_pos = ffi_az_selfplay_batch(az_handle._handle, args.games, args.workers,
-                                          batch_cfg, sp_path)
-            if n_pos > 0:
-                raw = open(sp_path, 'rb').read()
-                n = struct.unpack('<Q', raw[:8])[0]
-                off = 8
-                for _ in range(min(n, 1000000)):
-                    obs = np.frombuffer(raw[off:off+1088], dtype=np.float32, count=272).copy(); off += 1088
-                    pol = np.frombuffer(raw[off:off+240], dtype=np.float32, count=60).copy(); off += 240
-                    val = struct.unpack('<f', raw[off:off+4])[0]; off += 4
-                    iter_data.append((obs, pol, val))
-                import os; os.remove(sp_path)
-                print(f'  Rust batch: {n} positions, {len(iter_data)} loaded', flush=True)
-        except ImportError:
-            pass
-        
-        if not iter_data:
-            # Fallback: Python ThreadPoolExecutor self-play
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-            game_workers = args.workers
-        
-            def play_one_game(g):
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        game_workers = args.workers
+
+        def play_one_game(g):
+            try:
+                data, _ = self_play_game(
+                    az_handle, num_simulations=args.simulations,
+                    temperature=1.0, temp_threshold=50,
+                    tree_reuse=(args.simulations >= 200 and not args.gpu_mcts),
+                    additional_sims=200, random_open_moves=10,
+                    gpu_net=gpu_model if args.gpu_mcts else None)
+                return data if data else []
+            except Exception as e:
+                print(f'  [warn] game {g} failed: {e}', flush=True)
+                return []
+
+        with ThreadPoolExecutor(max_workers=game_workers) as pool:
+            futures = [pool.submit(play_one_game, g) for g in range(args.games)]
+            for i, f in enumerate(as_completed(futures)):
                 try:
-                    data, winner = self_play_game(
-                        az_handle, num_simulations=args.simulations,
-                        temperature=1.0, temp_threshold=30,
-                        tree_reuse=(args.simulations >= 200 and not args.gpu_mcts),
-                        additional_sims=15, random_open_moves=10,
-                        gpu_net=gpu_model if args.gpu_mcts else None)
-                    return data if data else []
+                    data = f.result()
+                    if data:
+                        iter_data.extend(data)
                 except Exception as e:
-                    print(f'  [warn] game {g} failed: {e}', flush=True)
-                    return []
-        
-            with ThreadPoolExecutor(max_workers=game_workers) as pool:
-                futures = [pool.submit(play_one_game, g) for g in range(args.games)]
-                for i, f in enumerate(as_completed(futures)):
-                    try:
-                        data = f.result()
-                        if data:
-                            iter_data.extend(data)
-                    except Exception as e:
-                        print(f'  [warn] future {i} failed: {e}', flush=True)
-                    if (i + 1) % 50 == 0:
-                        print(f'  Games: {i+1}/{args.games} ({len(iter_data)} pos)', flush=True)
+                    print(f'  [warn] future {i} failed: {e}', flush=True)
+                if (i + 1) % 50 == 0:
+                    print(f'  Games: {i+1}/{args.games} ({len(iter_data)} pos)', flush=True)
         
         replay_buffer.extend(iter_data)
         # FIFO eviction: keep most recent 500K positions

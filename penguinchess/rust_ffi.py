@@ -1133,6 +1133,7 @@ class AZMCTSReuseTree:
         self._lib = lib
         self._az_handle = az_handle._handle
         self._raw = {int(k): v for k, v in result.get('visits', {}).items()}
+        self._root_value = result.get('root_value', 0.0)
         if self._handle < 0:
             raise RuntimeError(f"ffi_az_mcts_init failed: {result}")
     
@@ -1144,9 +1145,10 @@ class AZMCTSReuseTree:
             c_int32(additional_sims), c_double(c_puct), c_int32(batch_size),
             out_buf, c_int32(65536),
         )
-        raw = out_buf.value.decode('utf-8')
-        self._raw = {int(k): v for k, v in json.loads(raw).items()} if raw else {}
-        return self._raw
+        data = json.loads(out_buf.value.decode('utf-8')) if out_buf.value else {}
+        self._raw = {int(k): v for k, v in data.get('visits', {}).items()}
+        self._root_value = data.get('root_value', 0.0)
+        return self._raw, self._root_value
     
     def free(self):
         if self._handle >= 0:

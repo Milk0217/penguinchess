@@ -354,12 +354,17 @@ pub unsafe extern "C" fn ffi_az_mcts_init(
     let model = match get_az_model(az_handle) { Some(m) => m, None => return -2 };
 
     let (state, root) = crate::mcts_rs::az_mcts_build_tree(&game, num_simulations, c_puct, batch_size, &model);
+    let root_value = if root.visits > 0 { root.total_value / root.visits as f64 } else { 0.0 };
     let visits = crate::mcts_rs::tree_to_visits_json(&root);
 
     for i in 0..MAX_AZ_MCTS_TREES {
         if AZ_MCTS_TREES[i].is_none() {
             AZ_MCTS_TREES[i] = Some((state, root));
-            let result = serde_json::json!({"handle": i, "visits": serde_json::from_str::<serde_json::Value>(&visits).ok()});
+            let result = serde_json::json!({
+                "handle": i,
+                "visits": serde_json::from_str::<serde_json::Value>(&visits).ok(),
+                "root_value": root_value,
+            });
             write_output(output_buf, output_size, &serde_json::to_string(&result).unwrap_or_default());
             return 0;
         }
@@ -391,7 +396,12 @@ pub unsafe extern "C" fn ffi_az_mcts_step(
     }
 
     let visits = crate::mcts_rs::tree_to_visits_json(root);
-    write_output(output_buf, output_size, &visits);
+    let root_value = if root.visits > 0 { root.total_value / root.visits as f64 } else { 0.0 };
+    let result = serde_json::json!({
+        "visits": serde_json::from_str::<serde_json::Value>(&visits).ok(),
+        "root_value": root_value,
+    });
+    write_output(output_buf, output_size, &serde_json::to_string(&result).unwrap_or_default());
     0
 }
 
