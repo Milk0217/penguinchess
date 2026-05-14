@@ -1,27 +1,13 @@
-"""Kaggle AlphaZero XL training. Run: python kaggle_train_xl.py"""
-import os, sys, subprocess, json, time, math, shutil, pickle
+"""Kaggle XL training. Fixes CWD after rmtree killed it."""
+import os, sys
+os.chdir('/kaggle/working')
+sys.path.insert(0, '/kaggle/working/penguinchess')
+
+import subprocess, shutil, json, time, math, pickle
 from pathlib import Path
 
-# Debug: print actual locations
-print('CWD:', os.getcwd(), flush=True)
-print('__file__:', __file__, flush=True)
-print('__file__ abs:', Path(__file__).absolute(), flush=True)
-print('__file__ resolve:', Path(__file__).resolve(), flush=True)
+ROOT = Path('/kaggle/working/penguinchess')
 
-# Use absolute path from __file__ location
-SCRIPT_DIR = Path(__file__).resolve().parent
-REPO_ROOT = SCRIPT_DIR.parent
-sys.path.insert(0, str(REPO_ROOT))
-print('REPO_ROOT:', REPO_ROOT, flush=True)
-
-# Check where penguinchess package actually is
-for p in [REPO_ROOT / 'penguinchess', SCRIPT_DIR.parent.parent / 'penguinchess',
-          Path('/kaggle/working/penguinchess/penguinchess')]:
-    print(f'  Check {p}: exists={p.exists()}, __init__={(p/"__init__.py").exists()}, rust_ffi={(p/"rust_ffi.py").exists()}', flush=True)
-
-os.environ['GIT_TERMINAL_PROMPT'] = '0'
-
-# Install Rust
 if not shutil.which('rustc'):
     print("Installing Rust...")
     subprocess.run(['curl', '--proto', '=https', '--tlsv1.2', '-sSf',
@@ -30,30 +16,26 @@ if not shutil.which('rustc'):
     os.environ['PATH'] = os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH']
 
 subprocess.run([sys.executable, '-m', 'pip', 'install', 'numpy', 'tqdm'], check=True)
-
 import torch, numpy as np
-
 print("Python:", sys.version)
 print("Rust:", subprocess.run(['rustc', '--version'], capture_output=True, text=True).stdout.strip())
 print("CUDA:", torch.cuda.is_available())
 if torch.cuda.is_available():
     print("GPU:", torch.cuda.get_device_name(0), int(torch.cuda.mem_get_info()[1]/1024**3), "GB")
 
-# Compile Rust engine
-dll = Path('game_engine/target/release/libgame_engine.so')
+dll = ROOT / 'game_engine/target/release/libgame_engine.so'
 if not dll.exists():
     print("Compiling Rust engine...")
-    subprocess.run(['cargo', 'build', '--release'], cwd='game_engine', check=True)
+    subprocess.run(['cargo', 'build', '--release'], cwd=str(ROOT/'game_engine'), check=True)
     print("Rust engine compiled")
 
 from penguinchess.rust_ffi import get_engine
 eng = get_engine()
 print("Rust engine loaded")
 
-# Load/create XL model
 from penguinchess.ai.alphazero_net import AlphaZeroResNetXL, detect_net_arch
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-model_dir = Path('models/alphazero')
+model_dir = ROOT / 'models/alphazero'
 model_dir.mkdir(parents=True, exist_ok=True)
 best_path = model_dir / 'alphazero_resnet_xl_best.pth'
 ckpt_path = model_dir / 'alphazero_resnet_xl_checkpoint.pth'
@@ -61,8 +43,7 @@ ckpt_path = model_dir / 'alphazero_resnet_xl_checkpoint.pth'
 if best_path.exists():
     sd = torch.load(str(best_path), map_location='cpu', weights_only=True)
     net = detect_net_arch(sd)(obs_dim=272).to(device)
-    net.load_state_dict(sd)
-    start_iter = 0
+    net.load_state_dict(sd); start_iter = 0
     print("Loaded best model")
 elif ckpt_path.exists():
     ckpt = torch.load(str(ckpt_path), map_location='cpu', weights_only=False)
@@ -72,13 +53,10 @@ elif ckpt_path.exists():
     print(f"Resumed from iter {start_iter}")
 else:
     net = AlphaZeroResNetXL(obs_dim=272).to(device)
-    start_iter = 0
-    print("Starting fresh XL model")
-
+    start_iter = 0; print("Starting fresh XL model")
 params = sum(p.numel() for p in net.parameters())
 print(f"Model: {params:,} params")
 
-# Config
 CFG = {'iterations': 50, 'games_per_iter': 200, 'simulations': 200, 'c_puct': 3.0,
        'batch_size': 128, 'epochs': 30, 'lr': 1e-3, 'max_buffer': 100000,
        'temp_threshold': 30, 'random_open_moves': 10, 'MCTS_batch_size': 16,
@@ -95,12 +73,9 @@ def encode_obs(core):
     board, pieces = obs["board"], obs["pieces"]
     flat = np.zeros(272, dtype=np.float32)
     idx = 0
-    for row in board:
-        flat[idx:idx+3] = row; idx += 3
-    for row in pieces:
-        flat[idx:idx+4] = row; idx += 4
-    flat[204] = float(obs["current_player"])
-    flat[205] = float(obs["phase"])
+    for row in board: flat[idx:idx+3] = row; idx += 3
+    for row in pieces: flat[idx:idx+4] = row; idx += 4
+    flat[204] = float(obs["current_player"]); flat[205] = float(obs["phase"])
     return flat
 
 def self_play_game(net, game_idx):
@@ -110,8 +85,7 @@ def self_play_game(net, game_idx):
         legal = core.get_legal_actions()
         if not legal or core._terminated: core.close(); return []
         flat = encode_obs(core)
-        uniform = np.zeros(60, dtype=np.float32)
-        uniform[legal] = 1.0 / len(legal)
+        uniform = np.zeros(60, dtype=np.float32); uniform[legal] = 1.0/len(legal)
         game_data.append((flat, uniform, core.current_player))
         core.step(np.random.choice(legal))
     step = CFG['random_open_moves']
@@ -126,103 +100,79 @@ def self_play_game(net, game_idx):
         total = sum(counts.values())
         if total > 0:
             for a, c in counts.items():
-                policy[a] = (c**(1/temp)) if temp > 0 else (1.0 if c==max(counts.values()) else 0.0)
-            if temp > 0: policy = policy / policy.sum()
+                policy[a] = (c**(1/temp)) if temp > 0 else (1.0 if c == max(counts.values()) else 0.0)
+            if temp > 0: policy /= policy.sum()
         flat = encode_obs(core)
         game_data.append((flat, policy, core.current_player))
-        core.step(action)
-        step += 1
+        core.step(action); step += 1
     s1, s2 = core.players_scores
     outcome = 1.0 if s1 > s2 else (-1.0 if s2 > s1 else 0.0)
-    return [(f, p, outcome if stm==0 else -outcome) for f, p, stm in game_data]
+    return [(f, p, outcome if stm == 0 else -outcome) for f, p, stm in game_data]
 
-def train_on_data(net, replay_buffer, epochs=30, batch_size=128, lr=1e-3):
-    n = len(replay_buffer)
+def train(net, buf, epochs=30, bs=128, lr=1e-3):
+    n = len(buf)
     if n < 100: return
     opt = optim.AdamW(net.parameters(), lr=lr, weight_decay=1e-4)
     sched = optim.lr_scheduler.CosineAnnealingLR(opt, T_max=epochs, eta_min=lr*0.01)
-    obs = np.zeros((n, 272), dtype=np.float32)
-    policy = np.zeros((n, 60), dtype=np.float32)
-    value = np.zeros((n, 1), dtype=np.float32)
-    for i, (o, p, v) in enumerate(replay_buffer):
-        obs[i], policy[i], value[i,0] = o, p, v
-    obs_t = torch.from_numpy(obs).float()
-    pol_t = torch.from_numpy(policy).float()
-    val_t = torch.from_numpy(value).float()
+    obs = np.zeros((n,272),dtype=np.float32); pol = np.zeros((n,60),dtype=np.float32); val = np.zeros((n,1),dtype=np.float32)
+    for i,(o,p,v) in enumerate(buf): obs[i],pol[i],val[i,0]=o,p,v
+    ot=torch.from_numpy(obs).float(); pt=torch.from_numpy(pol).float(); vt=torch.from_numpy(val).float()
     net.train()
     for ep in range(epochs):
-        perm = torch.randperm(n)
-        pl = vl = bc = 0
-        for i in range(0, n, batch_size):
-            idx = perm[i:i+batch_size]
-            o = obs_t[idx].to(device, non_blocking=True)
-            p = pol_t[idx].to(device, non_blocking=True)
-            v = val_t[idx].to(device, non_blocking=True)
-            logits, val = net(o)
-            loss = -(p * F.log_softmax(logits, dim=1)).sum(dim=1).mean() + F.mse_loss(val, v)
-            opt.zero_grad(); loss.backward(); nn.utils.clip_grad_norm_(net.parameters(), 1.0); opt.step()
-            pl += loss.item(); bc += 1
+        perm=torch.randperm(n); pl=bc=0
+        for i in range(0,n,bs):
+            idx=perm[i:i+bs]; o=ot[idx].to(device); p=pt[idx].to(device); v=vt[idx].to(device)
+            logits,val_out=net(o)
+            loss=-(p*F.log_softmax(logits,dim=1)).sum(dim=1).mean()+F.mse_loss(val_out,v)
+            opt.zero_grad(); loss.backward(); nn.utils.clip_grad_norm_(net.parameters(),1.0); opt.step()
+            pl+=loss.item(); bc+=1
         sched.step()
-        if (ep+1)%10==0:
-            print(f"  ep {ep+1:>3d}/{epochs}  loss={pl/bc:.4f}  LR={sched.get_last_lr()[0]:.2e}", flush=True)
+        if (ep+1)%10==0: print(f"  ep {ep+1:>3d}/{epochs}  loss={pl/bc:.4f}", flush=True)
 
-# Main training
+# Main training loop
 replay_buffer = deque(maxlen=CFG['max_buffer'])
-best_wr = 0.0
-total_t0 = time.time()
-
+best_wr = 0.0; total_t0 = time.time()
 for it in range(start_iter, CFG['iterations']):
     t0 = time.time()
-    print(f"\n{'='*50}\nIteration {it+1}/{CFG['iterations']}\n{'='*50}", flush=True)
-
-    net.eval()
-    games_data = []
+    print(f"\n{'='*50}\nIter {it+1}/{CFG['iterations']}\n{'='*50}", flush=True)
+    net.eval(); games_data = []
     with ThreadPoolExecutor(max_workers=4) as pool:
         futs = [pool.submit(self_play_game, net, g+it*1000) for g in range(CFG['games_per_iter'])]
         for i, f in enumerate(as_completed(futs)):
             games_data.extend(f.result())
             if (i+1)%50==0: print(f"  Games: {i+1}/{CFG['games_per_iter']}", flush=True)
-
     for item in games_data: replay_buffer.append(item)
-    gt = time.time()-t0
-    print(f"  Self-play: {len(games_data)} pos in {gt:.0f}s ({gt/CFG['games_per_iter']:.1f}s/game)", flush=True)
-
+    print(f"  Self-play: {len(games_data)} pos in {time.time()-t0:.0f}s", flush=True)
     net.train()
-    train_on_data(net, list(replay_buffer), epochs=CFG['epochs'], batch_size=CFG['batch_size'], lr=CFG['lr'])
+    train(net, list(replay_buffer), CFG['epochs'], CFG['batch_size'], CFG['lr'])
     print(f"  Iter: {time.time()-t0:.0f}s", flush=True)
-
     if (it+1)%CFG['checkpoint_interval']==0 or it==CFG['iterations']-1:
         torch.save({'model_state': net.state_dict(), 'iteration': it+1}, str(ckpt_path))
-        with open('models/alphazero/xl_replay_buffer.pkl', 'wb') as f: pickle.dump(list(replay_buffer), f)
-        print(f"  Checkpoint saved", flush=True)
-
+        with open(str(ROOT/'models/alphazero/xl_replay_buffer.pkl'),'wb') as f: pickle.dump(list(replay_buffer),f)
+        print("  Checkpoint saved", flush=True)
     if (it+1)%5==0:
-        net.eval()
-        w=d=l=0
+        net.eval(); w=d=l=0
         for g in range(30):
-            core = PenguinChessCore(seed=g*973+it*999).reset(seed=g*973+it*999)
+            core=PenguinChessCore(seed=g*973+it*999).reset(seed=g*973+it*999)
             for _ in range(6):
-                leg = core.get_legal_actions()
+                leg=core.get_legal_actions()
                 if leg: core.step(np.random.choice(leg))
             while not core._terminated and core._episode_steps<200:
-                leg = core.get_legal_actions()
+                leg=core.get_legal_actions()
                 if not leg: break
                 if core.current_player==0:
                     with torch.no_grad():
-                        logits,_ = net(torch.from_numpy(encode_obs(core)).float().unsqueeze(0).to(device))
-                    action = leg[logits[0,leg].argmax().item()]
-                else: action = np.random.choice(leg)
+                        logits,_=net(torch.from_numpy(encode_obs(core)).float().unsqueeze(0).to(device))
+                    action=leg[logits[0,leg].argmax().item()]
+                else: action=np.random.choice(leg)
                 core.step(action)
-            s1,s2 = core.players_scores
+            s1,s2=core.players_scores
             if s1>s2: w+=1
             elif s1==s2: d+=1
             else: l+=1
-        wr = w/30
+        wr=w/30
         print(f"  vs Random: {w}/30 ({100*wr:.0f}%)", flush=True)
-        if wr > best_wr:
-            best_wr = wr
-            torch.save(net.state_dict(), str(best_path))
+        if wr>best_wr:
+            best_wr=wr; torch.save(net.state_dict(),str(best_path))
             print(f"  [NEW BEST] wr={wr:.1%}", flush=True)
-
-print(f"\nDone! Total: {time.time()-total_t0:.0f}s", flush=True)
-print(f"Best: {100*best_wr:.0f}% vs Random", flush=True)
+print(f"\nDone! Total: {time.time()-total_t0:.0f}s | Best: {100*best_wr:.0f}%", flush=True)
