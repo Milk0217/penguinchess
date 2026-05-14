@@ -518,10 +518,10 @@ def mcts_search_batched(
     # ---- resolve batch_eval_fn ----
     if evaluate_fn is not None:
         batch_eval_fn = evaluate_fn
-    elif callable(model):
-        batch_eval_fn = model
     elif model is not None and hasattr(model, "evaluate_batch"):
         batch_eval_fn = model.evaluate_batch  # type: ignore[union-attr]
+    elif callable(model):
+        batch_eval_fn = model
     else:
         # Nothing batch-capable → fall back to sequential MCTS
         return mcts_search(
