@@ -375,7 +375,12 @@ class _AlphaZeroResNetOriginal(nn.Module):
             board = np.array(obs["board"], dtype=np.float32).flatten()
             pieces = np.array(obs["pieces"], dtype=np.float32).flatten()
             meta = np.array([float(obs["current_player"]), float(obs["phase"])], dtype=np.float32)
-            obs_list.append(np.concatenate([board, pieces, meta]))
+            flat = np.concatenate([board, pieces, meta])
+            if self.obs_dim > len(flat):
+                padded = np.zeros(self.obs_dim, dtype=np.float32)
+                padded[:len(flat)] = flat
+                flat = padded
+            obs_list.append(flat)
         batch = np.array(obs_list, dtype=np.float32)
         x = torch.from_numpy(batch).to(device)
         logits, val_t = self.forward(x)
