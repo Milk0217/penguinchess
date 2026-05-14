@@ -1,13 +1,17 @@
-"""Kaggle XL training. Fixes CWD after rmtree killed it."""
+"""Kaggle XL training with checkpoint resume across kernel restarts."""
 import os, sys
 os.chdir('/kaggle/working')
 sys.path.insert(0, '/kaggle/working/penguinchess')
 
-import subprocess, shutil, json, time, math, pickle
+import subprocess, shutil, json, time, math, pickle, signal
 from pathlib import Path
 
 ROOT = Path('/kaggle/working/penguinchess')
+# Persistent checkpoint directory (survives kernel restart)
+CKPT_DIR = Path('/kaggle/output/penguinchess_checkpoints')
+CKPT_DIR.mkdir(parents=True, exist_ok=True)
 
+# Install Rust if needed
 if not shutil.which('rustc'):
     print("Installing Rust...")
     subprocess.run(['curl', '--proto', '=https', '--tlsv1.2', '-sSf',
@@ -23,6 +27,7 @@ print("CUDA:", torch.cuda.is_available())
 if torch.cuda.is_available():
     print("GPU:", torch.cuda.get_device_name(0), int(torch.cuda.mem_get_info()[1]/1024**3), "GB")
 
+# Compile Rust engine
 dll = ROOT / 'game_engine/target/release/libgame_engine.so'
 if not dll.exists():
     print("Compiling Rust engine...")
@@ -38,22 +43,44 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 model_dir = ROOT / 'models/alphazero'
 model_dir.mkdir(parents=True, exist_ok=True)
 best_path = model_dir / 'alphazero_resnet_xl_best.pth'
-ckpt_path = model_dir / 'alphazero_resnet_xl_checkpoint.pth'
 
-if best_path.exists():
-    sd = torch.load(str(best_path), map_location='cpu', weights_only=True)
-    net = detect_net_arch(sd)(obs_dim=272).to(device)
-    net.load_state_dict(sd); start_iter = 0
-    print("Loaded best model")
-elif ckpt_path.exists():
-    ckpt = torch.load(str(ckpt_path), map_location='cpu', weights_only=False)
+# Persistent checkpoint files
+CKPT_FILE = CKPT_DIR / 'checkpoint.pt'       # model + optim + iter
+BUFFER_FILE = CKPT_DIR / 'replay_buffer.pkl'  # replay data
+BEST_FILE = CKPT_DIR / 'best.pth'             # best model
+
+# Resume logic: check persistent checkpoint first, then working dir
+loaded_ckpt = False
+start_iter = 0
+replay_buffer = None
+
+# Try persistent checkpoint first
+if CKPT_FILE.exists():
+    print("Found persistent checkpoint, resuming...")
+    ckpt = torch.load(str(CKPT_FILE), map_location='cpu', weights_only=False)
     net = AlphaZeroResNetXL(obs_dim=272).to(device)
     net.load_state_dict(ckpt['model_state'])
     start_iter = ckpt['iteration']
-    print(f"Resumed from iter {start_iter}")
+    if BUFFER_FILE.exists():
+        import pickle
+        with open(BUFFER_FILE, 'rb') as f:
+            replay_buffer = pickle.load(f)
+        print(f"  Replay buffer: {len(replay_buffer)} positions")
+    print(f"  Resumed from iter {start_iter}")
+    loaded_ckpt = True
+elif best_path.exists():
+    print("Loading best model from working dir...")
+    sd = torch.load(str(best_path), map_location='cpu', weights_only=True)
+    net = detect_net_arch(sd)(obs_dim=272).to(device)
+    net.load_state_dict(sd)
+    print("  Starting from iter 0 (no iteration checkpoint)")
 else:
+    print("Starting fresh XL model")
     net = AlphaZeroResNetXL(obs_dim=272).to(device)
-    start_iter = 0; print("Starting fresh XL model")
+
+if not loaded_ckpt:
+    start_iter = 0
+
 params = sum(p.numel() for p in net.parameters())
 print(f"Model: {params:,} params")
 
@@ -129,27 +156,61 @@ def train(net, buf, epochs=30, bs=128, lr=1e-3):
         sched.step()
         if (ep+1)%10==0: print(f"  ep {ep+1:>3d}/{epochs}  loss={pl/bc:.4f}", flush=True)
 
+def atomic_save(path, data):
+    """Atomic save: write to temp then rename."""
+    tmp = path.with_suffix('.tmp')
+    torch.save(data, str(tmp))
+    tmp.rename(path)
+
+# Graceful shutdown
+interrupted = False
+def _handler(sig, frame):
+    global interrupted
+    print("\nSaving checkpoint before interrupt...", flush=True)
+    interrupted = True
+signal.signal(signal.SIGTERM, _handler)
+
 # Main training loop
-replay_buffer = deque(maxlen=CFG['max_buffer'])
-best_wr = 0.0; total_t0 = time.time()
+if replay_buffer is None:
+    replay_buffer = deque(maxlen=CFG['max_buffer'])
+best_wr = float('-inf')
+total_t0 = time.time()
+
 for it in range(start_iter, CFG['iterations']):
+    if interrupted: break
     t0 = time.time()
     print(f"\n{'='*50}\nIter {it+1}/{CFG['iterations']}\n{'='*50}", flush=True)
+
+    # Self-play
     net.eval(); games_data = []
     with ThreadPoolExecutor(max_workers=4) as pool:
         futs = [pool.submit(self_play_game, net, g+it*1000) for g in range(CFG['games_per_iter'])]
         for i, f in enumerate(as_completed(futs)):
+            if interrupted: pool.shutdown(wait=False); break
             games_data.extend(f.result())
             if (i+1)%50==0: print(f"  Games: {i+1}/{CFG['games_per_iter']}", flush=True)
     for item in games_data: replay_buffer.append(item)
-    print(f"  Self-play: {len(games_data)} pos in {time.time()-t0:.0f}s", flush=True)
+    print(f"  Self-play: {len(games_data)} pos in {time.time()-t0:.0f}s | buffer: {len(replay_buffer)}", flush=True)
+
+    # Train
     net.train()
     train(net, list(replay_buffer), CFG['epochs'], CFG['batch_size'], CFG['lr'])
     print(f"  Iter: {time.time()-t0:.0f}s", flush=True)
-    if (it+1)%CFG['checkpoint_interval']==0 or it==CFG['iterations']-1:
-        torch.save({'model_state': net.state_dict(), 'iteration': it+1}, str(ckpt_path))
-        with open(str(ROOT/'models/alphazero/xl_replay_buffer.pkl'),'wb') as f: pickle.dump(list(replay_buffer),f)
-        print("  Checkpoint saved", flush=True)
+
+    # Save checkpoint to persistent storage
+    if (it+1)%CFG['checkpoint_interval']==0 or it==CFG['iterations']-1 or interrupted:
+        atomic_save(CKPT_FILE, {
+            'model_state': net.state_dict(),
+            'iteration': it+1,
+        })
+        with open(BUFFER_FILE, 'wb') as f:
+            pickle.dump(list(replay_buffer), f)
+        print(f"  Checkpoint saved to {CKPT_DIR}", flush=True)
+
+    # Save best model to working dir
+    torch.save(net.state_dict(), str(model_dir / 'alphazero_resnet_xl_latest.pth'))
+
+    # Evaluate every 5 iterations
     if (it+1)%5==0:
         net.eval(); w=d=l=0
         for g in range(30):
@@ -167,12 +228,20 @@ for it in range(start_iter, CFG['iterations']):
                 else: action=np.random.choice(leg)
                 core.step(action)
             s1,s2=core.players_scores
-            if s1>s2: w+=1
-            elif s1==s2: d+=1
+            if s1>s2: w+=1; d+=1
             else: l+=1
         wr=w/30
         print(f"  vs Random: {w}/30 ({100*wr:.0f}%)", flush=True)
         if wr>best_wr:
-            best_wr=wr; torch.save(net.state_dict(),str(best_path))
+            best_wr=wr
+            torch.save(net.state_dict(), str(best_path))
+            atomic_save(BEST_FILE, net.state_dict())
             print(f"  [NEW BEST] wr={wr:.1%}", flush=True)
-print(f"\nDone! Total: {time.time()-total_t0:.0f}s | Best: {100*best_wr:.0f}%", flush=True)
+
+print(f"\n{'='*50}", flush=True)
+if interrupted:
+    print(f"Interrupted at iter {it+1}. Checkpoint saved. Re-run to resume.", flush=True)
+else:
+    print(f"Training complete! Total: {time.time()-total_t0:.0f}s", flush=True)
+print(f"Best: {100*best_wr:.0f}% vs Random", flush=True)
+print(f"Resume from: {CKPT_DIR}", flush=True)
