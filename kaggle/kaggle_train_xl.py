@@ -3,8 +3,12 @@ import os, sys, subprocess, json, time, math, shutil, pickle
 from pathlib import Path
 
 # Set up path: the script runs from repo root after git clone
-REPO_ROOT = Path(os.getcwd())
+# The script is at KAGGLE_WORKING/penguinchess/kaggle/kaggle_train_xl.py
+# REPO_ROOT = parent of kaggle/ directory
+REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
+print('REPO_ROOT:', REPO_ROOT, flush=True)
+print('penguinchess dir exists:', (REPO_ROOT / 'penguinchess').exists(), flush=True)
 
 os.environ['GIT_TERMINAL_PROMPT'] = '0'
 
