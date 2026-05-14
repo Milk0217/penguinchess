@@ -19,14 +19,6 @@ if not shutil.which('rustc'):
     os.environ['PATH'] = os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH']
 
 dll = ROOT / 'game_engine/target/release/libgame_engine.so'
-# Force rebuild if stale (missing parallel MCTS symbol)
-if dll.exists():
-    import ctypes
-    try:
-        ctypes.CDLL(str(dll)).mcts_search_rust_handle_parallel
-    except AttributeError:
-        print("Stale DLL (no parallel MCTS), rebuilding...")
-        dll.unlink()
 if not dll.exists():
     print("Compiling Rust engine (one-time ~2min)...")
     subprocess.run(['cargo', 'build', '--release'], cwd=str(ROOT/'game_engine'), check=True)
@@ -37,7 +29,7 @@ print("Python:", sys.version, "CUDA:", torch.cuda.is_available())
 if torch.cuda.is_available():
     print("GPU:", torch.cuda.get_device_name(0), int(torch.cuda.mem_get_info()[1]/1024**3), "GB")
 
-from penguinchess.rust_ffi import get_engine, mcts_search_rust_handle_parallel
+from penguinchess.rust_ffi import get_engine, mcts_search_rust_handle
 from penguinchess.rust_core import RustCore
 from penguinchess.ai.alphazero_net import AlphaZeroResNetXL, detect_net_arch
 import torch.nn as nn, torch.nn.functional as F, torch.optim as optim
@@ -111,8 +103,9 @@ def self_play(net, game_idx, eng):
     while not terminated and step < 500:
         legal = core.get_legal_actions()
         if not legal: break
-        raw = mcts_search_rust_handle_parallel(core.handle, model=net,
-            batch_size=CFG['mcts_batch_size'], num_workers=2)
+        raw = mcts_search_rust_handle(core.handle, model=net,
+            num_simulations=CFG['simulations'], c_puct=CFG['c_puct'],
+            batch_size=CFG['mcts_batch_size'])
         counts = {int(k): v for k, v in raw.items()}
         if not counts: core.close(); return []
         temp = 1.0 if step < CFG['temp_threshold'] else 0.1
