@@ -93,7 +93,7 @@ def self_play_game(net, game_idx):
         legal = core.get_legal_actions()
         if not legal: break
         counts, _ = mcts_search_batched(core, net, num_simulations=CFG['simulations'],
-            c_puct=CFG['c_puct'], batch_size=CFG['MCTS_batch_size'], device=device)
+            c_puct=CFG['c_puct'], batch_size=CFG['MCTS_batch_size'])
         temp = 1.0 if step < CFG['temp_threshold'] else 0.1
         action = select_action(counts, legal, temp=temp)
         policy = np.zeros(60, dtype=np.float32)
