@@ -32,27 +32,52 @@ WORKERS = 8
 OUT_DIR = Path('models/nnue_trained')
 
 # Rust AB+NNUE constants (compile-time, must match nnue_rs.rs)
-R_FT_DIM = 64
-R_HD_DIM = 256   # fc1 output
-R_HD2_DIM = 128   # fc2 output / fc3 input
-R_INPUT_DIM = R_FT_DIM * 2 + 66  # 194
+R_FT_DIM = 128
+R_HD_DIM = 512   # fc1 output
+R_HD2_DIM = 256   # fc2 output / fc3 input
+R_INPUT_DIM = R_FT_DIM * 2 + 66  # 322
 
 # Python NNUE class defaults (may differ from Rust)
 P_FT_DIM = 128
 P_HD_DIM = 512
 
-def load_weights(model, path):
-    sd = torch.load(path, map_location='cpu', weights_only=False)
-    sd = sd.get('model_state', sd) if isinstance(sd, dict) and 'model_state' in sd else sd
-    ft_dim = sd['ft.weight'].shape[0] if 'ft.weight' in sd else P_FT_DIM
-    hd = sd['fc1.weight'].shape[0] if 'fc1.weight' in sd else P_HD_DIM
-    if ft_dim != model.ft_dim or hd != model.fc1.weight.shape[0]:
-        print(f'  Arch mismatch: teacher ft={ft_dim} hd={hd} vs model ft={model.ft_dim} hd={model.fc1.weight.shape[0]}', flush=True)
-        teacher = NNUE(ft_dim=ft_dim, hidden_dim=hd)
-        teacher.load_state_dict(sd, strict=False)
-        return {}  # Signal to use fallback
-    model.load_state_dict(sd, strict=False)
-    return {k: v.cpu() for k, v in model.state_dict().items()}
+def load_teacher_weights(teacher_path):
+    """Load teacher and convert to Rust-compatible large arch (128/512) if needed."""
+    sd = torch.load(teacher_path, map_location="cpu", weights_only=False)
+    sd = sd.get("model_state", sd) if isinstance(sd, dict) and "model_state" in sd else sd
+    ft_dim = sd["ft.weight"].shape[0]
+    hd = sd["fc1.weight"].shape[0]
+    
+    if ft_dim == R_FT_DIM and hd == R_HD_DIM:
+        # Already matching Rust arch
+        m = NNUE(ft_dim=R_FT_DIM, hidden_dim=R_HD_DIM)
+        m.load_state_dict(sd, strict=False)
+        return {k: v.cpu() for k, v in m.state_dict().items()}, True
+    
+    # Need to pad small -> large
+    print(f"  Converting teacher ft={ft_dim} hd={hd} -> ft={R_FT_DIM} hd={R_HD_DIM}", flush=True)
+    m_small = NNUE(ft_dim=ft_dim, hidden_dim=hd)
+    m_small.load_state_dict(sd, strict=False)
+    
+    m_big = NNUE(ft_dim=R_FT_DIM, hidden_dim=R_HD_DIM)
+    with torch.no_grad():
+        # FT: copy first ft_dim rows, rest zero
+        m_big.ft.weight.data[:ft_dim, :] = m_small.ft.weight
+        m_big.ft.bias.data[:ft_dim] = m_small.ft.bias
+        # FC1: input dim differs! (ft*2+66)
+        small_input_dim = ft_dim * 2 + 66
+        m_big.fc1.weight.data[:hd, :small_input_dim] = m_small.fc1.weight
+        m_big.fc1.bias.data[:hd] = m_small.fc1.bias
+        # FC2
+        small_hd2 = ft_dim * 2  # old hd2
+        hd2 = m_small.fc2.weight.shape[0]
+        m_big.fc2.weight.data[:hd2, :hd] = m_small.fc2.weight
+        m_big.fc2.bias.data[:hd2] = m_small.fc2.bias
+        # FC3
+        m_big.fc3.weight.data[0, :hd2] = m_small.fc3.weight[0]
+        m_big.fc3.bias.data[0] = m_small.fc3.bias[0]
+    
+    return {k: v.cpu() for k, v in m_big.state_dict().items()}, True
 
 def flat_weights_rust(model):
     """Flatten to Rust AB+NNUE format (small arch: 64/256/128)."""
@@ -198,24 +223,14 @@ def main():
         print(f'\n{"="*50}\n  Generation {gen}\n{"="*50}', flush=True)
         t0 = time.time()
         
-        # 1. Load teacher and create AB handle
-        d = None
+        # 1. Load teacher (auto-convert to large arch if needed)
+        d, ok = None, False
         for try_path in [teacher_path, 'models/ab_nnue/nnue_gen_2.pt']:
-            try:
-                sd = torch.load(try_path, map_location='cpu', weights_only=False)
-                sd = sd.get('model_state', sd) if isinstance(sd, dict) and 'model_state' in sd else sd
-                ft_dim = sd['ft.weight'].shape[0]
-                hd = sd['fc1.weight'].shape[0]
-                tmodel = NNUE(ft_dim=ft_dim, hidden_dim=hd)
-                tmodel.load_state_dict(sd, strict=False)
-                d = {k: v.cpu() for k, v in tmodel.state_dict().items()}
-                print(f'  Teacher: {try_path} (ft={ft_dim} hd={hd})', flush=True)
+            d, ok = load_teacher_weights(try_path)
+            if ok:
+                print(f'  Teacher: {try_path}', flush=True)
                 break
-            except Exception as e:
-                print(f'  Failed to load {try_path}: {e}', flush=True)
-                continue
-        
-        if d is None:
+        if not ok:
             raise RuntimeError('No usable teacher found')
         
         cfg = json.dumps({'max_depth': DEPTH, 'tt_size': 65536,

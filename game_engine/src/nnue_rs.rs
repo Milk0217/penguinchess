@@ -11,11 +11,12 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const FT_DIM: usize = 64;
+// AB+NNUE dimensions
+pub const FT_DIM: usize = 128;
 pub const DENSE_DIM: usize = 66;
-pub const FC1_DIM: usize = 256;
-pub const FC2_DIM: usize = 128;
-pub const INPUT_DIM: usize = FT_DIM * 2 + DENSE_DIM; // 194
+pub const FC1_DIM: usize = 512;
+pub const FC2_DIM: usize = 256;
+pub const INPUT_DIM: usize = FT_DIM * 2 + DENSE_DIM; // 322
 pub const P1_CUTOFF: usize = 180;
 
 // MCTS NNUE (larger model) — same dims now
